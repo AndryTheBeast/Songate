@@ -69,6 +69,10 @@ void App::loadModelFiles() {
     const std::string bundled = dir + "/" + kBundledFile;
     struct stat st;
     if (stat(bundled.c_str(), &st) != 0) {
+        // every folder on the way: on a first start the settings folder itself is not made yet (the user, 2026-11-03: a fresh
+        // PC install came without V1.2.0)
+        for (size_t i = 1; i < dir.size(); i++)
+            if (dir[i] == '/' || dir[i] == '\\') mkdir(dir.substr(0, i).c_str(), 0777);
         mkdir(dir.c_str(), 0777);
         if (FILE* out = fopen(bundled.c_str(), "wb")) {
             fwrite(kBundledModel, 1, sizeof kBundledModel - 1, out);
