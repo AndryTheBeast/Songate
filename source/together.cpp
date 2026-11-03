@@ -16,6 +16,7 @@
 namespace together {
 
 namespace {
+constexpr size_t kMaxListName = 256;   // a Handoff's playlist name, in bytes
 
 bool hexOr0(const std::string& s) {
     if (s == "-") return true;
@@ -92,6 +93,11 @@ std::vector<uint8_t> pack(const Message& m) {
     char head[120];
     snprintf(head, sizeof head, "t%c\t%d\t%c\t%lld\t%d\t%.6f\t%.6f", char(m.kind), m.flag ? 1 : 0, m.what ? m.what : '-', (long long)m.serial, m.song, m.at, m.position);
     std::string out = head;
+    if (m.kind == Kind::Handoff && !m.list.empty() && m.list.size() <= kMaxListName) {   // a first line "@<the name in hex>"
+        static const char hex[] = "0123456789abcdef";
+        out += "\n@";
+        for (unsigned char c : m.list) { out += hex[c >> 4]; out += hex[c & 15]; }
+    }
     if (m.kind == Kind::Queue || m.kind == Kind::Handoff)
         for (const Song& s : m.songs) {
             char d[32];
@@ -170,7 +176,22 @@ bool unpack(const std::vector<uint8_t>& bytes, Message& out) {
         }
         return true;
     }
-    const std::vector<std::string> lines = split(body, '\n');
+    std::vector<std::string> lines = split(body, '\n');
+    if (out.kind == Kind::Handoff && !lines.empty() && !lines[0].empty() && lines[0][0] == '@') {   // the playlist's name
+        const std::string& h = lines[0];
+        if (h.size() < 3 || h.size() % 2 == 0 || (h.size() - 1) / 2 > kMaxListName) return false;
+        for (size_t i = 1; i < h.size(); i += 2) {
+            int v = 0;
+            for (char c : { h[i], h[i + 1] }) {
+                if (c >= '0' && c <= '9') v = v * 16 + (c - '0');
+                else if (c >= 'a' && c <= 'f') v = v * 16 + (c - 'a' + 10);
+                else return false;
+            }
+            out.list += char(v);
+        }
+        lines.erase(lines.begin());
+        if (lines.size() == 1 && lines[0].empty()) lines.clear();   // a name and no songs
+    }
     if (lines.size() > kMaxSongs) return false;
     out.songs.reserve(lines.size());
     for (const std::string& l : lines) {

@@ -973,6 +973,7 @@ void App::handoffTo(const std::string& peerId, const std::string& peerName) {
     if (q.order.empty() || q.pos < 0) { toast("Play something first: this queue is what moves"); return; }
     Message m;
     m.kind = Kind::Handoff;
+    if (queuePlaylist() >= 0) m.list = q.name;   // the playlist it came from (Automix, smart, Mood…): played as one there too
     m.song = q.pos;
     m.position = player.loaded() ? player.position() : 0;
     m.flag = isPlaying();
@@ -1009,6 +1010,10 @@ void App::handoffTake(const Message& m, const std::string& name, double received
     const std::vector<int> tracks = match(m.songs, mine);
     Queue t;
     t.name = "From " + name;
+    // the playlist it came from, when this device has one of that name (Sync makes them the same): its queue is that playlist,
+    // so an Automix one joins as Automix here too, and a smart or Mood one shows as itself
+    for (const FolderPlaylist& p : store.playlists)
+        if (!m.list.empty() && p.name == m.list) { t.name = m.list; break; }
     int pos = -1, missing = 0;
     for (int i = 0; i < int(tracks.size()); i++) {
         if (tracks[size_t(i)] < 0) { missing++; continue; }

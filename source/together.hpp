@@ -60,6 +60,7 @@ struct Message {
     int song = -1;
     double at = 0, position = 0;
     std::vector<Song> songs;
+    std::string list;      // Handoff: the playlist its queue came from, by name ("": none), so the other device plays it as one
     std::vector<uint8_t> have;
     std::vector<uint8_t> print;
     automix::Plan plan;

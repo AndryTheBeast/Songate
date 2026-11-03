@@ -145,6 +145,23 @@ int main() {
     check("a queue comes back the same", unpack(pack(m), u) && u.songs.size() == 3 && u.songs[0].exact == h1 && u.songs[1].exact.empty() && u.songs[1].loose == h3 && u.songs[2].loose.empty() && u.songs[0].duration == 200.5);
     m = Message{}; m.kind = Kind::Queue;
     check("an empty queue is a queue", unpack(pack(m), u) && u.songs.empty());
+    // Handoff carries the playlist the queue came from (2026-11-03: an Automix playlist arrived as a plain queue)
+    m = Message{}; m.kind = Kind::Handoff; m.song = 1; m.position = 42.5; m.flag = true; m.list = "Night Drive";
+    m.songs = { { h1, h2, 200.5 }, { "", h3, 100 } };
+    check("a handoff carries its playlist", unpack(pack(m), u) && u.kind == Kind::Handoff && u.list == "Night Drive" && u.songs.size() == 2 && u.songs[0].exact == h1 && u.song == 1 && u.flag);
+    m.list = "Caf\xc3\xa9 \xe2\x99\xa5\tline\nbreak @ 100%";
+    check("any characters in a playlist's name", unpack(pack(m), u) && u.list == m.list && u.songs.size() == 2);
+    m.list.clear();
+    check("a handoff with no playlist (an album, older builds)", unpack(pack(m), u) && u.list.empty() && u.songs.size() == 2);
+    m.list = "Mood: Happy"; m.songs.clear();
+    check("a playlist's name and no songs", unpack(pack(m), u) && u.list == "Mood: Happy" && u.songs.empty());
+    m.list = std::string(257, 'x');
+    check("a name over 256 bytes is left out, the songs still go", unpack(pack(m), u) && u.list.empty());
+    check("a name in a queue (not a handoff) is refused", !unpack(B("tQ\t0\t-\t0\t0\t0\t0\n@4142"), x0));
+    check("a name of odd hex is refused", !unpack(B("tO\t0\t-\t0\t0\t0\t0\n@414"), x0));
+    check("a name that is not hex is refused", !unpack(B("tO\t0\t-\t0\t0\t0\t0\n@zz"), x0));
+    check("an empty name line is refused", !unpack(B("tO\t0\t-\t0\t0\t0\t0\n@"), x0));
+    check("a name too long is refused", !unpack(B("tO\t0\t-\t0\t0\t0\t0\n@" + std::string(2 * 257, 'a')), x0));
     m = Message{}; m.kind = Kind::Handoff; m.song = 1; m.position = 42.5; m.flag = true; m.songs = { { h1, h2, 200 }, { "", h3, 100 } };
     check("a handoff comes back the same", unpack(pack(m), u) && u.kind == Kind::Handoff && u.song == 1 && u.position == 42.5 && u.flag && u.songs.size() == 2 && u.songs[1].loose == h3);
     m = Message{}; m.kind = Kind::Have; m.have = { 1, 0, 1 };
