@@ -92,6 +92,11 @@ private:
     u64 heardFrames_ = 0;
     bool counted_ = false;
     std::vector<std::string> plays_;
+    // … and heard long enough for Last.fm (its own rule: over 30 s, half of it or 4 minutes), with the seconds heard so
+    // far, so that bg-scrobbles.txt can say when it began. Songate takes them in, and sends them if you allow it.
+    bool scrobbled_ = false;
+    struct Heard { std::string path; u32 secs; };
+    std::vector<Heard> scrobbles_;
     std::string coverPath_;    // the folder's cover image, when the file has none
     s16 decBuf_[1024 * 2];
     float mix_[2048 * 2];
@@ -159,7 +164,7 @@ private:
     mixan::Info info_[2];
     bool infoOk_[2] = {};
     bool mixInfo(const std::string& path, mixan::Info& out);   // the watch thread, without the lock
-    // a downloaded Automix model (GfbgConfig.automixFile: config/gatefold-nx/models/<file>), read once it is named
+    // a downloaded Automix model (GfbgConfig.automixFile: the settings folder's models/<file>), read once it is named
     std::string modelName_;           // the file read (the watch thread's)
     automix::ModelFile modelFile_;
     bool modelOk_ = false;

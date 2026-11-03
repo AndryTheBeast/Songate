@@ -45,6 +45,8 @@ Mix_Music* hostLoadMUS(const char* p);
 void hostPresent(SDL_Renderer* r);
 const char* hostPath(const char* p);
 void hostSetPostMix(void (*f)(void*, Uint8*, int), void* arg);
+void hostHookMusic(void (*f)(void*, Uint8*, int), void* arg);
+void hostFilmEnd();
 
 #define fopen(p, m) hostFopen(p, m)
 #define stat(p, s) hostStat(p, s)
@@ -56,6 +58,7 @@ void hostSetPostMix(void (*f)(void*, Uint8*, int), void* arg);
 #define Mix_LoadMUS(p) hostLoadMUS(p)
 #define SDL_RenderPresent(r) hostPresent(r)
 #define Mix_SetPostMix(f, a) hostSetPostMix(f, a)
+#define Mix_HookMusic(f, a) hostHookMusic(f, a)
 #ifdef GF_FFMPEG
 #define avformat_open_input(ctx, url, fmt, opts) avformat_open_input(ctx, hostPath(url), fmt, opts)
 #endif

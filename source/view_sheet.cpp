@@ -5,7 +5,7 @@
  * give it a cover from the SD card, jump to its album, artist, genre or folder,
  * see its details, or delete the file.
  *
- * Edits and covers are kept by Gatefold (sdmc:/config/gatefold-nx/edits.tsv,
+ * Edits and covers are kept by Gatefold (sdmc:/config/songate-nx/edits.tsv,
  * covers.tsv, covers/) and layered over the file's own tags everywhere in the
  * app: the console's FFmpeg can read but not write files, and the music stays
  * untouched — Gatefold 1.4's default for covers ("only in Gatefold") as well.
@@ -78,9 +78,9 @@ void App::applyEdits(Track& t) {
     auto it = store.edits.find(t.path);
     if (it == store.edits.end()) return;
     for (const auto& [k, v] : it->second) {
-        if (k == "title") t.title = v;
-        else if (k == "artist") t.artist = v;
-        else if (k == "album") t.album = v;
+        if (k == "title") { t.title = v; t.fromName &= ~1; }
+        else if (k == "artist") { t.artist = v; t.fromName &= ~2; }
+        else if (k == "album") { t.album = v; t.fromName &= ~4; }
         else if (k == "albumArtist") t.albumArtist = v;
         else if (k == "genre") t.genre = v;
         else if (k == "date") t.date = v;
@@ -171,21 +171,28 @@ void App::setTrackCover(const std::string& image) {
 
 // ------------------------------------------------------------------ delete
 
-void App::deleteTrack(int track) {
+bool App::deleteSong(int track) {
     const Track t = lib.tracks[track];
     if (now.track == track) {
         if (q.order.size() > 1) next(false);   // move on first: the file is open while it plays
         else player.stop();
     }
     if (now.track == track) player.stop();
-    if (remove(t.path.c_str()) != 0) {
-        toast("Couldn't delete “" + baseName(t.path) + "”");
-        return;
-    }
+    if (remove(t.path.c_str()) != 0) return false;
     std::erase(store.liked, t.path);
     stats.forget(t.path);
     store.edits.erase(t.path);
     store.covers.erase(t.path);
+    return true;
+}
+
+void App::deleteTrack(int track) {
+    const Track t = lib.tracks[track];
+    if (!deleteSong(track)) {
+        toast("Couldn't delete “" + baseName(t.path) + "”");
+        return;
+    }
+    syncNoteDeleted(t.path);   // only once it really is gone
     store.saveEdits();
     store.save();
     closeSheet();
@@ -228,7 +235,7 @@ void App::sheetBack() {
         sheet.queuePos = row;   // drawSmartSheet focuses it
         return;
     }
-    if (sheet.page == Sheet::Menu || sheet.page == Sheet::NewList || sheet.page == Sheet::Sleep || sheet.page == Sheet::Job || sheet.page == Sheet::Jobs ||
+    if (sheet.page == Sheet::Menu || sheet.page == Sheet::NewList || sheet.page == Sheet::Sleep || sheet.page == Sheet::Devices || sheet.page == Sheet::Job || sheet.page == Sheet::Jobs ||
         sheet.page == Sheet::PlFile || sheet.page == Sheet::Confirm || sheet.page == Sheet::EqPreset ||
         sheet.page == Sheet::ActList || sheet.page == Sheet::ListActions || sheet.page == Sheet::PlMenu || sheet.page == Sheet::FileMenu ||
         sheet.page == Sheet::Factory || sheet.page == Sheet::Report || sheet.page == Sheet::Crashes) {

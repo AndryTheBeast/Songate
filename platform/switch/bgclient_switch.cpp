@@ -34,6 +34,18 @@ bool BgClient::connect() {
     return connected_;
 }
 
+bool BgClient::mayBePlaying() {
+    if (!gfbgRunning()) return false;
+    // Said hello to as the overlay: only Songate's hello changes anything in the player (it is no game then), and that is
+    // bgConnect's to say, only when the background player is on
+    Service s;
+    if (R_FAILED(gfbgOpen(&s, GfbgClient_Overlay))) return true;
+    GfbgState st;
+    const bool playing = R_FAILED(gfbgGetState(&s, &st)) || st.status == GfbgStatus_Playing;
+    serviceClose(&s);
+    return playing;
+}
+
 void BgClient::disconnect() {
     if (connected_) serviceClose(&srv);
     connected_ = false;

@@ -52,7 +52,7 @@ static const GfEqPreset kGfEqPresets[GFEQ_PRESETS] = {
  * "name<TAB>preamp<TAB>bass<TAB>treble<TAB>the ten bands". Unlike Gatefold's, one keeps the whole sound:
  * the bands, bass, treble and the preamp. Gatefold writes it; the overlay reads it to step through them.
  */
-#define GFEQ_USER "sdmc:/config/gatefold-nx/eq-presets.txt"
+#define GFEQ_USER_FILE "eq-presets.txt"   /* in the settings folder (gfcfgdir.h) */
 #define GFEQ_USER_MAX 100   /* preset indices stay within int8_t */
 
 typedef struct {

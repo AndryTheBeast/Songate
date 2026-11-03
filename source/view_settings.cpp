@@ -17,7 +17,7 @@
 #include "plicons.inc"
 
 #ifndef GF_VERSION
-#define GF_VERSION "2.0.0 BETA 1"
+#define GF_VERSION "2.0.0 BETA 2"
 #endif
 
 namespace {
@@ -454,6 +454,15 @@ void App::drawSettings(float x, float y, float w, float h) {
                           { toggleRow("Collapse the sidebar", "Icons only, more room for everything else", "set.side", store.sidebarCollapsed),
                             toggleRow("Background motion", "The slowly drifting colours behind every view and the Canvas", "set.motion",
                                       store.motion) } });
+        // The opening can be turned off, and its bells with it left on (the user, 2026-11-02): the sound's row only while there is an
+        // opening to ring with. Here, with how Songate looks, not in Playback (the user, 2026-11-03: "I think it makes more sense")
+        {
+            std::vector<Row> opening{ toggleRow("Opening animation", "A star crosses the name as Songate opens. Any press skips it",
+                                                "set.opening", store.opening) };
+            if (store.opening)
+                opening.push_back(toggleRow("Opening sound", "A few soft bells with it. Never over music", "set.opensound", store.openingSound));
+            cards.push_back({ "Opening", opening });
+        }
         // How an Automix join shows (the user, 2026-10-29), on Now playing and on the Canvas, each its own; where the hint
         // sits, only for Now playing's Simple (the user, 2026-10-29: every other animation has its own place)
         std::vector<Row> mixRows = { segRow("On Now playing",
@@ -625,8 +634,10 @@ void App::drawSettings(float x, float y, float w, float h) {
                     toggleRow("Not within an album", "Tracks of one album that follow each other keep their join, as live and "
                                                      "gapless albums need. Automix playlists still mix them",
                               "set.xfadealbum", store.xfadeNotInAlbum) } },
-                { "Startup", { toggleRow("Resume where I left off", "The queue comes back paused at the same place in the same track",
-                                         "set.resume", store.resume) } },
+                // What plays when Songate opens; the opening itself is in Appearance (the user, 2026-11-03)
+                { "Startup",
+                  { toggleRow("Resume where I left off", "The queue comes back paused at the same place in the same track", "set.resume",
+                              store.resume) } },
                 { "Sleep",
                   { segRow("Sleep timer", "The music fades out and pauses; also the moon in the player bar", "set.sleep",
                            { "Off", "15", "30", "45", "60", "90 min" }, sleepLeft() > 0 ? sleepChoice : 0,
@@ -955,7 +966,7 @@ void App::drawSettings(float x, float y, float w, float h) {
         const K ks[6] = { { "Covers cache", "Small copies of every cover, so lists open with their covers (" GF_CONFIG_NAME "/art)" },
                           { "Covers for the overlay", "What the overlay shows for each track (thumbs)" },
                           { "Loudness measurements", "Volume levelling's, Automix's and the moods' measurements of each track (loudness.tsv, mix.tsv, mood.tsv, gains.bin)" },
-                          { "Tag cache", "The tags read from your files, so launch does not read them again (tags.tsv)" },
+                          { "Tag cache", "The tags read from your files, so launch does not read them again (tags.tsv, identity.tsv)" },
                           { "Backups", "Your settings as they were before each install or restore (Backups go to, above)" },
                           { "Downloads", GF_DOWNLOADS_WORDS } };
         static const char* clearKeys[6] = { "set.clr0", "set.clr1", "set.clr2", "set.clr3", "set.clr4", "set.clr5" };
@@ -1236,6 +1247,340 @@ void App::drawSettings(float x, float y, float w, float h) {
         sections.push_back({ "Support", ICON_HELP, cards });
     }
 
+    // Last.fm (lastfm.hpp, view_lastfm.cpp): off until allowed, as Updates; a tab of its own, after Devices (the user, 2026-10-31)
+    {
+        std::vector<Card> cards;
+        const Lastfm::View lf = lastfm.view();
+        std::vector<Row> top;
+        if (Lastfm::available()) {
+            Row onRow{ "Last.fm", "", store.lastfm ? "Songate tells Last.fm what you play, and nothing else"
+                                                   : lf.signedIn ? "Off: nothing is sent, and you stay signed in"
+                                                                 : "Off: nothing is sent. Turned on, Songate asks you first, then you sign in",
+                       40, [this](float rx, float cy) {
+                           if (toggle(uid("set.lfon"), rx - 40, cy, store.lastfm)) {
+                               if (store.lastfm) {
+                                   store.lastfm = false;
+                                   lastfm.cancelSignIn();
+                                   persistSoon(0.3f);
+                                   toast("Last.fm off: nothing is sent");
+                               } else {
+                                   allowLastfm();
+                               }
+                           }
+                       } };
+            onRow.focus = uid("set.lfon");
+            top.push_back(onRow);
+        } else {
+            top.push_back(infoRow("Last.fm cannot be used in this build", "This build was made without Songate's Last.fm key"));
+        }
+        cards.push_back({ "", top });
+        if (Lastfm::available() && store.lastfm) {
+            if (lf.sign == Lastfm::Sign::Asking) {
+                cards.push_back({ "Sign in", { infoRow("Asking Last.fm…", "") } });
+            } else if (lf.sign == Lastfm::Sign::Waiting) {
+                std::vector<Row> in;
+                const int left = std::max(1, int((lf.expires - int64_t(std::time(nullptr))) / 60));
+                const std::string minutes = "It works for the next " + std::to_string(left) + (left == 1 ? " minute." : " minutes.");
+#ifdef GF_WINDOWED
+                if (lfmOpened != lf.url) {
+                    lfmOpened = lf.url;
+                    plat::openUrl(lf.url);
+                }
+                in.push_back(buttonRow("Allow Songate in your browser", "Last.fm opened there. Sign in, and allow Songate. This page moves on by itself once you have. " + minutes,
+                                       "set.lfopen", ICON_REFRESH, "Open it again", [url = lf.url] { plat::openUrl(url); }));
+#else
+                Row qr{ "", "", "", 0, nullptr };
+                qr.blockH = 288;
+                qr.block = [this, minutes](float bx, float by, float) {
+                    int side = 0;
+                    SDL_Texture* t = lastfmCode(side);
+                    constexpr float kMost = 268;
+                    const float cell = side > 0 ? std::max(1.f, std::floor(kMost / float(side))) : 1, s = float(side) * cell;
+                    if (t) g.image(t, bx + 12, by + 10, s, s, 0);
+                    const float tx = bx + 12 + kMost + 32;
+                    g.text("Scan this with your phone", { css::Lg, Weight::SemiBold }, tx, by + 40, pal.text, 1);
+                    g.text("Last.fm opens there. Sign in, and allow Songate.", { css::Md }, tx, by + 84, pal.text2, 1);
+                    g.text("This page moves on by itself once you have.", { css::Md }, tx, by + 112, pal.text2, 1);
+                    g.text(minutes, { css::Sm }, tx, by + 156, pal.text3, 1);
+                };
+                in.push_back(qr);
+#endif
+                if (lfmShowUrl) in.push_back(infoRow("The address", lf.url));
+                else in.push_back(buttonRow("Having trouble?", "Open the same page on any device", "set.lfurl", nullptr, "Show the address", [this] { lfmShowUrl = true; }));
+                in.push_back(buttonRow("Stop signing in", "", "set.lfstop", ICON_X, "Cancel", [this] {
+                    lastfm.cancelSignIn();
+                    lfmShowUrl = false;
+                }));
+                cards.push_back({ "Sign in", in });
+            } else if (!lf.signedIn) {
+                const std::string hint = !lf.error.empty() ? "Last try: " + lf.error
+                                       : lf.lapsed ? "Last.fm no longer takes this sign-in. What is waiting stays here until you sign in again"
+                                                   : "On Last.fm's own page. Your password is never typed into Songate";
+                cards.push_back({ "Account", { buttonRow(lf.lapsed ? "Sign in again" : "Sign in to Last.fm", hint, "set.lfsign", ICON_MUSIC, "Sign in", [this] {
+                    lfmShowUrl = false;
+                    lastfm.signIn();
+                }) } });
+            } else {
+                cards.push_back({ "Account", { infoRow("Signed in as", "", lf.user),
+                                               buttonRow("Sign out", "What is waiting stays here until you sign in again", "set.lfout", ICON_X, "Sign out", [this] {
+                                                   lastfm.signOut();
+                                                   toast("Signed out of Last.fm");
+                                               }) } });
+                cards.push_back({ "Sending", { toggleRow("Scrobbling", "Each track, once you have heard half of it or 4 minutes. Only tracks with tags", "set.lfscrob", store.lastfmScrobble),
+                                               toggleRow("Now playing", "Shows the track on your Last.fm profile while it plays", "set.lfnow", store.lastfmNow) } });
+            }
+            if (lf.signedIn || lf.lapsed || lf.waiting > 0)
+                cards.push_back({ "Waiting", { infoRow("Waiting to be sent", lf.status.empty() ? "Sent oldest first, as soon as Last.fm can be reached" : lf.status, std::to_string(lf.waiting)) } });
+        }
+        sections.push_back({ "Last.fm", ICON_MUSIC, cards });
+    }
+
+    // Devices: other Songates, paired and synced (connect.hpp, view_connect.cpp): off until allowed
+    {
+        std::vector<Card> cards;
+        const Connect::View cv = connect.view();
+        auto deviceRow = [&](const std::string& label, const std::string& rowHint, const char* key, int i, const char* icon, const std::string& text, std::function<void()> go) {
+            const float bw = g.measure(text.c_str(), { css::Sm, Weight::SemiBold }) + 32 + (icon ? 24 : 0);
+            Row row{ label, "", rowHint, bw, [this, key, i, icon, text, bw, go](float rx, float cy) {
+                        bool c = false;
+                        button(uid(key, i), icon, text.c_str(), rx - bw, cy - 17, false, &c, false, false, 0, bw);
+                        if (c) go();
+                    } };
+            row.focus = uid(key, i);
+            return row;
+        };
+        Row onRow{ "Devices", "", store.connections ? "Songate looks for your paired devices on this network while it is open"
+                                                        : "Off: Songate does not look for other devices, and they cannot find it",
+                   40, [this](float rx, float cy) {
+                       if (toggle(uid("set.cnon"), rx - 40, cy, store.connections)) {
+                           if (store.connections) {
+                               store.connections = false;
+                               persistSoon(0.3f);
+                               toast("Devices off");
+                           } else {
+                               allowConnections();
+                           }
+                       }
+                   } };
+        onRow.focus = uid("set.cnon");
+        std::vector<Row> top = { onRow };
+        if (store.connections) {
+            top.push_back(segRow("Sync", store.syncAuto ? "When a paired device links, and a few seconds after anything changes" : "When you press Sync now", "set.cnauto", { "By hand", "Automatically" }, store.syncAuto ? 1 : 0, [this](int i) {
+                store.syncAuto = i == 1;
+                persistSoon(0.3f);
+            }));
+            top.push_back(infoRow("This device", cv.me.empty() ? std::string("Waiting for a network") : cv.me, cv.name));
+            if (!cv.error.empty()) top.push_back(infoRow("Devices cannot start", cv.error));
+        }
+        cards.push_back({ "", top });
+        if (store.connections) {
+            if (!cv.code.empty()) {
+                Row code{ "", "", "", 0, nullptr };
+                code.blockH = 150;
+                const std::string shown = cv.code.substr(0, 3) + " " + cv.code.substr(3);
+                const std::string left = "Type this code on the other device. It works for " + std::to_string(cv.codeSeconds) + (cv.codeSeconds == 1 ? " more second, for one try." : " more seconds, for one try.");
+                code.block = [this, shown, left](float bx, float by, float bw) {
+                    g.text(shown, { 58, Weight::SemiBold }, bx + bw / 2, by + 16, pal.text, 1, Align::Center);
+                    g.text(left, { css::Md }, bx + bw / 2, by + 100, pal.text2, 1, Align::Center);
+                };
+                cards.push_back({ "Pairing", { code, buttonRow("Stop pairing", "", "set.cnstop", ICON_X, "Cancel", [this] { connect.cancelCode(); }) } });
+            }
+            const Syncer::View sv = syncer.view();
+            const bool syncBusy = syncWaiting || sv.state == Syncer::State::Reading || sv.state == Syncer::State::Trading || sv.state == Syncer::State::Asking ||
+                                  sv.state == Syncer::State::Backing || sv.state == Syncer::State::Applying || sv.state == Syncer::State::Sharing;
+            std::string syncNote;
+            if (syncWaiting || sv.state == Syncer::State::Reading || sv.state == Syncer::State::Trading) syncNote = "Syncing…";   // no counters: each new number is a new text to draw
+            else if (sv.state == Syncer::State::Sharing) syncNote = "Sharing measurements and covers…";
+            else if (sv.state == Syncer::State::Failed) syncNote = sv.error;
+            else if (sv.state == Syncer::State::Done) syncNote = "Last sync: " + sv.summary;
+            std::vector<Row> paired;
+            for (int i = 0; i < int(cv.paired.size()); i++) {
+                const Connect::Paired& p = cv.paired[size_t(i)];
+                const std::string state = p.linked ? "Linked, on this network" : p.here ? "On this network, connecting" : "Not on this network now";
+                static std::string syncKeys[16], forgetKeys[16];
+                const int slot = std::min(i, 15);
+                syncKeys[slot] = "set.cnsync" + std::to_string(slot);
+                forgetKeys[slot] = "set.cnforget" + std::to_string(slot);
+                std::vector<Btn> btns;
+                if (p.linked) btns.push_back({ syncKeys[slot].c_str(), ICON_REFRESH, syncBusy ? "Syncing…" : "Sync now", [this, id = p.id, busy = syncBusy] { if (!busy) syncNow(id, false); } });
+                btns.push_back({ forgetKeys[slot].c_str(), nullptr, "Forget", [this, id = p.id, name = p.name] {
+                    connect.forget(id);
+                    toast(name + " forgotten: pair again to link");
+                } });
+                paired.push_back(buttonsRow(p.name, syncNote.empty() ? state : syncNote, btns));
+            }
+            if (paired.empty()) paired.push_back(infoRow("None yet", "Add a device: one shows a code, the other types it"));
+            cards.push_back({ "Paired devices", paired });
+            // listening together: the wording as in the mock-up the user saw (session 10)
+            {
+                static float nudge = 0.5f;
+                int& delay = store.togetherDelay[std::clamp(store.togetherOutput, 0, 2)];
+                nudge = float(delay + 300) / 600.f;
+                char ms[16];
+                snprintf(ms, sizeof ms, "%+d ms", delay);
+                auto timing = [&](const char* hint) {
+                    // the D-pad a millisecond a press, as the user needs to land on a value exactly (2026-11-02: 39 could not be reached in 10s); a drag for the long way
+                    return Row{ "Timing", ms, hint, 180, [this, &delay](float rx, float cy) {
+                                   const Id id = uid("set.tgnudge");
+                                   if (const int st = ui.sliderStep(id)) {
+                                       ui.useSlide();
+                                       delay = std::clamp(delay + st, -300, 300);
+                                       nudge = float(delay + 300) / 600.f;
+                                       persistSoon(0.8f);
+                                   }
+                                   float nv = nudge;
+                                   slider(id, rx - 180, cy, 180, nudge, &nv);
+                                   if (nv != nudge) {
+                                       nudge = nv;
+                                       delay = int(std::lround(nudge * 600)) - 300;
+                                       persistSoon(0.8f);
+                                   }
+                               } };
+                };
+                if (tog.stage == Tog::On || tog.stage == Tog::Joining || tog.stage == Tog::Inviting) {
+                    std::vector<Row> rows;
+                    if (tog.stage != Tog::On) rows.push_back(infoRow("Waiting", tog.stage == Tog::Inviting ? "Asking " + tog.peerName + " to join" : "Agreeing on the queue and the time"));
+                    else rows.push_back(infoRow(tog.linkLost ? "Waiting for " + tog.peerName : tog.rejoining ? "Getting back in time" : tog.startAt > 0 ? "In time" : "Getting ready", tog.linkLost ? "The link dropped. Both play on, and the session goes on when it is back" : tog.rejoining ? "This device fell behind: it comes back in a few seconds" : tog.startAt > 0 ? "Corrected as it plays" : "Opening the song on both devices", ms));
+                    if (tog.host && tog.missing > 0) rows.push_back(infoRow(std::to_string(tog.missing) + (tog.missing == 1 ? " song is not on both" : " songs are not on both"), "Skipped on both: copy them with Music files, then start again"));
+                    // Who changes what plays (T7): the starter chooses, the other device is told
+                    if (tog.stage == Tog::On) {
+                        if (tog.host)
+                            rows.push_back(segRow("Who changes what plays", tog.onlyHost ? "Only this device: " + tog.peerName + "'s Next, pause and seek are turned off" : "Next, pause, seek and a song chosen, from either device",
+                                                  "set.tgwho", { "Both", "Only this device" }, tog.onlyHost ? 1 : 0, [this](int i) { togetherSetOnlyHost(i == 1); }));
+                        else if (tog.onlyHost)
+                            rows.push_back(infoRow(tog.peerName + " decides what plays", "It turned off Next, pause and seek here for this session. Leave is still yours"));
+                        else
+                            rows.push_back(infoRow("Both change what plays", "Next, pause, seek and a song chosen, from either device"));
+                    }
+                    rows.push_back(timing("Move it until the two sound as one"));
+                    rows.push_back(buttonRow("Leave", "This device stops; the other plays on by itself", "set.tgleave", ICON_X, "Leave", [this] { togetherLeave(); }));
+                    cards.push_back({ "Listening with " + tog.peerName, rows });
+                } else {
+                    std::vector<Row> rows;
+                    static std::string startKeys[16];
+                    for (int i = 0; i < std::min(int(cv.paired.size()), 16); i++) {
+                        const Connect::Paired& p = cv.paired[size_t(i)];
+                        if (!p.linked) continue;
+                        startKeys[i] = "set.tgstart" + std::to_string(i);
+                        rows.push_back(buttonRow("Listen with " + p.name, "One queue on both devices, in time. It is temporary: nothing is saved", startKeys[i].c_str(), ICON_LINK, "Start", [this, id = p.id, name = p.name] { togetherStart(id, name); }));
+                    }
+                    if (rows.empty()) rows.push_back(infoRow("Listen together", "Link a paired device on this network first"));
+                    rows.push_back(segRow("This device plays through", "Each has its own delay, and Songate allows for it", "set.tgout", { "Speakers", "Headphones", "Bluetooth" }, store.togetherOutput, [this](int i) { store.togetherOutput = i; }));
+                    rows.push_back(timing("Set once for this pair: move it until the two sound as one"));
+                    cards.push_back({ "Listen together", rows });
+                }
+#ifdef GF_DEV
+                std::vector<Row> dev;
+                Row r{ "Test chirps", "", "Dev: a chirp each second of the song, for the microphone test", 40, [this](float rx, float cy) {
+                          if (toggle(uid("set.tgchirp"), rx - 40, cy, togChirps)) { togChirps = !togChirps; player.syncChirps(togChirps); }
+                      } };
+                dev.push_back(r);
+                cards.push_back({ "Listen together, dev", dev });
+#endif
+#if defined(GF_AIRPLAY) || (defined(GF_DEV) && !defined(GF_WINDOWED))
+                {
+                    std::string apError, apTitle, apPeer;
+                    bool apStreaming = false, apShow = true;
+#ifdef GF_AIRPLAY
+                    const AirPlay::View av = airplay.view();
+                    apError = av.error;
+                    apTitle = av.title;
+                    apPeer = av.peer;
+                    apStreaming = av.streaming;
+#else
+                    // the preview has no AirPlay: GF_AIRPLAY_MOCK draws this card as the console does, for a mock-up
+                    static const bool mock = getenv("GF_AIRPLAY_MOCK") != nullptr;
+                    apShow = mock;
+#endif
+                    if (apShow) {
+                        Row ar{ "Receive AirPlay", "", apError.empty() ? "An iPhone on this network can play to this device. Its sound arrives about a second late. A new device asks first" : apError, 40, [this](float rx, float cy) {
+                                   if (toggle(uid("set.airplay"), rx - 40, cy, store.airplayReceive)) { store.airplayReceive = !store.airplayReceive; persistSoon(0.3f); }
+                               } };
+                        ar.focus = uid("set.airplay");
+                        std::vector<Row> rows = { ar };
+                        if (apStreaming) rows.push_back(infoRow(apTitle.empty() ? "Playing" : apTitle, "From " + apPeer));
+                        // the devices that play without asking (Always), each forgotten on its own
+                        static const char* const forgetKeys[] = { "set.apf0", "set.apf1", "set.apf2", "set.apf3", "set.apf4", "set.apf5", "set.apf6", "set.apf7",
+                                                                  "set.apf8", "set.apf9", "set.apf10", "set.apf11", "set.apf12", "set.apf13", "set.apf14", "set.apf15" };
+                        for (size_t i = 0; i < store.airplayDevices.size() && i < 16; i++) {
+                            const std::string id = store.airplayDevices[i].id;
+                            rows.push_back(buttonRow(store.airplayDevices[i].name, "Plays here without asking", forgetKeys[i], nullptr, "Forget", [this, id] {
+                                std::erase_if(store.airplayDevices, [&](const Store::AirPlayDevice& d) { return d.id == id; });
+                                store.saveAirplayDevices();
+                                toast("Forgotten: it asks again next time");
+                            }));
+                        }
+                        cards.push_back({ "AirPlay", rows });
+                    }
+                }
+#endif
+            }
+            if (!cv.paired.empty()) {
+                auto kindRow = [&](const char* label, const char* rowHint, const char* key, unsigned bit) {
+                    Row r{ label, "", rowHint, 40, [this, key, bit](float rx, float cy) {
+                              bool on = (store.syncKinds & bit) != 0;
+                              if (toggle(uid(key), rx - 40, cy, on)) {
+                                  store.syncKinds ^= bit;
+                                  persistSoon(0.3f);
+                              }
+                          } };
+                    r.focus = uid(key);
+                    return r;
+                };
+                cards.push_back({ "What to share",
+                                  { kindRow("Liked", "A song unliked on one device is unliked on the other", "set.cnk1", syncdata::KindLiked),
+                                    kindRow("Playlists", "Your own playlists, in their order. One deleted here is deleted there too", "set.cnk2", syncdata::KindLists),
+                                    kindRow("Tag edits", "Your files are never changed", "set.cnk4", syncdata::KindEdits),
+                                    kindRow("Play counts", "Each device keeps its own count; both show the total", "set.cnk8", syncdata::KindPlays),
+                                    toggleRow("Measurements and covers", "So the other device needn't work them out again. Only for exactly the same files", "set.cnres", store.syncResults) } });
+                {
+                    const Copier::View fv = copier.view();
+                    std::vector<Row> files;
+                    files.push_back(toggleRow("Music files", store.syncFiles ? "Copies the songs this device lacks, into the same folders as on the other device. Never replaces anything" : "Off: no songs are copied here. Each device has its own switch", "set.cnfiles", store.syncFiles));
+                    if (store.syncFiles) {
+                        if (fv.state == Copier::State::Copying) {
+                            char t[120];
+                            snprintf(t, sizeof t, "%d of %d songs, %.1f of %.1f GB%s", fv.done, fv.total, double(fv.bytes) / 1073741824.0, double(fv.totalBytes) / 1073741824.0, isPlaying() ? " (slowly, while music plays)" : "");
+                            files.push_back(buttonRow("Copying", std::string(t) + (fv.current.empty() ? "" : ". " + fv.current), "set.cnstopcopy", ICON_X, "Stop", [this] { copier.pause(); }));
+                        } else if (fv.state == Copier::State::Looking) {
+                            files.push_back(infoRow("Copying", "Looking at what the other device has…"));
+                        } else if (fv.state == Copier::State::Failed) {
+                            files.push_back(infoRow("Copying", fv.error));
+                        } else if (fv.state == Copier::State::Done) {
+                            files.push_back(infoRow("Copying", std::to_string(fv.done) + " copied" + (fv.failed ? ", " + std::to_string(fv.failed) + " failed" : "")));
+                        }
+                    }
+                    Row delRow{ "Follow deletions", "", store.syncDeletes ? "A song deleted inside Songate on another device is deleted here too" : "Off: a song deleted on another device stays here",
+                                40, [this](float rx, float cy) {
+                                    if (toggle(uid("set.cndel"), rx - 40, cy, store.syncDeletes)) {
+                                        if (store.syncDeletes) {
+                                            store.syncDeletes = false;
+                                            persistSoon(0.3f);
+                                            toast("Songs here are no longer deleted from elsewhere");
+                                        } else {
+                                            allowDeletes();
+                                        }
+                                    }
+                                } };
+                    delRow.focus = uid("set.cndel");
+                    files.push_back(delRow);
+                    cards.push_back({ "Music files", files });
+                }
+            }
+            std::vector<Row> near;
+            for (int i = 0; i < int(cv.peers.size()); i++) {
+                const Connect::Peer& p = cv.peers[size_t(i)];
+                if (p.protocol != Connect::kProtocol) near.push_back(infoRow(p.name, p.address + " · another version of Songate: update both"));
+                else if (p.offering) near.push_back(deviceRow(p.name, cv.pairing ? "Checking the code…" : p.address + " · showing a code", "set.cncode", i, nullptr, "Type the code", [this, id = p.id] { connectEnterCode(id); }));
+                else near.push_back(infoRow(p.name, p.address + " · to pair, press Add a device on either one"));
+            }
+            if (cv.code.empty()) near.push_back(buttonRow("Add a device", "Shows a code here. Both devices need to be on this network", "set.cnadd", nullptr, "Show a code", [this] { connect.offerCode(); }));
+            near.push_back(buttonRow("Can't see it?", store.connectAim.empty() ? "Some networks carry no hellos. Type its address" : "Also saying hello to " + store.connectAim, "set.cnaim", nullptr, "Type an address", [this] { connectAddress(); }));
+            cards.push_back({ "On this network", near });
+        }
+        sections.push_back({ "Devices", ICON_LINK, cards });
+    }
+
 #ifdef GF_DEV
     // Debug: dev builds only (the Makefile's DEV), never in a release: the testing tools
     sections.push_back(
@@ -1253,6 +1598,16 @@ void App::drawSettings(float x, float y, float w, float h) {
                 infoRow("Background player memory", "Free on its heap (1.5 MB in all). A crossfade needs 320 KB of it for the second "
                                                     "track, else the join stays gapless",
                         player.remote() ? std::to_string(bg.state().heapFree / 1024) + " KB" : std::string("Not connected")) } } } });
+    {   // Connections' first stage, measured on the console (identity.hpp): nothing runs it in a release yet
+        const Identity::Progress ip = identity.progress();
+        char hint[120];
+        if (ip.running) snprintf(hint, sizeof hint, "%d of %d, %d of them read", ip.done, ip.total, ip.hashed);
+        else if (ip.total) snprintf(hint, sizeof hint, "%d tracks, %d read, %d failed: %.2f ms each, %.1f s in all", ip.total, ip.hashed, ip.failed,
+                                    ip.hashed ? ip.hashSeconds * 1000 / ip.hashed : 0.0, ip.seconds);
+        else snprintf(hint, sizeof hint, "Reads what makes each track the same one on two devices, into identity.tsv");
+        std::vector<Row> rows = { buttonRow("Identity", hint, "set.identity", ICON_REFRESH, "Measure", [this] { identityMeasure(); }) };
+        sections.back().cards.push_back({ "Devices", rows });
+    }
     {   // Automix's models, to compare on the console (the user, 2026-10-29; automix.hpp): a release plays the newest
         std::vector<std::string> models;
         for (int i = 0; i < int(automix::Model::Count); i++) {
@@ -1297,7 +1652,20 @@ void App::drawSettings(float x, float y, float w, float h) {
                     infoRow("FFmpeg", "Decoding in Songate's own player: AAC, ALAC, FLAC, MP3, Ogg Vorbis, Opus and WAV. LGPL 2.1"),
                     infoRow("SDL 2", "Graphics, sound, fonts and images: SDL, SDL_mixer, SDL_ttf, SDL_image. zlib licence"),
                     infoRow("libFLAC, mpg123, Opus, Tremor", "SDL_mixer's decoders, for a file FFmpeg cannot open. BSD and LGPL licences"),
-                    infoRow("libcurl and zlib", "Updates: the connection to GitHub, over " GF_THE_CONSOLE "'s own secure connection. curl and zlib licences")
+                    infoRow("libcurl and zlib", "Updates: the connection to GitHub, over " GF_THE_CONSOLE "'s own secure connection. curl and zlib licences"),
+                    infoRow("QR Code generator", "The Last.fm sign-in code. © Project Nayuki, MIT licence"),
+                    infoRow("Monocypher", "The encryption between your devices. © Loup Vaillant and contributors, BSD or CC0 licence"),
+                    infoRow("libjpeg-turbo and stb_image", "Covers, decoded quickly. libjpeg-turbo's IJG and BSD licences; stb_image, public "
+                                                           "domain or MIT"),
+                    infoRow("Fraunces", "The Songate wordmark. © The Fraunces Project Authors, SIL Open Font Licence")
+#ifdef GF_AIRPLAY
+                    , infoRow("Mbed TLS", "AirPlay: answering an iPhone and decoding what it sends. © The Mbed TLS Contributors, Apache 2.0 "
+                                          "licence"),
+                    // how AirPlay works was learned from these (airplay.cpp): credited, though none of their code is used
+                    infoRow("AirPlay", "How an iPhone speaks AirPlay was learned from shairport-sync (Mike Brady and contributors) and "
+                                       "James Laird's ShairPort, which published the AirPort Express key it answers with. None of their code is "
+                                       "in Songate. AirPlay is Apple's; Songate is not affiliated with Apple")
+#endif
 #ifndef GF_WINDOWED
                     , infoRow("libnx and devkitPro", "The Nintendo Switch homebrew toolchain. ISC licence"),
                     infoRow("Background player", "Helix AAC decoder (RealNetworks RPSL), minimp3 (CC0), dr_flac (public domain), and "
@@ -1323,6 +1691,17 @@ void App::drawSettings(float x, float y, float w, float h) {
             sections.erase(rs);
             auto up = std::find_if(sections.begin(), sections.end(), [](const Section& x) { return std::string(x.name) == "Updates"; });
             sections.insert(up, std::move(s));
+        }
+    }
+    // Devices and Last.fm after Controls: what you use above, the upkeep from Reset down (the user, 2026-10-31), as App::SetDevices and
+    // SetLastfm number them
+    for (const char* name : { "Devices", "Last.fm" }) {
+        auto cn = std::find_if(sections.begin(), sections.end(), [&](const Section& s) { return std::string(s.name) == name; });
+        if (cn != sections.end()) {
+            Section s = std::move(*cn);
+            sections.erase(cn);
+            auto rs = std::find_if(sections.begin(), sections.end(), [](const Section& x) { return std::string(x.name) == "Reset"; });
+            sections.insert(rs, std::move(s));
         }
     }
     settingsCat = std::clamp(settingsCat, 0, int(sections.size()) - 1);

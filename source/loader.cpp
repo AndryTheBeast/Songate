@@ -127,14 +127,18 @@ void TrackLoader::work(const Request& r, Result& out) {
     out.gen = r.gen;
     out.readInfo = r.readInfo;
     std::vector<uint8_t> bytes;
-    if (!r.myCover.empty())
+    const bool inMemory = !r.image.empty();
+    if (inMemory) bytes = r.image;
+    else if (!r.myCover.empty())
         if (FILE* f = fopen(r.myCover.c_str(), "rb")) {
             char buf[16384];
             size_t n;
             while ((n = fread(buf, 1, sizeof buf, f)) > 0) bytes.insert(bytes.end(), buf, buf + n);
             fclose(f);
         }
-    if (r.readInfo) {
+    if (inMemory) {
+        // (only the picture)
+    } else if (r.readInfo) {
         readTrackInfo(r.path, out.info, bytes.empty(), true);
         if (bytes.empty()) bytes = std::move(out.info.cover);
         out.info.cover.clear();

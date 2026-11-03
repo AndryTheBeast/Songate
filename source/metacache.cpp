@@ -113,7 +113,7 @@ std::string field(const std::string& s) {
 
 }  // namespace
 
-void MetaCache::start(Library* lib, const std::string& cacheFile) {
+void MetaCache::start(Library* lib, const std::string& cacheFile, bool keep) {
     lib_ = lib;
     cacheFile_ = cacheFile;
     trackSlot_.assign(lib->tracks.size(), -1);
@@ -125,10 +125,14 @@ void MetaCache::start(Library* lib, const std::string& cacheFile) {
     tagged_ = 0;
     done_.assign(paths_.size(), 0);
     coverFile_.assign(paths_.size(), std::string());
-    load();
+    if (keep) {
+        for (size_t i = 0; i < lib->tracks.size(); i++) if (lib->tracks[i].tagged) { done_[i] = 1; tagged_++; }
+    } else {
+        load();
+    }
     artDir_ = cacheFile_.substr(0, cacheFile_.find_last_of('/')) + "/art";
     mkdir(artDir_.c_str(), 0777);
-    loadArtMap();
+    if (!keep) loadArtMap();
     artSweep_ = 0;
     artSweepPos_ = 0;
     artBegin_ = std::chrono::steady_clock::now() + std::chrono::seconds(10);
@@ -225,6 +229,7 @@ bool MetaCache::pump(SDL_Renderer* r) {
         tr.genre = t.genre;
         tr.trackNo = t.trackNo;
         if (t.duration > 0) tr.duration = t.duration;
+        tr.fromName = (t.title.empty() ? 1 : 0) | (t.artist.empty() ? 2 : 0) | (t.album.empty() ? 4 : 0);
         if (overlay) overlay(tr);
         if (!tr.tagged) tagged_++;
         tr.tagged = true;
@@ -407,6 +412,17 @@ void MetaCache::cacheArtOnly(int idx, const std::string& mine) {
     if (res.thumb) SDL_FreeSurface(res.thumb);
 }
 
+std::vector<uint8_t> MetaCache::coverAtSize(const std::vector<uint8_t>& jpg, int size) {
+    SDL_Surface* s = loadImage(jpg);
+    if (!s) return {};
+    SDL_Surface* t = squareThumb(s, size);
+    SDL_FreeSurface(s);
+    if (!t) return {};
+    std::vector<uint8_t> out = encodeJpeg(t, 90);
+    SDL_FreeSurface(t);
+    return out;
+}
+
 /** The cover from the disk cache, when this track's is there and still the one it uses. */
 bool MetaCache::cachedArt(int idx, const std::string& mine, ArtResult& res) {
     auto it = artMap_.find(fnv64(paths_[idx].data(), paths_[idx].size()));
@@ -537,10 +553,10 @@ void MetaCache::load() {
         const char* eol = static_cast<const char*>(memchr(p, '\n', size_t(end - p)));
         if (!eol) eol = end;
         const char* lineEnd = eol > p && eol[-1] == '\r' ? eol - 1 : eol;
-        // path, title, artist, album, date, duration, album artist, track number, genre
-        std::string_view cols[9];
+        // path, title, artist, album, date, duration, album artist, track number, genre, what is still the file's name
+        std::string_view cols[10];
         int n = 0;
-        for (const char* c = p; n < 9;) {
+        for (const char* c = p; n < 10;) {
             const char* tab = static_cast<const char*>(memchr(c, '\t', size_t(lineEnd - c)));
             const char* stop = tab ? tab : lineEnd;
             cols[n++] = std::string_view(c, size_t(stop - c));
@@ -548,7 +564,7 @@ void MetaCache::load() {
             c = tab + 1;
         }
         p = eol + 1;
-        if (n < 9) continue;   // older caches lack these: read those files again
+        if (n < 10) continue;   // older caches lack these: read those files again
         auto it = byPath.find(cols[0]);
         if (it == byPath.end()) continue;
         Track& t = lib_->tracks[it->second];
@@ -560,6 +576,7 @@ void MetaCache::load() {
         t.albumArtist = cols[6];
         t.trackNo = atoi(std::string(cols[7]).c_str());
         t.genre = cols[8];
+        t.fromName = (unsigned char)atoi(std::string(cols[9]).c_str());
         if (overlay) overlay(t);
         if (!t.tagged) tagged_++;
         t.tagged = true;
@@ -574,8 +591,8 @@ void MetaCache::save() {
     if (!f) return;
     for (const auto& t : lib_->tracks)
         if (t.tagged)
-            fprintf(f, "%s\t%s\t%s\t%s\t%s\t%.3f\t%s\t%d\t%s\n", field(t.path).c_str(), field(t.title).c_str(), field(t.artist).c_str(),
-                    field(t.album).c_str(), field(t.date).c_str(), t.duration, field(t.albumArtist).c_str(), t.trackNo, field(t.genre).c_str());
+            fprintf(f, "%s\t%s\t%s\t%s\t%s\t%.3f\t%s\t%d\t%s\t%d\n", field(t.path).c_str(), field(t.title).c_str(), field(t.artist).c_str(),
+                    field(t.album).c_str(), field(t.date).c_str(), t.duration, field(t.albumArtist).c_str(), t.trackNo, field(t.genre).c_str(), int(t.fromName));
     const bool ok = !ferror(f);
     if (fclose(f) != 0 || !ok) { remove(tmp.c_str()); return; }
     remove(cacheFile_.c_str());

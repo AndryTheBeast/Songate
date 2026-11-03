@@ -2,19 +2,24 @@
 #include "sdmc/sdmc.hpp"
 #include "minIni/minIni.h"
 #include <cstdio>
+#include <string>
+
+#include "gfcfgdir.h"
 
 namespace config {
 
 namespace {
 
-const char CONFIG_PATH[]{"/config/gatefold-nx/overlay.ini"};
+// In Songate's settings folder, wherever it is now (gfcfgdir.h): looked for at each call, as the overlay stays loaded across a move
+std::string configPath() { return std::string(gfcfgPick()) + "/overlay.ini"; }
+#define CONFIG_PATH configPath().c_str()
 
 void create_config_dir() {
     /* Creating directory on every set call looks sus, but the user may delete the dir */
     /* whilst the sys-mod is running and then any changes made via the overlay */
     /* is lost, which sucks. */
     sdmc::CreateFolder("/config");
-    sdmc::CreateFolder("/config/gatefold-nx");
+    sdmc::CreateFolder(gfcfgPickRoot());
 }
 
 auto get_tid_str(u64 tid) -> const char* {

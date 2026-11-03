@@ -47,6 +47,11 @@ public:
     std::string serialise();   // loudness.tsv; clears dirty
     std::string serialiseMix() const;   // mix.tsv: written with loudness.tsv, each time
     std::string serialiseMood() const;  // mood.tsv: with them (Mood playlists' features, their own version)
+    /** The same three a little each frame: a library's worth took the console 167 ms in one (2026-11-01). saveStep: true once
+     *  they are ready, in the strings it was given; dirty stays if anything changed meanwhile. */
+    void saveBegin();
+    bool saving() const { return saveOn_; }
+    bool saveStep(double milliseconds, std::string& loud, std::string& mix, std::string& mood);
     /** Mood playlists want every track's mood: the tracks measured before it (or with another version of it) are decoded
      *  again for it, in the library's turn; off, they are not (nobody needs them). */
     void wantMood(bool on);
@@ -61,6 +66,9 @@ public:
     /** Stops (or resumes) measuring the library; the track playing and the next ones are still measured. */
     void pause(bool p);
     bool paused() const { return paused_; }
+    /** From another device, for a file of exactly these bytes and the same analysis versions (syncer.hpp); any thread. loud: as in
+     *  loudness.tsv after the path; mix, mood: as in mix.tsv and mood.tsv, mood may be empty. False: damaged or another version. */
+    bool adopt(const std::string& path, const std::string& loud, const std::string& mix, const std::string& mood);
 
 private:
     void run(int worker);
@@ -68,6 +76,11 @@ private:
 
     std::unordered_map<std::string, Level> map_;
     unsigned gen_ = 0;
+    bool saveOn_ = false;
+    std::vector<const std::pair<const std::string, Level>*> saveList_;   // nodes stay where they are as others are added; forget() ends a save
+    size_t saveAt_ = 0;
+    unsigned saveGen_ = 0;
+    std::string saveLoud_, saveMix_, saveMood_;
     size_t done_ = 0, moodDone_ = 0;
     bool dirty_ = false, loaded_ = false;
     double measuredS_ = 0;   // the gaps between library tracks finishing (gaps over 30 s, a pause, left out)

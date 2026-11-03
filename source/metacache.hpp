@@ -4,7 +4,7 @@
  * plus palette for each cover. Covers are per track (embedded art first, then
  * the folder's image, shared by every track in that folder). Requests made while
  * drawing jump the queue, so what is on screen fills in first; a slow full pass
- * covers the rest. Tags persist in sdmc:/config/gatefold-nx/tags.tsv.
+ * covers the rest. Tags persist in sdmc:/config/songate-nx/tags.tsv.
  */
 #pragma once
 #include <SDL2/SDL.h>
@@ -41,7 +41,7 @@ public:
 #endif
     static constexpr int MaxTextures = 260;   // ~38 MB of thumbnails; the least recently drawn go first
 
-    void start(Library* lib, const std::string& cacheFile);
+    void start(Library* lib, const std::string& cacheFile, bool keep = false);   // keep: the tracks hold their tags already, and the covers' map is known
     void stop();   // joins the worker and saves the tag cache
 
     /** The cover of a track; queues it when not loaded yet. */
@@ -70,6 +70,8 @@ public:
     void pauseCovers(bool p) { artPaused_ = p; cv_.notify_all(); }
     bool coversPaused() const { return artPaused_; }
     void clearDiskCache();
+    /** A cover from the disk cache, at another device's size (syncer.hpp); empty if it cannot be read. Any thread. */
+    static std::vector<uint8_t> coverAtSize(const std::vector<uint8_t>& jpg, int size);
     /** Settings → Storage and reset: the covers' disk cache (art/) only, the worker stopped first (stop()). */
     void clearCovers();
     const std::string& artDir() const { return artDir_; }

@@ -31,3 +31,6 @@ docs/next-session/
 # Settings › Support: the reports token (report.key) and its scrambled build input; never commit either (tools/report-key.py)
 report.key
 source/report_key.inc
+
+# the AirPort key: test only, never committed
+tools/clicktest/airport_key.inc

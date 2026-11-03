@@ -4,9 +4,15 @@
  * Xbox-style pad are read into those, by label (Xbox A confirms, as its label says).
  */
 #define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
+#include <bcrypt.h>
+#include <iphlpapi.h>
+#include <netioapi.h>
 #include <powrprof.h>
 #include <shlobj.h>
+#include <shellapi.h>
 #include <shobjidl.h>
 
 #include <SDL2/SDL.h>
@@ -322,7 +328,56 @@ void placeThread(int, int priority) {
 }
 
 bool netStart() { return true; }   // curl starts the sockets
+
+void openUrl(const std::string& url) {
+#ifdef GF_DEV
+    if (getenv("GF_LASTFM")) return;   // tests against a stand-in: no browser
+#endif
+    wchar_t w[1024];
+    if (MultiByteToWideChar(CP_UTF8, 0, url.c_str(), -1, w, 1024) > 0) ShellExecuteW(nullptr, L"open", w, nullptr, nullptr, SW_SHOWNORMAL);
+}
 void netStop() {}
+
+std::vector<Net> networks() {
+    std::vector<Net> out;
+    ULONG size = 32 * 1024;
+    std::vector<uint8_t> buf(size);
+    auto* a = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buf.data());
+    const ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+    if (GetAdaptersAddresses(AF_INET, flags, nullptr, a, &size) != NO_ERROR) return out;
+    for (; a; a = a->Next) {
+        if (a->OperStatus != IfOperStatusUp || a->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+        for (auto* u = a->FirstUnicastAddress; u; u = u->Next) {
+            const uint32_t ip = reinterpret_cast<sockaddr_in*>(u->Address.lpSockaddr)->sin_addr.s_addr;
+            ULONG mask = 0;
+            ConvertLengthToIpv4Mask(u->OnLinkPrefixLength, &mask);
+            out.push_back({ ip, ip | ~uint32_t(mask) });
+        }
+    }
+    return out;
+}
+
+std::string deviceName() {
+    wchar_t w[256];
+    DWORD n = 256;
+    if (!GetComputerNameW(w, &n)) return "PC";
+    char u[512];
+    const int len = WideCharToMultiByte(CP_UTF8, 0, w, int(n), u, sizeof u, nullptr, nullptr);
+    return len > 0 ? std::string(u, size_t(len)) : std::string("PC");
+}
+
+int64_t freeBytes(const std::string& path) {
+    wchar_t w[1024];
+    ULARGE_INTEGER free{};
+    if (MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, w, 1024) <= 0 || !GetDiskFreeSpaceExW(w, &free, nullptr, nullptr)) return -1;
+    return int64_t(free.QuadPart);
+}
+
+bool appletMode() { return false; }
+
+bool randomBytes(uint8_t* out, size_t n) {
+    return BCryptGenRandom(nullptr, out, ULONG(n), BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0;
+}
 
 // ---- the background player: none on a PC
 
@@ -374,6 +429,7 @@ const char* configDir() {
     static const std::string p = std::string(configParent()) + "/Songate";
     return p.c_str();
 }
+void useConfigDir(const char*, const char*) {}   // the PC's folder was Songate from the start
 const char* backupDir() {
     static const std::string p = std::string(configParent()) + "/Songate-backups";
     return p.c_str();

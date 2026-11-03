@@ -21,7 +21,7 @@ body:
     attributes:
       label: Songate version
       description: Settings › About.
-      placeholder: 2.0.0 BETA 1
+      placeholder: 2.0.0 BETA 2
     validations:
       required: true
   - type: input
@@ -54,11 +54,20 @@ body:
         - Canvas and lyrics
         - Sound and equalizer
         - Background player and overlay
+        - Devices and sync
+        - Listen together and Handoff
+        - AirPlay
+        - Last.fm
         - The PC's window, tray and keyboard
         - Updates and settings
         - Something else
     validations:
       required: true
+  - type: input
+    id: other
+    attributes:
+      label: The other device
+      description: For Devices, Listen together, Handoff or AirPlay. What it is and its version, for example "Songate 2.0.0 BETA 2 on Windows 11" or "iPhone, iOS 26".
   - type: dropdown
     id: format
     attributes:

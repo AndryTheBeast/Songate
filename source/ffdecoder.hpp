@@ -41,12 +41,13 @@ public:
     void close();
     /** Fills up to `frames` frames; returns how many were written (fewer only at the end). */
     int read(int16_t* out, int frames);
+    /** To that sample exactly, as skip(exact) reaches it: a jump to the packet before, then what lies before it dropped. */
     bool seek(double seconds);
     /**
      * Right after open: drops exactly that much from the start, decoding it (Automix starts a track on its first beat).
      * Decoded from the start as the analysis decoded it, so the two agree to the sample; past 30 s, seek() instead.
      */
-    bool skip(double seconds);
+    bool skip(double seconds, bool exact = false);
     /** After open (and skip): read ahead into a ring of `frames` frames, `first` of them decoded here, now. */
     void prefetch(int frames, int first);
     bool isOpen() const { return fmt_ != nullptr; }
@@ -77,4 +78,11 @@ private:
     std::vector<int16_t> fifo_;
     size_t pos_ = 0;
     bool eof_ = false;
+    // An exact seek (session 11): a seek used to land on its packet's start, up to 23 ms of AAC or 26 ms of MP3 before the moment asked,
+    // while a rejoin (skip, exact) counts samples from the start, so the two disagreed by that much (the user's run E: a rejoin 8.5 ms
+    // off). zero_: where the first sample played sits on the stream's timestamps (after any encoder delay dropped), from the first two
+    // frames, read at open; seekAt_: after a seek, what lies before this on those timestamps is dropped
+    double zero_ = 0, firstPts_ = 0, seekAt_ = -1;
+    int framesOut_ = 0, firstNb_ = 0;
+    bool zeroKnown_ = false;
 };

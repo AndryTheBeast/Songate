@@ -23,6 +23,8 @@
 #include "tune.h"
 #include "tune_gfbg.hpp"
 
+std::string gfCfgFile(const char* name) { return std::string(gfcfgPick()) + "/" + name; }
+
 namespace {
 
 Service srv;
@@ -170,7 +172,7 @@ void gfSetEq(const GfbgEq& e) { if (open) gfbgSetEq(&srv, &e); }
 
 std::vector<std::string> gfPlaylistNames() {
     std::vector<std::string> out;
-    FILE* f = fopen(GFBG_PLAYLISTS, "r");
+    FILE* f = fopen(gfCfgFile(GFBG_PLAYLISTS_FILE).c_str(), "r");
     if (!f) return out;
     char line[512];
     while (fgets(line, sizeof line, f)) {
@@ -214,7 +216,7 @@ bool nextLine(FILE* f, std::string& out) {
 
 std::vector<GfPlaylist> gfPlaylists() {
     std::vector<GfPlaylist> out;
-    FILE* f = fopen(GFBG_PLAYLISTS, "r");
+    FILE* f = fopen(gfCfgFile(GFBG_PLAYLISTS_FILE).c_str(), "r");
     if (!f) return out;
     std::string line;
     while (nextLine(f, line)) {
@@ -239,7 +241,7 @@ bool gfPlaylistTracks(const std::string& name, const char* current, u32 window, 
     paths.clear();
     tags.clear();
     from = 0;
-    FILE* f = fopen(GFBG_PLAYLISTS, "r");
+    FILE* f = fopen(gfCfgFile(GFBG_PLAYLISTS_FILE).c_str(), "r");
     if (!f) return false;
     std::string line;
     bool in = false, found = false, done = false;
@@ -298,7 +300,7 @@ bool gfLoadThumb(const char* trackPath, std::vector<u8>& rgb) {
     const std::string key = mounted(trackPath);
     char want[20];
     snprintf(want, sizeof want, "%016llx", (unsigned long long)gfbgHash(key.data(), key.size()));
-    FILE* f = fopen(GFBG_THUMBS "/map.tsv", "r");
+    FILE* f = fopen(gfCfgFile(GFBG_THUMBS_DIR "/map.tsv").c_str(), "r");
     if (!f) return false;
     char line[128];
     std::string file;
@@ -310,7 +312,7 @@ bool gfLoadThumb(const char* trackPath, std::vector<u8>& rgb) {
         }
     fclose(f);
     if (file.empty()) return false;
-    f = fopen((std::string(GFBG_THUMBS "/") + file).c_str(), "rb");
+    f = fopen((gfCfgFile(GFBG_THUMBS_DIR "/") + file).c_str(), "rb");
     if (!f) return false;
     rgb.resize(size_t(GFBG_ART) * GFBG_ART * 3);
     const bool ok = fread(rgb.data(), 1, rgb.size(), f) == rgb.size();

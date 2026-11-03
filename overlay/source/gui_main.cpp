@@ -27,11 +27,11 @@ static std::string     g_browser_return_root;
 // Volume mute-backup persistence
 // Three integers (0-100), one per line: Music, Game, Game (default).
 // ---------------------------------------------------------------------------
-static constexpr const char* kVolBackupFile = "/config/gatefold-nx/overlay-volume.txt";
+static std::string volBackupFile() { return gfCfgFile("overlay-volume.txt"); }
 
 static void readVolBackups(u8 &music, u8 &game, u8 &game_def) {
     music = game = game_def = 100;
-    FILE* f = fopen(kVolBackupFile, "r");
+    FILE* f = fopen(volBackupFile().c_str(), "r");
     if (!f) return;
     int m = 100, g = 100, gd = 100;
     fscanf(f, "%d\n%d\n%d", &m, &g, &gd);
@@ -42,7 +42,7 @@ static void readVolBackups(u8 &music, u8 &game, u8 &game_def) {
 }
 
 static void writeVolBackups(u8 music, u8 game, u8 game_def) {
-    FILE* f = fopen(kVolBackupFile, "w");
+    FILE* f = fopen(volBackupFile().c_str(), "w");
     if (!f) return;
     fprintf(f, "%d\n%d\n%d\n", static_cast<int>(music),
                                 static_cast<int>(game),
@@ -374,7 +374,7 @@ bool s_eq_changed = false;
 
 void readUserPresets() {
     s_user.clear();
-    if (FILE* f = fopen(GFEQ_USER, "r")) {
+    if (FILE* f = fopen(gfCfgFile(GFEQ_USER_FILE).c_str(), "r")) {
         char line[512];
         GfEqUser u{};
         while (fgets(line, sizeof line, f) && s_user.size() < GFEQ_USER_MAX)

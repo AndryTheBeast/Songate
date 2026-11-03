@@ -347,6 +347,42 @@ void App::drawTitlebar() {
         g.unclip();
     }
 
+    // Syncing (the user, 2026-11-02: "like the iPhones have when syncing with iTunes", top left): two arrows chasing each other
+    // round a circle while a sync or a copy runs, just right of the name, or of the sidebar button when the name is away
+    {
+        bool busy = syncBusy;
+#ifdef GF_DEV
+        static const bool demo = getenv("GF_SYNCICON") != nullptr;   // the preview has no second device
+        if (demo) busy = std::fmod(time, 8.0) < 5.0;
+#endif
+        syncIconA = std::clamp(syncIconA + (busy ? 1 : -1) * dt / 0.3f, 0.f, 1.f);
+        if (syncIconA > 0) {
+            const float in = std::clamp((open - 0.35f) / 0.65f, 0.f, 1.f), ina = in * in * (3 - 2 * in);
+            // centred on the name's letters, not the bar: they are lower case but the S, from 20.5 to their baseline at 31
+            // (measured in the preview), so their middle is 2.8 px under the bar's (the user: "isn't centered with the text");
+            // on the bar's middle beside the sidebar button when the name is away
+            const float r = 5.8f, ix = x + r + 1 + (g.wordmarkW() + 12) * ina, iy = cy + 2.8f * ina, a = syncIconA * syncIconA * (3 - 2 * syncIconA);
+            constexpr float kPi = 3.14159265f;
+            const float spin = store.motion ? float(std::fmod(time, 1.4) / 1.4) * 2 * kPi : 0.f;   // clockwise, a turn in 1.4 s
+            std::vector<SDL_FPoint> arc;
+            for (int k = 0; k < 2; k++) {
+                // The classic sync mark (the user's picture, 2026-11-02): two arcs half a turn apart, each ending in a large solid
+                // head whose base sits across the ring, centred on its line, and whose point runs on along the tangent. At the
+                // title bar icons' weight: 18 px, Lucide's stroke of 2 in 24.
+                const float a0 = spin + k * kPi, a1 = a0 + 2.2f;
+                arc.clear();
+                for (int i = 0; i <= 14; i++) {
+                    const float t = a0 + (a1 - a0) * i / 14;
+                    arc.push_back({ ix + r * std::cos(t), iy + r * std::sin(t) });
+                }
+                g.polyline(arc, 1.6f, pal.text2, a);
+                const float px = ix + r * std::cos(a1), py = iy + r * std::sin(a1);
+                const float tx = -std::sin(a1), ty = std::cos(a1), nx = std::cos(a1), ny = std::sin(a1), w = 2.7f, l = 3.6f;
+                g.triangle({ px + nx * w, py + ny * w }, { px + tx * l, py + ty * l }, { px - nx * w, py - ny * w }, pal.text2, a);
+            }
+        }
+    }
+
     // .search: centred in what is left of the bar; opens the console keyboard
 #ifdef GF_WINDOWED
     const float left = std::max(sideW + 12, 10 + 40 + 120.f), right = css::W - 150;   // where it is with the lights away: it does not move with them
@@ -376,6 +412,18 @@ void App::drawTitlebar() {
     const float kw = g.measure(searchKey, kf) + 12;
     g.roundStroke(sx + sw - 12 - kw, cy - 9, kw, 18, 5, 1, pal.text, 0.15f);
     g.textC(searchKey, kf, sx + sw - 12 - kw / 2, cy, pal.text3, 1, Align::Center);
+
+    // Other devices: there once one is paired, lit during a session. Up here, on every screen: the player bar had no room (the user, 2026-11-02)
+#ifdef GF_WINDOWED
+    titleKeep_[2] = {};
+#endif
+    if (devicesPaired) {
+        const float dx = sx + sw + 8 + 17;
+#ifdef GF_WINDOWED
+        titleKeep_[2] = { dx - 17, 0, 34, css::TbH };
+#endif
+        if (iconButton(uid("tb.devices"), ICON_LINK, dx, cy, tog.stage != Tog::Off)) openDevices();
+    }
 
     // Where Windows has its caption buttons: the clock and the battery.
     const std::time_t tt = std::time(nullptr);
@@ -603,11 +651,19 @@ void App::drawSidebar() {
 
 void App::drawSeek(float x, float y, float w, float h, Id id) {
     const double dur = now.info.duration;
-    ui.item(id, { x, y - 4, w, h + 8 }, 6, Slider | NoSideEntry);   // reached with Up/Down only (it spans the controls below)
-    float frac = dur > 0 ? float(std::clamp(player.position() / dur, 0.0, 1.0)) : 0;
-    const float drag = ui.sliderDrag(id);
+    const bool locked = togetherLocked();   // a session's starter alone seeks: shown, not reachable
+    if (!locked) ui.item(id, { x, y - 4, w, h + 8 }, 6, Slider | NoSideEntry);   // reached with Up/Down only (it spans the controls below)
+    float frac = dur > 0 ? float(std::clamp(shownPosition() / dur, 0.0, 1.0)) : 0;
+    if (extOn) {   // an outside source (AirPlay): its time as it says it, a plain line, and seeking is on the device it comes from
+        if (ui.sliderReleased(id) || ui.sliderStep(id)) toast("Seek on " + extFrom);
+        const float cy = y + h / 2;
+        g.roundRect(x, cy - 2, w, 4, 2, pal.text, 0.16f);
+        g.roundRectH(x, cy - 2, w * frac, 4, 2, pal.accent2, pal.accent);
+        return;
+    }
+    const float drag = locked ? -1 : ui.sliderDrag(id);
     float shown = drag >= 0 ? std::clamp((drag - x) / w, 0.f, 1.f) : frac;
-    if (dur > 0) {
+    if (dur > 0 && !locked) {
         if (const int st = ui.sliderStep(id)) seekBy(st * 5);
         if (ui.sliderReleased(id)) {
             const float f = std::clamp((ui.lastDragX() - x) / w, 0.f, 1.f);
@@ -678,6 +734,28 @@ void App::drawSeek(float x, float y, float w, float h, Id id) {
     }
 }
 
+void App::marqueeLine(const std::string& s, Font f, float x, float y, float w, const Rgb& c) {
+    const int tw = g.measure(s, f);
+    if (tw <= int(w)) { g.text(s, f, x, y, c); return; }
+    // One text, one round's time, wherever it is drawn: the time is the player bar's artist's (13 px regular: 30 px/s and a 48 px
+    // gap) for this text, and each size and weight moves as fast as it must to keep it, its gap in step with its size. So the
+    // bar's artist and Now playing's (24 px semibold) start, move and come round together (the user, 2026-11-02: Now playing's
+    // was slower, then took longer a round)
+    constexpr float Rest = 3, Fade = 24, RefSpeed = 30, RefGap = 48;
+    const float k = float(f.size) / css::Sm;
+    const float round = (float(g.measure(s, { css::Sm })) + RefGap) / RefSpeed;   // seconds a round takes, rests apart
+    const float loop = float(tw) + RefGap * k, Speed = loop / round;
+    float off = 0;
+    if (store.motion) {
+        const float t = std::fmod(float(time - marqueeAt), Rest + round);
+        off = std::max(0.f, t - Rest) * Speed;
+    }
+    // no fade at the left while it rests at its start, nor as the next round settles there
+    const float fadeL = std::max(0.f, std::min({ Fade, off * 2, (loop - off) * 2 }));
+    g.textScroll(s, f, x, y, w, off, fadeL, Fade, c);
+    if (off > loop - w) g.textScroll(s, f, x, y, w, off - loop, fadeL, Fade, c);   // the next round coming in
+}
+
 void App::drawPlayerbar() {
     const float y0 = css::H - css::BarH, cy = y0 + css::BarH / 2;
     g.rect(0, y0, css::W, css::BarH, pal.bg, 0.8f);   // --panel-strong
@@ -686,7 +764,7 @@ void App::drawPlayerbar() {
     const float pad = 18, gap = 20, total = css::W - pad * 2 - gap * 2;
     const float leftW = total / 4, centerW = total / 2;
     const float lx = pad, cx0 = pad + leftW + gap, rx = cx0 + centerW + gap;
-    const bool hasTrack = now.track >= 0;
+    const bool hasTrack = now.track >= 0 || extOn;   // (an outside source: AirPlay)
 
     // .pb-track
     const SDL_FRect artR{ lx, cy - 28, 56, 56 };
@@ -724,22 +802,8 @@ void App::drawPlayerbar() {
     // A title or artist too long for its room scrolls slowly, in a loop, instead of ending in "…": it rests 3 s
     // at its start (each new track starts there), then moves at 30 px/s; the edge it is cut at fades
     // (Gatefold's 36 px mask, a little shorter here). With Motion off it does not move, the end just fades.
-    if (now.track != marqueeTrack) { marqueeTrack = now.track; marqueeAt = time; }
-    auto line = [&](const std::string& s, Font f, float y, const Rgb& c) {
-        const int tw = g.measure(s, f);
-        if (tw <= metaW) { g.text(s, f, metaX, y, c); return; }
-        constexpr float Rest = 3, Speed = 30, Gap = 48, Fade = 24;
-        const float loop = float(tw) + Gap;
-        float off = 0;
-        if (store.motion) {
-            const float t = std::fmod(float(time - marqueeAt), Rest + loop / Speed);
-            off = std::max(0.f, t - Rest) * Speed;
-        }
-        // no fade at the left while it rests at its start, nor as the next round settles there
-        const float fadeL = std::max(0.f, std::min({ Fade, off * 2, (loop - off) * 2 }));
-        g.textScroll(s, f, metaX, y, float(metaW), off, fadeL, Fade, c);
-        if (off > loop - metaW) g.textScroll(s, f, metaX, y, float(metaW), off - loop, fadeL, Fade, c);   // the next round coming in
-    };
+    if (now.track != marqueeTrack || now.info.title != marqueeTitle) { marqueeTrack = now.track; marqueeTitle = now.info.title; marqueeAt = time; }
+    auto line = [&](const std::string& s, Font f, float y, const Rgb& c) { marqueeLine(s, f, metaX, y, float(metaW), c); };
     auto names = [&](bool old) {
         const TrackInfo& in = old ? mixOld.info : now.info;
         line(hasTrack ? in.title : "—", { css::Base, Weight::SemiBold }, cy - 21, pal.text);
@@ -747,9 +811,9 @@ void App::drawPlayerbar() {
     };
     if (barMix && mixOld.on) wiped(metaX, metaX + metaW, cy - 24, cy + 20, names);
     else names(false);
-    const bool liked = hasTrack && store.isLiked(lib.tracks[now.track].path);
+    const bool liked = now.track >= 0 && !extOn && store.isLiked(lib.tracks[now.track].path);
     hint(uid("pb.like"), liked ? "Remove from Liked" : "Add to Liked");
-    if (iconButton(uid("pb.like"), liked ? ICON_HEART_F : ICON_HEART, heartX, cy, liked) && hasTrack) {
+    if (!extOn && iconButton(uid("pb.like"), liked ? ICON_HEART_F : ICON_HEART, heartX, cy, liked) && now.track >= 0) {
         store.toggleLiked(lib.tracks[now.track].path);
         store.save();
         toast(liked ? "Removed from Liked" : "Added to Liked");
@@ -759,14 +823,15 @@ void App::drawPlayerbar() {
     // controls 42 px, gap 6 px, seek 30 px (seekY is the seek row's centre)
     const float ctrlY = y0 + (css::BarH - 78) / 2 + 21, seekY = ctrlY + 21 + 6 + 15;
     const float mid = cx0 + centerW / 2;
-    const char* orderIcon = store.order == Order::Shuffle ? ICON_SHUFFLE : store.order == Order::RepeatOne ? ICON_REPEAT1
-                          : store.order == Order::RepeatAll ? ICON_REPEAT : ICON_ORDER;
+    const Order order = shownOrder();   // (in a session, the other device shows the starter's)
+    const char* orderIcon = order == Order::Shuffle ? ICON_SHUFFLE : order == Order::RepeatOne ? ICON_REPEAT1
+                          : order == Order::RepeatAll ? ICON_REPEAT : ICON_ORDER;
     {
         // the order playing, as the button's toast names it (the user, 2026-10-29: no "Order:")
         static const char* orderHints[] = { "Default order", "Repeat playlist", "Repeat track", "Shuffle" };
-        hint(uid("pb.order"), orderHints[int(store.order)]);
+        hint(uid("pb.order"), orderHints[int(order)]);
         hint(uid("pb.prev"), "Previous");
-        hint(uid("pb.play"), isPlaying() ? "Pause" : "Play");
+        hint(uid("pb.play"), extOn ? "Pause on " + extFrom : isPlaying() ? "Pause" : "Play");
         hint(uid("pb.next"), "Next");
         hint(uid("pb.sac"), stopAfterCurrent ? "Stop after this track: on" : "Stop after this track");
         hint(uid("pb.canvas"), "Canvas");
@@ -775,16 +840,19 @@ void App::drawPlayerbar() {
         hint(uid("pb.eq"), "Equalizer (hold for its settings)");
         hint(uid("pb.sleep"), "Sleep timer");
     }
-    if (iconButton(uid("pb.order"), orderIcon, mid - 21 - 10 - 34 - 10 - 17, ctrlY, store.order != Order::Default)) {
-        Order next = Order((int(store.order) + 1) % 4);
-        if (next == Order::Shuffle && automixQueue()) next = Order::Default;   // an Automix playlist: no Shuffle (holdOrderForAutomix)
-        setOrder(next);
-        static const char* names[] = { "Default order", "Repeat playlist", "Repeat track", "Shuffle" };
-        toast(names[int(store.order)]);
-        store.save();
-    }
-    if (iconButton(uid("pb.prev"), ICON_PREV, mid - 21 - 10 - 17, ctrlY)) prev();
-    {
+    // The order and Stop after this track greyed with the rest while the controls are someone else's: an iPhone over AirPlay sends
+    // nothing of its shuffle or repeat, and a session's starter decides (the user, 2026-11-02)
+    const bool off = controlsOff();
+    if (off) g.icon(orderIcon, mid - 21 - 10 - 34 - 10 - 17, ctrlY, 18, pal.text2, 0.35f);
+    else if (iconButton(uid("pb.order"), orderIcon, mid - 21 - 10 - 34 - 10 - 17, ctrlY, order != Order::Default)) cycleOrder();
+    // an outside source (AirPlay): previous, play and next are the iPhone's, greyed here and not pressable (no DACP control yet); a
+    // session's starter's, when it alone changes what plays
+    if (off) g.icon(ICON_PREV, mid - 21 - 10 - 17, ctrlY, 18, pal.text2, 0.35f);
+    else if (iconButton(uid("pb.prev"), ICON_PREV, mid - 21 - 10 - 17, ctrlY)) prev();
+    if (off) {
+        g.circle(mid, ctrlY, 21, pal.text, 0.35f);
+        g.icon(extOn || isPlaying() ? ICON_PAUSE : ICON_PLAY, mid, ctrlY, 20, pal.bg);
+    } else {
         // .play-btn: 42 px circle in --text, icon in --bg
         const Id pid = uid("pb.play");
         if (ui.item(pid, { mid - 21, ctrlY - 21, 42, 42 }, 21)) togglePlay();
@@ -797,15 +865,17 @@ void App::drawPlayerbar() {
         if (isPlaying()) g.icon(ICON_PAUSE, mid, ctrlY, 20 * s, pal.bg);
         else g.icon(ICON_PLAY, mid, ctrlY, 20 * s, pal.bg);
     }
-    if (iconButton(uid("pb.next"), ICON_NEXT, mid + 21 + 10 + 17, ctrlY)) next(false);
-    if (iconButton(uid("pb.sac"), ICON_PAUSE_C, mid + 21 + 10 + 34 + 10 + 17, ctrlY, stopAfterCurrent)) {
+    if (off) g.icon(ICON_NEXT, mid + 21 + 10 + 17, ctrlY, 18, pal.text2, 0.35f);
+    else if (iconButton(uid("pb.next"), ICON_NEXT, mid + 21 + 10 + 17, ctrlY)) next(false);
+    if (off) g.icon(ICON_PAUSE_C, mid + 21 + 10 + 34 + 10 + 17, ctrlY, 18, pal.text2, 0.35f);
+    else if (iconButton(uid("pb.sac"), ICON_PAUSE_C, mid + 21 + 10 + 34 + 10 + 17, ctrlY, stopAfterCurrent)) {
         stopAfterCurrent = !stopAfterCurrent;
         toast(stopAfterCurrent ? "Stop after the current track" : "Keep playing after this track");
     }
 
     // .pb-seek: 48 | 1fr | 48, gap 10
     const float seekW = std::min(760.f, centerW), sx = mid - seekW / 2;
-    g.textC(hasTrack ? fmtTime(player.position()) : "0:00", { css::Xs }, sx + 48, seekY, pal.text3, 1, Align::Right);
+    g.textC(hasTrack ? fmtTime(shownPosition()) : "0:00", { css::Xs }, sx + 48, seekY, pal.text3, 1, Align::Right);
     auto durText = [&](bool old) { g.textC(hasTrack ? fmtTime(old ? mixOld.info.duration : now.info.duration) : "0:00", { css::Xs }, sx + seekW - 48, seekY, pal.text3); };
     // the song's length swipes with the waveform, as one (the user, 2026-10-29: "just the waveform's effect")
     if (pageWipe_.on) wipeGroup_ = { true, sx + 58, sx + seekW - 48 + float(g.measure("00:00", { css::Xs })) };

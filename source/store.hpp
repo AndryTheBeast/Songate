@@ -1,6 +1,6 @@
 /*
  * Gatefold NX · store.hpp
- * Everything that survives a restart, as small text files in sdmc:/config/gatefold-nx/.
+ * Everything that survives a restart, as small text files in sdmc:/config/songate-nx/.
  */
 #pragma once
 #include <map>
@@ -113,6 +113,9 @@ struct Store {
     bool xfadeNotInAlbum = true;
     // Settings → Equalizer (gfeqcfg.h); with the background player connected, the player's own copy wins (the overlay edits it too)
     GfbgEq eq = gfEqDefault();
+    struct AirPlayDevice { std::string id, name; };
+    std::vector<AirPlayDevice> airplayDevices;   // the devices that play here over AirPlay without asking (airplay-devices.tsv)
+    void saveAirplayDevices() const;
     std::vector<GfEqUser> eqUser;   // your saved presets (GFEQ_USER, eq-presets.txt): eq.preset GFEQ_PRESETS + k is eqUser[k]
 
     // Your changes, kept by Gatefold with the music files untouched (the console's FFmpeg cannot write files):
@@ -150,6 +153,27 @@ struct Store {
     bool betas = false;   // Beta versions: listed (apart) and offered; asked first (App::allowBetas)
     bool reports = false; // Settings › Support › Reports: off, nothing can be sent; on, asked first (App::allowReports)
     std::string updateToasted;
+    // Settings › Last.fm: off, nothing goes online; on, asked first (App::allowLastfm). The account is lastfm-session.txt (lastfm.hpp)
+    bool lastfm = false, lastfmScrobble = true, lastfmNow = true;
+    // Settings › Connections: off, no socket is open; on, asked first (App::allowConnections). connectAim: a typed address
+    bool connections = false;
+    std::string connectAim;
+    unsigned syncKinds = 15;        // syncdata::Kind: what is shared, each with its own switch
+    bool syncResults = true;        // measurements and covers, for exactly the same files
+    bool syncFiles = false;         // take the songs this device lacks: off until you turn it on
+    int togetherOutput = 0;         // listening together: 0 speakers, 1 headphones, 2 Bluetooth
+    bool airplayReceive = false;    // an iPhone may play here: off until you turn it on
+    std::string handoffFrom;        // devices whose handoffs are taken without asking, by their ids
+#ifdef __SWITCH__
+    int togetherDelay[3] = { 39, 0, 0 };   // ms this device plays ahead; 39: the console's speakers against the PC's, measured (session 10)
+#else
+    int togetherDelay[3] = { 0, 0, 0 };
+#endif
+    bool syncDeletes = false;       // a song deleted on another device is deleted here too: off until you turn it on, and asked
+    uint64_t syncDeleteFrom = 0;    // … only those deleted after that (~0: turned on just now, the next sync sets it)
+    bool syncAuto = true;           // on link and after any change (the user, 2026-10-31); false only by hand
+    bool opening = true;        // Settings › Playback › Startup: the star and the name as Songate opens (view_opening.cpp)
+    bool openingSound = true;   // … and its bells (only with the opening on)
 
     void load();
     /** Queued for a background thread (store.cpp); flush() waits until everything is on the card. */

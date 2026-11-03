@@ -13,6 +13,7 @@
 #include <strings.h>
 
 #include "app.hpp"
+#include "gfcfgdir.h"
 #include "icons.inc"
 #include "plicons.inc"
 
@@ -40,7 +41,7 @@ std::string longDate(const std::string& ymd) {
 }  // namespace
 
 std::string App::backupRoot() const {
-    // Never inside config/gatefold-nx (a settings.txt edited by hand): a backup would copy itself into itself
+    // Never inside the settings folder (a settings.txt edited by hand): a backup would copy itself into itself
     const std::string cfg = Store::Dir;
     const bool inside = strncasecmp(store.backupDir.c_str(), cfg.c_str(), cfg.size()) == 0 &&
                         (store.backupDir.size() == cfg.size() || store.backupDir[cfg.size()] == '/');
@@ -51,6 +52,11 @@ const std::vector<UpdBackup>& App::updateBackups() {
     if (backupsAt < -50) {   // listed once each time the page opens, and after an install or a Clear (not every few seconds)
         backupsAt = time;
         backupsShown = updater.backups(backupRoot());
+#ifndef GF_WINDOWED
+        // the old backups folder, if the move left it (its backups could not all be moved in): listed too, they restore as they are
+        if (backupRoot() != GFCFG_OLD_BACKUPS)
+            for (UpdBackup& b : updater.backups(GFCFG_OLD_BACKUPS)) backupsShown.push_back(std::move(b));
+#endif
     }
     return backupsShown;
 }
@@ -255,6 +261,7 @@ std::vector<App::ModelRow> App::modelList() const {
         ModelRow r;
         r.name = e.m.name;
         r.downloaded = true;
+        r.builtin = e.file == bundledModelFile();   // comes with Songate too (written to models/ at launch)
         out.push_back(r);
     }
     for (int i = 0; i < int(updater.models.size()); i++) {
@@ -321,8 +328,10 @@ void App::modelSheetRows(std::vector<SheetRow>& rows) {
     if (row.name == mixName()) {
         rows.push_back({ Row::Action, ICON_CHECK, "In use", "It plans every join, and the order of Automix playlists ordered again", "", nullptr });
     } else if (row.builtin || row.downloaded) {
-        rows.push_back({ Row::Action, row.builtin ? ICON_HISTORY : ICON_SPARKLE, (row.builtin ? "Go back to " : "Use ") + name,
-                         row.builtin ? "Songate's own model: back to it at any time" : "From the next join", "", [this, name] { useModel(name); } });
+        // the first built-in model is gone back to; the bundled one (V1.2.0, a file) is used, as a download is
+        const bool back = row.builtin && name == automix::name(automix::Latest);
+        rows.push_back({ Row::Action, back ? ICON_HISTORY : ICON_SPARKLE, (back ? "Go back to " : "Use ") + name,
+                         back ? "Songate's first trained model: back to it at any time" : "From the next join", "", [this, name] { useModel(name); } });
     } else if (updater.busy()) {
         rows.push_back({ Row::Action, ICON_HOURGLASS, updater.working() == name ? updateStatus() : "Busy with " + updater.working(),
                          "Settings › Updates shows how far", "", nullptr });
@@ -336,7 +345,11 @@ void App::modelSheetRows(std::vector<SheetRow>& rows) {
     if (!rows.empty() && rows.back().kind == Row::Action) rows.back().h = 62;
     rows.push_back({ Row::Group, nullptr, "What's new" });
     rows.back().h = 38;
-    if (row.builtin) text(nullptr, "The first trained model: four rounds of rated demos from a real library, frozen on 29 October 2026.");
+    if (row.builtin && row.name == automix::name(automix::Latest))
+        text(nullptr, "The first trained model: four rounds of rated demos from a real library, frozen on 29 October 2026.");
+    else if (row.builtin)
+        text(nullptr, "The second trained model, after a fifth round of rated demos: on drops and on joins by the songs' structure, "
+                      "the next song comes in stabs on every beat, and joins on the beat blend for longer.");
     else if (m && !m->notes.empty()) for (const std::string& n : m->notes) text(nullptr, n);
     else text(nullptr, "This model has no notes.");
     text(ICON_INFO, "A model comes over the air when only its numbers change. One that needs new logic (a new kind of join) or a new "
@@ -456,6 +469,8 @@ const FactoryPartInfo kFactoryParts[] = {
     { "Saved equalizer presets", "The presets you saved under your own names" },
     { "Play counts and statistics", "Plays, last played and dates added (smart playlists use them)" },
     { "The queue", GF_FACTORY_QUEUE },
+    { "Last.fm", "Signs out, and erases what was waiting to be sent" },
+    { "Devices", "This device's key and the devices paired with it: they must pair again" },
     { "Caches", GF_CACHE_WORDS ": made again from your music" },
 };
 }  // namespace
@@ -519,7 +534,7 @@ void App::factoryErase(unsigned mask) {
     }
     confirm(ICON_X, "Factory reset", "Erase everything", "Songate as if it were newly installed", "Erase everything Songate keeps?",
             "Every setting, playlist and Liked track; your tag edits, chosen covers, lyric timings and saved equalizer presets; play "
-            "counts and statistics; " GF_FACTORY_LIST " "
+            "counts and statistics; your Last.fm sign-in and paired devices; " GF_FACTORY_LIST " "
             "Songate then closes and starts again as new. Your music files are not touched, and backups in " + backupRoot() + " stay.",
             "Erase everything", [this, go] {
                 confirm(ICON_X, "Factory reset", "Are you absolutely sure?", "There is no way back", "Erase everything now?",

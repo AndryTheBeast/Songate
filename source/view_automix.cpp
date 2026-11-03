@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <dirent.h>
+#include <sys/stat.h>
 
 #include "app.hpp"
 #include "icons.inc"
@@ -22,11 +23,58 @@ automix::Model App::mixModel() const {
     return automix::Latest;   // a release: the newest (a choice saved by a dev build is ignored)
 }
 
-/** The downloaded models: each .model file in config/gatefold-nx/models this Songate can plan (a few small files: at launch and
- *  after a download). */
+namespace {
+// Automix V1.2.0, bundled (the user, 2026-11-03: "Bundle automix 1.2 in"): byte for byte the file songate-automix released as
+// v1.2.0 (models/automix-v1.2.0.model, 377 bytes, sha256 2e2a625f…6535), under the name a download of it has, so the two are one
+constexpr char kBundledFile[] = "automix-v1.2.0.model";
+constexpr char kBundledModel[] = R"MODEL(songate-automix-model 1
+name Automix V1.2.0
+app 2.0.0-beta
+mixan 4
+order 1.0.0
+gateOn drop,structure
+dropBars 8
+bridgeFrac 0.25
+exitBars 1
+tempoBridgeMax 8
+tempoCutLead 2
+cutFade 0.03
+cutEcho false
+fadeScale 1
+inLevel 0.8
+lpFrom 1000
+outPow 5
+bridgeOutPow 2
+noSkip true
+noCut true
+gate 1
+gateLevel 1
+gateDuck 0.3
+gateEvery 1
+clashBeats 16
+clashBars 2
+blendFrom 8
+beatMaxSec 32
+)MODEL";
+}  // namespace
+
+const char* App::bundledModelFile() { return kBundledFile; }
+
+/** The models this Songate plans with from a file: each .model file in config/songate-nx/models (a few small files: at launch and
+ *  after a download). The bundled one is written there first when it is missing (a first start, a factory reset), so the
+ *  background player, which reads the same folder, has it too. */
 void App::loadModelFiles() {
     modelFiles.clear();
     const std::string dir = store.path("models");
+    const std::string bundled = dir + "/" + kBundledFile;
+    struct stat st;
+    if (stat(bundled.c_str(), &st) != 0) {
+        mkdir(dir.c_str(), 0777);
+        if (FILE* out = fopen(bundled.c_str(), "wb")) {
+            fwrite(kBundledModel, 1, sizeof kBundledModel - 1, out);
+            fclose(out);
+        }
+    }
     DIR* d = opendir(dir.c_str());
     if (!d) return;
     while (const dirent* ent = readdir(d)) {
@@ -48,6 +96,11 @@ void App::loadModelFiles() {
 }
 
 const App::ModelEntry* App::mixFile() const {
+    // none chosen: the bundled one; a built-in model's name (Go back to Automix V1.1.0): no file, the built-in one
+    if (store.automixModel.empty()) {
+        for (const ModelEntry& e : modelFiles) if (e.file == kBundledFile) return &e;
+        return nullptr;
+    }
     for (const ModelEntry& e : modelFiles) if (e.m.name == store.automixModel) return &e;
     return nullptr;
 }

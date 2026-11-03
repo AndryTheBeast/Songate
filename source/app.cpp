@@ -3,6 +3,8 @@
  * Lifecycle, input mapping, play queue and track loading.
  */
 #include "app.hpp"
+#include "cfgmove.hpp"
+#include "gfcfgdir.h"
 #include "cores.hpp"
 #include "icons.inc"
 #include "m3u.hpp"
@@ -86,6 +88,17 @@ bool App::init() {
 #endif
     renderer_ = SDL_CreateRenderer(window_, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!window_ || !renderer_ || !g.init(renderer_)) return false;
+#ifdef GF_PREVIEW
+    // the film's sharpness (GF_FILM_SCALE=1.5: 1920x1080 drawn as such, text and icons rasterized at that size, not upscaled)
+    if (const char* fs = getenv("GF_FILM_SCALE")) {
+        const float k = float(atof(fs));
+        if (k > 1) {
+            SDL_SetWindowSize(window_, int(css::W * k), int(css::H * k));
+            SDL_RenderSetScale(renderer_, k, k);
+            g.setDisplay(k, 60);
+        }
+    }
+#endif
 #ifdef GF_WINDOWED
     fitWindow();
     textCardOwner();
@@ -100,8 +113,37 @@ bool App::init() {
 #ifndef GF_WINDOWED
     store.load();
 #endif
-    // After a factory reset: its old settings folder, moved aside at exit, is deleted in the background
-    if (struct stat st; stat((std::string(Store::Dir) + ".erased").c_str(), &st) == 0)
+#ifndef GF_WINDOWED
+    if (!folder.log.empty()) logLine("Settings folder: " + folder.log);
+    if (folder.both) askBothFolders();
+#endif
+#if defined(GF_DEV) && !defined(GF_AIRPLAY) && !defined(GF_WINDOWED)
+    // The preview has no AirPlay: GF_AIRPLAY_MOCK draws its question and its Settings card with two made-up devices (never saved)
+    if (const char* who = getenv("GF_AIRPLAY_MOCK")) {
+        store.airplayDevices = { { "0000000000000001", "My iPhone" }, { "0000000000000002", "Living room iPad" } };
+        airplayQuestion(who, [](int) {});
+    }
+    // … and GF_AIRPLAY_MOCK_NOW=<an image file> an iPhone's song playing, with that file as its cover
+    if (const char* cover = getenv("GF_AIRPLAY_MOCK_NOW")) {
+        extBegin("Guest's iPhone");
+        extInfo("Midnight Sky", "The Very Long Name Orchestra, Its Choir, Its Friends and Everyone Else", "Plastic Hearts (The Long Edition, Remastered)");
+        extProgress(74, 223);
+        std::vector<uint8_t> bytes;
+        if (FILE* f = fopen(cover, "rb")) {
+            char buf[16384];
+            size_t n;
+            while ((n = fread(buf, 1, sizeof buf, f)) > 0) bytes.insert(bytes.end(), buf, buf + n);
+            fclose(f);
+        }
+        extCover(std::move(bytes));
+    }
+#endif
+    // After a factory reset: its old settings folder, moved aside at exit, is deleted in the background (BETA 1's too)
+    if (struct stat st; stat((std::string(Store::Dir) + ".erased").c_str(), &st) == 0
+#ifndef GF_WINDOWED
+                        || stat(GFCFG_OLD ".erased", &st) == 0
+#endif
+    )
         eraseOld_ = std::thread([] {
             cores::moveHere(cores::FileOps);
             Updater::eraseLeftovers(Store::Dir);
@@ -109,12 +151,25 @@ bool App::init() {
     coversHeld = !store.stopCovers;   // until the covers are counted (and asked about, if many are missing)
     applyJobStops();   // before the workers start: a stopped job never begins
     stats.start(Store::Dir);
+    lastfm.start(Store::Dir);
+    identity.start(Store::Dir);
+    connect.aim(store.connectAim);
+    connect.start(Store::Dir);
+#ifdef GF_AIRPLAY
+    airplay.start("");
+#endif
+    copier.start(Store::Dir, &connect);
+    syncer.start(Store::Dir, &connect, &identity, &levels, &copier);
+    syncer.backup = [this] { return !updater.backupNow(backupRoot(), "before a sync").empty(); };
     levels.start(Store::Dir);
     sideW = store.sidebarCollapsed ? css::SideWCollapsed : css::SideW;
     sideP_ = store.sidebarCollapsed ? 0.f : 1.f;
     applyTheme();
     pal = target;
+    if (store.opening) openingFirst();
+    else openingDone_ = true;   // Settings › Playback › Startup: straight into the app, no bells either
     loader.start();
+    prints.start();
     player.init();   // the UI still runs without audio, so a failure is not fatal
     player.setVolume(store.volume);
     player.setEq(store.eq);
@@ -171,13 +226,27 @@ void App::useMusicFolder(const std::string& path) {
     }
 }
 
-void App::rescan(const std::vector<std::string>* given) {
+void App::rescan(const std::vector<std::string>* given, Library* built) {
     // Track indexes change with the scan: remember the queue by path.
     const std::string current = now.track >= 0 ? lib.tracks[now.track].path : std::string();
     std::vector<std::string> queued;
     for (int t : q.tracks) queued.push_back(lib.tracks[t].path);
 
+#ifdef GF_DEV
+    Uint64 rsAt = SDL_GetPerformanceCounter();
+    std::string rsLog = "Rescan:";
+    auto rsMark = [&](const char* what) {
+        const Uint64 at = SDL_GetPerformanceCounter();
+        char one[48];
+        snprintf(one, sizeof one, " %s %.1f", what, double(at - rsAt) * 1000.0 / double(SDL_GetPerformanceFrequency()));
+        rsLog += one;
+        rsAt = at;
+    };
+#else
+    auto rsMark = [](const char*) {};
+#endif
     meta.stop();
+    rsMark("tags stopped");
     libEpoch++;
     if (!ready_) startMark("start");
     const std::vector<std::string> roots = Library::validRoots(store.musicRoot.empty() ? std::vector<std::string>{} : std::vector<std::string>{ store.musicRoot });
@@ -202,7 +271,18 @@ void App::rescan(const std::vector<std::string>* given) {
     }
     if (!given && !remembered) files = Library::listFiles(roots);
     std::sort(files.begin(), files.end());
-    lib.build(roots, files);
+    rsMark("list");
+    if (built) {
+        // the tags in memory go over: reading them from the card again was 85 ms of the frame, on the console
+        for (Track& t : built->tracks) {
+            auto it = pathIndex.find(t.path);
+            if (it != pathIndex.end()) t = std::move(lib.tracks[size_t(it->second)]);
+        }
+        lib = std::move(*built);
+    } else {
+        lib.build(roots, files);
+    }
+    rsMark("build");
     if (!remembered && !roots.empty() && files != libFiles_) {
         std::string out = "root=" + roots[0] + "\n";
         for (const auto& p : files) out += p + "\n";
@@ -223,14 +303,20 @@ void App::rescan(const std::vector<std::string>* given) {
     if (!ready_) startMark(remembered ? "list" : "scan");
     store.save();   // creates the config folder for the tag cache
     meta.overlay = [this](Track& t) { applyEdits(t); };
-    meta.start(&lib, store.path("tags.tsv"));   // tags.tsv: meta.tsv from 0.2 cached failed M4A reads
+    meta.start(&lib, store.path("tags.tsv"), built != nullptr);   // tags.tsv: meta.tsv from 0.2 cached failed M4A reads
     if (!ready_) startMark("tags");
+    rsMark("tags started");
     for (const auto& [path, file] : store.covers)
         if (auto it = std::find_if(lib.tracks.begin(), lib.tracks.end(), [&](const Track& t) { return t.path == path; }); it != lib.tracks.end())
             meta.setCoverFile(int(it - lib.tracks.begin()), file);
+    rsMark("covers");
     indexDirty = true;
     rebuildIndex();
     if (!ready_) startMark("index");
+    rsMark("index");
+#ifdef GF_DEV
+    if (ready_) logLine(rsLog);
+#endif
 
     auto find = [&](const std::string& p) { auto it = pathIndex.find(p); return it == pathIndex.end() ? -1 : it->second; };
     now.track = find(current);
@@ -252,6 +338,8 @@ void App::rescan(const std::vector<std::string>* given) {
 }
 
 void App::shutdown() {
+    if (tog.stage != Tog::Off) togetherLeave();
+    if (syncRebuild.joinable()) syncRebuild.join();
 #ifdef GF_WINDOWED
     if (window_) keepWindowPlace();
 #endif
@@ -264,19 +352,31 @@ void App::shutdown() {
     setDimmed(false);
     persistNow();
     Store::flush();
+    saveLevels();
     stats.stop();
+    lastfm.stop();
+    syncer.stop();
+    copier.stop();
+    connect.stop();
+#ifdef GF_AIRPLAY
+    player.streamEnd();
+    airplay.stop();
+#endif
+    identity.stop();
     levels.stop();
     plat::unwatchLeave();
     plat::setMediaPlaying(false);
     if (awakeHeld) plat::setKeepAwake(false);   // the console's own idle times again
     wave.cancel();
     loader.stop();
+    prints.stop();
     if (libCheck_.joinable()) libCheck_.join();
     if (tracksView.thread.joinable()) tracksView.thread.join();
     if (fileWork.thread.joinable()) fileWork.thread.join();   // a copy finishes before Gatefold goes
     if (storage.thread.joinable()) storage.thread.join();     // Storage and reset's sizes
     if (eraseOld_.joinable()) eraseOld_.join();               // a factory reset's old folder (it carries on next launch)
     if (moodThread_.joinable()) moodThread_.join();           // Mood playlists' sorting (a few ms)
+    if (chimeThread_.joinable()) chimeThread_.join();         // the opening's bells
     if (supportThread_.joinable()) supportThread_.join();     // Settings › Support's reads (the crash reports)
     if (reportThread_.joinable()) reportThread_.join();       // … a report being sent (curl gives up within its timeouts)
     if (logDirty_) {
@@ -289,7 +389,7 @@ void App::shutdown() {
     thumbs.stop();
     bg.disconnect();   // the background player carries on by itself
     Store::stopWriter();   // the last thread of ours: none may outlive Gatefold (hbloader cannot unload it then)
-    for (SDL_Texture* t : { now.cover, now.prevCover, now.blur, now.prevBlur, now.frost, now.prevFrost, svTex, hueTex, wheelTex }) if (t) SDL_DestroyTexture(t);
+    for (SDL_Texture* t : { now.cover, now.prevCover, now.blur, now.prevBlur, now.frost, now.prevFrost, svTex, hueTex, wheelTex, lfmQr }) if (t) SDL_DestroyTexture(t);
     g.shutdown();
     if (renderer_) SDL_DestroyRenderer(renderer_);
     if (window_) SDL_DestroyWindow(window_);
@@ -307,14 +407,74 @@ void App::shutdown() {
     const std::string again = next.empty() ? selfPath : next;   // (going back to 1.x: its own .nro, where it is)
 #endif
     if (factoryMask_) Updater::factoryReset(Store::Dir, factoryMask_);   // what was ticked (or everything), moved aside; it starts again
+#ifndef GF_WINDOWED
+    if (!next.empty()) goBackIfDue();   // an older version's .nro went in: its folder is gatefold-nx, made ready before it starts
+#endif
     if (relaunch) plat::relaunch(again);
     plat::releaseExit();
 }
+
+#ifndef GF_WINDOWED
+namespace {
+/** What a settings folder holds, in words: its playlists, liked songs and when it last changed (a few small files, read once). */
+std::string folderWords(const std::string& dir) {
+    int lists = 0, liked = 0;
+    if (FILE* f = fopen((dir + "/playlists.txt").c_str(), "rb")) {
+        char l[1024];
+        while (fgets(l, sizeof l, f)) if (l[0] && l[0] != '\n' && l[0] != '\r') lists++;   // a name a line (lists.txt holds their songs)
+        fclose(f);
+    }
+    if (FILE* f = fopen((dir + "/liked.txt").c_str(), "rb")) {
+        char l[1024];
+        while (fgets(l, sizeof l, f)) if (l[0] && l[0] != '\n' && l[0] != '\r') liked++;
+        fclose(f);
+    }
+    std::string when = "never changed";
+    struct stat st;
+    if (stat((dir + "/settings.txt").c_str(), &st) == 0) {
+        char b[32];
+        strftime(b, sizeof b, "%d %b %Y, %H:%M", localtime(&st.st_mtime));
+        when = std::string("changed ") + b;
+    }
+    return std::to_string(lists) + (lists == 1 ? " playlist, " : " playlists, ") + std::to_string(liked) + " liked, " + when;
+}
+}  // namespace
+
+/** Both folders hold settings (an older Songate copied by hand made gatefold-nx again): which to keep. The other becomes a backup. */
+void App::askBothFolders() {
+    confirm(ICON_GEAR, "Settings", "Two sets of settings", "An older Songate made its own", "Which settings do you want to keep?",
+            "This version's, in config/songate-nx: " + folderWords(GFCFG_NEW) + ". The older version's, in config/gatefold-nx: " +
+                folderWords(GFCFG_OLD) + ". The other set is kept as a backup in Settings › Updates › Backups. Nothing is deleted.",
+            "Keep this version's", [this] {
+                cfgmove::settle(false);
+                toast("The older version's settings are a backup now");
+            });
+    sheet.askSafe = true;
+    sheet.askNoCancel = true;
+    sheet.askYesIcon = ICON_CHECK;
+    sheet.askAlt = "Keep the older version's";
+    sheet.askAltYes = [this] {
+        cfgmove::settle(true);   // at the next launch, before anything reads the folder
+        relaunch = true;
+        running = false;
+    };
+}
+
+bool App::goBackIfDue() {
+    const std::string to = Updater::takeBack(Store::Dir);
+    if (to.empty()) return false;
+    std::string log;
+    cfgmove::back(Updater::pretty(to), log);   // (what it did is written in the folder's songate-folder.txt)
+    return true;
+}
+#endif
 
 void App::onLeave(bool exiting, void* self) {
     auto* app = static_cast<App*>(self);
     app->setDimmed(false);   // the backlight is the system's again outside Gatefold
     app->persistNow();
+    app->saveLog();   // closed from the HOME menu, Songate never reaches its own end: the log is saved as it leaves (session 11's
+                      // AirPlay tests lost all but their first 50 s)
     if (exiting) Store::flush();
 }
 
@@ -324,7 +484,13 @@ void App::persistSoon(float delay) {
 
 void App::saveStats() {
     statsSavedAt = time;
-    if (stats.loaded() && stats.dirty()) store.writeFile("stats.tsv", stats.serialise());
+    if (stats.loaded() && stats.dirty()) {
+        store.writeFile("stats.tsv", stats.serialise());
+        store.writeFile("sync-plays.tsv", stats.serialiseOthers());
+    }
+}
+
+void App::saveLevels() {
     if (levels.loaded() && levels.dirty()) {
         store.writeFile("loudness.tsv", levels.serialise());
         store.writeFile("mix.tsv", levels.serialiseMix());
@@ -348,11 +514,12 @@ void App::persistNow(bool sessionOnly) {
     saveStats();
     if (!store.resume) return;
     Session s;
-    s.name = q.name;
-    for (int t : q.tracks) s.tracks.push_back(lib.tracks[t].path);
-    s.order = q.order;
-    s.pos = q.pos;
-    s.position = player.loaded() ? player.position() : 0;
+    const Queue& kept = tog.queueTaken ? tog.savedQueue : q;   // a session's list is never saved
+    s.name = kept.name;
+    for (int t : kept.tracks) s.tracks.push_back(lib.tracks[t].path);
+    s.order = kept.order;
+    s.pos = kept.pos;
+    s.position = player.loaded() && !tog.queueTaken ? player.position() : 0;
     store.saveSession(s);
 }
 
@@ -562,9 +729,14 @@ void App::frame() {
         // motion uneven, most visibly at the slow start and end of an eased one. So dt is whole refreshes (at most a tenth
         // of a second), of this screen: 60 a second on the console, 144 or whatever the monitor under the window does on a PC.
         dt = std::clamp(int(std::lround(interval * hz_)), 1, hz_ / 10) / float(hz_);
+#ifdef GF_PREVIEW
+        // the README's film (hostshim, GF_FILM): exactly 1/60 s a frame, however long the frame took to draw
+        if (static const bool film = getenv("GF_FILM") != nullptr; film) dt = 1.f / 60;
+#endif
         time += dt;
 
         profAt_ = nowTicks;
+        std::copy(std::begin(profFrame_), std::end(profFrame_), std::begin(profPrev_));
         std::fill(std::begin(profFrame_), std::end(profFrame_), 0.0);
         ui.beginFrame(dt);
         input();
@@ -581,6 +753,7 @@ void App::frame() {
         SDL_RenderSetScale(renderer_, scale_, scale_);
 #endif
         draw();
+        drawOpening();
         ui.endFrame();
 #if defined(GF_WINDOWED) && defined(GF_DEV)
         // Tests press controls by name: every few frames, what is on screen and where
@@ -609,6 +782,22 @@ void App::frame() {
         workMs_[frameAt_] = float(double(SDL_GetPerformanceCounter() - nowTicks) / freq * 1000);
 #ifdef GF_DEV
         traceJoinFrame(frameMs_[frameAt_], workMs_[frameAt_]);
+        if (store.frameTimes) {
+            frameLogWorst_ = std::max(frameLogWorst_, frameMs_[frameAt_]);
+            frameLogSlow_ += frameMs_[frameAt_] > 33.3f;
+            frameLogN_++;
+            if (time - frameLogAt_ >= 5) {
+                if (frameLogAt_ > 0) {
+                    char line[160];
+                    snprintf(line, sizeof line, "Frames: 5 s, %d frames, worst %.1f ms, over 33 ms %d; playing %d (here %d), in a session %d", frameLogN_,
+                             double(frameLogWorst_), frameLogSlow_, int(isPlaying()), int(isPlaying() && !player.remote()), int(togetherOn()));
+                    logLine(line);
+                }
+                frameLogAt_ = time;
+                frameLogWorst_ = 0;
+                frameLogSlow_ = frameLogN_ = 0;
+            }
+        }
 #endif
         frameAt_ = (frameAt_ + 1) % 120;
         profAt_ = SDL_GetPerformanceCounter();
@@ -657,7 +846,7 @@ void App::plusMenu(bool held) {
 void App::input() {
     SDL_Event e;
     bool touched = false;
-    bool mouseMoved = false;
+    bool mouseMoved = false, mouseClicked = false;
 #ifdef GF_WINDOWED
     bool rightClick = false;
 #endif
@@ -703,7 +892,7 @@ void App::input() {
             }
             if (lightDown_ >= 0) continue;
 #endif
-            if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) { ui.touchDown(pointer.x, pointer.y); mouseHeld_ = true; }
+            if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) { ui.touchDown(pointer.x, pointer.y); mouseHeld_ = true; mouseClicked = true; }
             if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT && mouseHeld_) { ui.touchUp(pointer.x, pointer.y); mouseHeld_ = false; }
         }
         if (e.type == SDL_MOUSEWHEEL && e.wheel.which != SDL_TOUCH_MOUSEID) {
@@ -714,6 +903,7 @@ void App::input() {
 #endif
             pointer.idle = 0;
         }
+        if (e.type == SDL_FINGERDOWN || e.type == SDL_KEYDOWN || e.type == SDL_MOUSEBUTTONDOWN) openingSkip_ = true;
         if (e.type == SDL_FINGERDOWN || e.type == SDL_FINGERMOTION) touched = true;
         const float x = e.tfinger.x * css::W, y = e.tfinger.y * css::H;
 #ifdef GF_WINDOWED
@@ -733,6 +923,7 @@ void App::input() {
 
     plat::padRead();
     uint64_t down = plat::padDown();
+    if (down) openingSkip_ = true;
 #ifdef GF_WINDOWED
     if (down && plat::padWasLast()) typingByTouch_ = true;
     if (fitPending_) { fitPending_ = false; fitWindow(); }
@@ -773,8 +964,9 @@ void App::input() {
     // buttons). Slow near the centre, fast at the edge; A taps and drags under it like a finger.
     const plat::Stick ls = plat::stick(0);
     const float mag = std::hypot(float(ls.x), float(ls.y)) / 32767.f;
-    bool pointerMoved = false;
+    bool pointerMoved = false, stickMoved = false;
     if (mag > 0.15f) {
+        stickMoved = true;
         if (pointer.idle > Pointer::Hide) {
             // It appears where the focus is, so the eye does not have to look for it.
             const SDL_FRect r = ui.rectOf(ui.focusedId());
@@ -799,7 +991,7 @@ void App::input() {
         pointer.idle += dt;
     }
     // the wheel: the list under the pointer, a notch about two rows (the focused list when nothing scrolls there)
-    if (wheel != 0 && !ui.scrollAreaAt(pointer.x, pointer.y, -wheel * 110)) ui.scrollFocusedArea(-wheel * 110);
+    if (wheel != 0 && grab.pos < 0 && !ui.scrollAreaAt(pointer.x, pointer.y, -wheel * 110)) ui.scrollFocusedArea(-wheel * 110);   // (a row held: the wheel moves it, below)
     if (wheel != 0) rehover_ = 0.5f;
     if (touched || (down & (plat::BtnUp | plat::BtnDown | plat::BtnLeft | plat::BtnRight)))
         pointer.idle = Pointer::Hide + 1;   // the D-pad or a finger took over
@@ -814,14 +1006,21 @@ void App::input() {
         if (pointer.idle <= Pointer::Hide && !pointer.down && !mouseHeld_) ui.point(ui.itemAt(pointer.x, pointer.y));
     }
     // A picked-up queue row (the track menu's Move): A or B puts it down, as with a slider; a
-    // finger, the pointer or leaving the page put it down too.
+    // finger, the stick's pointer, a click or leaving the page put it down too. Not the mouse moving: on the PC the
+    // slightest move put it down as soon as it was picked up (the user, 2026-11-03); the wheel moves it instead
     if (grab.pos >= 0) {
         const View gv = grab.kind == Grab::Playlists ? View::Playlists : grab.kind == Grab::Tabs ? View::Settings
                       : grab.kind == Grab::List ? View::List : grab.upNext ? View::Now : View::Queue;
-        if ((down & (plat::BtnA | plat::BtnB)) || touched || pointerMoved || modal || canvas || route.view != gv ||
+        if ((down & (plat::BtnA | plat::BtnB)) || touched || stickMoved || mouseClicked || modal || canvas || route.view != gv ||
             (grab.kind == Grab::List && route.ref != grab.ref)) {
             grabDrop();
             down &= ~uint64_t(plat::BtnA | plat::BtnB);
+        } else if (wheel != 0) {
+            static float notches = 0;   // (a touchpad's wheel comes in fractions: a step per whole notch)
+            notches += wheel;
+            while (notches >= 1) { grabStep(-grab.cols); notches -= 1; }
+            while (notches <= -1) { grabStep(grab.cols); notches += 1; }
+            wheel = 0;
         }
     }
     if (pointing && (down & plat::BtnA)) {
@@ -900,6 +1099,9 @@ void App::input() {
 void App::update() {
 #ifdef GF_DEV
     updAt_ = SDL_GetPerformanceCounter();
+    updPrevMs_ = updSlowMs_;
+    updPrevSlow_ = updSlow_;
+    updPrevTotalMs_ = updTotalMs_;
     updSlowMs_ = 0;
     updSlow_ = "";
 #endif
@@ -926,11 +1128,16 @@ void App::update() {
         }
     }
 #endif
-    if (player.takeFinished()) next(true);
+    if (player.takeFinished()) {
+        if (tog.stage != Tog::Off) togetherFinished();
+        else {
+            next(true);
+        }
+    }
     UPD_MARK("next");
     if (player.remote() && time - bgListsAt > 5) { bgListsAt = time; writeBgPlaylists(); }
     // Crossfade, in Gatefold's own player: over the last seconds of the track, into the next one.
-    if (!player.remote() && store.crossfade > 0 && !automixQueue() && !xfadeChecked && isPlaying() && now.track >= 0) {
+    if (tog.stage == Tog::Off && !player.remote() && store.crossfade > 0 && !automixQueue() && !xfadeChecked && isPlaying() && now.track >= 0) {
         const double dur = now.info.duration > 0 ? now.info.duration : lib.tracks[now.track].duration;
         const double left = dur - player.position();
         if (dur > 0 && left <= store.crossfade && left > 0.25) {
@@ -973,6 +1180,8 @@ void App::update() {
             stats.countPlay(lib.tracks[now.track].path, int64_t(std::time(nullptr)));
         }
     }
+    lastfmTick();
+    connectTick();
     UPD_MARK("stats");
     if (stats.dirty() && time - statsSavedAt > 15) saveStats();
     UPD_MARK("saveStats");
@@ -1011,8 +1220,10 @@ void App::update() {
 
     // Only a burst that actually arrived is analysed; between bursts the bars glide (spectrum.hpp).
     spec.params = { canvas ? store.canvasBars : store.vizBands, store.vizSensitivity, store.vizSmoothing };
-    if (isPlaying() && player.latestPcm(pcm_.data(), Spectrum::N)) spec.feed(pcm_.data(), player.sampleRate());
-    spec.step(dt, isPlaying());
+    // (an outside source sounds too: AirPlay's stream feeds the same ring, the user, 2026-11-02: "not reacting to airplay")
+    const bool sounding = isPlaying() || extOn;
+    if (sounding && player.latestPcm(pcm_.data(), Spectrum::N)) spec.feed(pcm_.data(), player.sampleRate());
+    spec.step(dt, sounding);
     // The cover's bass pulse (Now playing, and the Canvas when asked for), eased so a kick swells rather than pops.
     // (still while Automix joins: the user, 2026-10-28)
     const float wantBeat = store.coverPulse > 0 ? std::min(0.03f, spec.beat * 0.07f) * store.coverPulse * (1 - automixFocus().quiet) : 0;
@@ -1096,6 +1307,9 @@ void App::update() {
     UPD_MARK("notices+jobs+libcheck");
     if (meta.pump(renderer_)) indexDirty = true;
     UPD_MARK("meta.pump");
+#ifdef GF_DEV
+    updTotalMs_ = double(SDL_GetPerformanceCounter() - updAt_) * 1000.0 / double(SDL_GetPerformanceFrequency());
+#endif
     if (indexDirty && time - indexAt > 1.5) rebuildIndex();
     UPD_MARK("rebuildIndex");
 }
@@ -1266,6 +1480,7 @@ bool App::isPlaying() const { return player.loaded() && !player.paused(); }
 int App::currentQueuePos() const { return q.pos >= 0 && q.pos < int(q.order.size()) ? q.order[q.pos] : -1; }
 
 void App::playTracks(const std::vector<int>& tracks, int startPos, const std::string& name, bool shuffle) {
+    if (togetherOn() && !tog.host) { toast("The queue is " + tog.peerName + "'s for now: change it there"); return; }
     if (tracks.empty()) return;
     grabDrop();   // a new queue: the row held belonged to the old one
     q.tracks = tracks;
@@ -1287,6 +1502,7 @@ void App::playTracks(const std::vector<int>& tracks, int startPos, const std::st
 
 void App::playAt(int orderPos, double fade, const automix::Plan* mix) {
     if (q.order.empty()) return;
+    if (togetherOn() && togetherPlayAt(std::clamp(orderPos, 0, int(q.order.size()) - 1))) return;
     q.pos = std::clamp(orderPos, 0, int(q.order.size()) - 1);
     loadTrack(q.tracks[q.order[q.pos]], false, true, fade, mix);
     // The background player skips an unplayable file itself and says so (errorGen, bgUpdate); its polled
@@ -1304,6 +1520,7 @@ void App::playAt(int orderPos, double fade, const automix::Plan* mix) {
 }
 
 void App::next(bool natural) {
+    if (extOn) { if (!natural) toast("Skip on " + extFrom); return; }
     if (q.order.empty()) return;
     if (natural && store.order == Order::RepeatOne) return playAt(q.pos);
     if (natural && stopAfterCurrent) {
@@ -1377,7 +1594,7 @@ void App::endJoinShow(double over) {
  * its exact sample. A track not analysed yet gets a plain fade.
  */
 void App::updateAutomix() {
-    if (player.remote() || !automixQueue() || xfadeChecked || !isPlaying() || now.track < 0) return;
+    if (tog.stage != Tog::Off || player.remote() || !automixQueue() || xfadeChecked || !isPlaying() || now.track < 0) return;
     const Level* la = levels.find(lib.tracks[now.track].path);
     double dur = now.info.duration > 0 ? now.info.duration : lib.tracks[now.track].duration;
     if (dur <= 0 && la && la->mix.seconds > 0) dur = la->mix.seconds;   // no length in its tags: the analysis measured it
@@ -1585,12 +1802,14 @@ void App::setEq(const GfbgEq& e) {
 }
 
 void App::prev() {
+    if (extOn) { toast("Skip on " + extFrom); return; }
     if (q.order.empty()) return;
     if (player.position() > 3) { player.seek(0); return; }   // first restart, then go back
     playAt(q.pos > 0 ? q.pos - 1 : int(q.order.size()) - 1);
 }
 
 void App::togglePlay() {
+    if (extOn) { toast("Pause or play on " + extFrom); return; }
     if (!player.loaded()) {
         if (q.pos >= 0) playAt(q.pos);
         else if (!lib.tracks.empty()) playTracks(listTracks(View::Library, -1, {}), 0, "Library");
@@ -1653,21 +1872,39 @@ void App::writeGains() {
     gainsDirty = false;
     gainsWrittenAt = time;
     gainsHave.clear();
-    struct Entry { uint64_t hash; float track, album; };   // GfbgGain
-    std::vector<Entry> out;
-    out.reserve(lib.tracks.size());
-    for (int t = 0; t < int(lib.tracks.size()); t++) {
+    gainsOut.clear();
+    gainsBuilding = true;
+    gainsNext = 0;
+    gainsEpoch = libEpoch;
+    while (gainsBuilding) gainsStep();
+}
+
+/** A little each frame: every track's gain at once was tens of milliseconds on the console. */
+void App::gainsStep() {
+    if (gainsEpoch != libEpoch) {   // rescanned meanwhile: from the top
+        gainsEpoch = libEpoch;
+        gainsNext = 0;
+        gainsOut.clear();
+        gainsHave.clear();
+    }
+    const Uint64 t0 = SDL_GetPerformanceCounter();
+    const Uint64 limit = SDL_GetPerformanceFrequency() / 1000;
+    while (gainsNext < lib.tracks.size() && SDL_GetPerformanceCounter() - t0 < limit) {
+        const int t = int(gainsNext++);
         const Level* l = levels.find(lib.tracks[t].path);
         if (!l || std::isnan(l->lufs)) continue;
-        out.push_back({ pathHash(lib.tracks[t].path), float(levelDb(t, 1)), float(levelDb(t, 2)) });
+        gainsOut.push_back({ pathHash(lib.tracks[t].path), float(levelDb(t, 1)), float(levelDb(t, 2)) });
         gainsHave.insert(lib.tracks[t].path);
     }
-    std::sort(out.begin(), out.end(), [](const Entry& a, const Entry& b) { return a.hash < b.hash; });
+    if (gainsNext < lib.tracks.size()) return;
+    gainsBuilding = false;
+    std::vector<GainEntry>& out = gainsOut;
+    std::sort(out.begin(), out.end(), [](const GainEntry& a, const GainEntry& b) { return a.hash < b.hash; });
     // A new generation each time, also across restarts: the player reloads when it differs.
     gainsGen = std::max(gainsGen + 1, unsigned(std::time(nullptr)));
     const uint32_t header[4] = { 0x564C4647u, uint32_t(out.size()), gainsGen, 0 };   // GfbgGainsHeader, "GFLV"
     std::string data(reinterpret_cast<const char*>(header), sizeof header);
-    data.append(reinterpret_cast<const char*>(out.data()), out.size() * sizeof(Entry));
+    data.append(reinterpret_cast<const char*>(out.data()), out.size() * sizeof(GainEntry));
     store.writeFile("gains.bin", std::move(data));
 }
 
@@ -1715,13 +1952,29 @@ void App::updateLevels() {
         bool soon = false;
         for (const auto& p : levelFirst)
             if (levels.find(p) && !gainsHave.count(p)) soon = true;
-        if ((soon && time - gainsWrittenAt > 1) || time - gainsWrittenAt > 20) writeGains();
+        if (!gainsBuilding && ((soon && time - gainsWrittenAt > 1) || time - gainsWrittenAt > 20)) {
+            gainsBuilding = true;
+            gainsNext = 0;
+            gainsEpoch = libEpoch;
+            gainsDirty = false;
+            gainsWrittenAt = time;
+            gainsHave.clear();
+            gainsOut.clear();
+            gainsOut.reserve(lib.tracks.size());
+        }
     }
-    if (levels.dirty() && time - levelsSavedAt > 30) {
+    if (gainsBuilding) gainsStep();
+    // the files, a little each frame: a whole library at once held the console's frame for 167 ms
+    if (levels.saving()) {
+        std::string loud, mix, mood;
+        if (levels.saveStep(1.0, loud, mix, mood)) {
+            store.writeFile("loudness.tsv", std::move(loud));
+            store.writeFile("mix.tsv", std::move(mix));
+            store.writeFile("mood.tsv", std::move(mood));
+        }
+    } else if (levels.dirty() && time - levelsSavedAt > 30) {
         levelsSavedAt = time;
-        store.writeFile("loudness.tsv", levels.serialise());
-        store.writeFile("mix.tsv", levels.serialiseMix());
-        store.writeFile("mood.tsv", levels.serialiseMood());
+        levels.saveBegin();
     }
     if (player.remote()) {
         if (store.levelMode != levelModeSent) { bg.setLevelMode(store.levelMode); levelModeSent = store.levelMode; }
@@ -1890,6 +2143,25 @@ void App::holdOrderForAutomix(bool rebuild) {
         else store.order = back;
         persistSoon(0.5f);
     }
+}
+
+void App::cycleOrder() {
+    static const char* names[] = { "Default order", "Repeat playlist", "Repeat track", "Shuffle" };
+    if (togetherOn() && !tog.host) {   // the starter's order decides what comes next on both: asked of it, shown when it says so
+        if (togetherLocked() || tog.linkLost) return;
+        together::Message m;
+        m.kind = together::Kind::Ask;
+        m.what = together::AskOrder;
+        m.song = (tog.order + 1) % 4;
+        togetherSend(m);
+        toast(std::string(names[m.song]) + ": asked of " + tog.peerName);
+        return;
+    }
+    Order next = Order((int(store.order) + 1) % 4);
+    if (next == Order::Shuffle && automixQueue()) next = Order::Default;   // an Automix playlist: no Shuffle (holdOrderForAutomix)
+    setOrder(next);
+    toast(names[int(store.order)]);
+    store.save();
 }
 
 void App::setOrder(Order o) {
@@ -2097,6 +2369,8 @@ void App::loadTrack(int trackIdx, bool paused, bool start, double fade, const au
     now.loading = true;
     statHeard = 0;   // a new play of it, also when Repeat track plays it again
     statCounted = false;
+    lfmHeard = 0;
+    lfmDone = lfmSaid = false;
     const float gain = float(std::pow(10, levelDb(trackIdx) / 20));
     TrackLoader::Request r;
     r.gen = ++loadGen;
@@ -2549,7 +2823,7 @@ void App::loadTrackCoverAgain() {
 
 /** What the loader read for the track playing: its tags and lyrics, and the cover, uploaded here (textures belong to this thread). */
 void App::applyLoaded(TrackLoader::Result& r) {
-    if (r.gen != loadGen || now.track < 0) { r.release(); return; }   // a track that is no longer the one playing
+    if (r.gen != loadGen || (now.track < 0 && !extOn)) { r.release(); return; }   // a track that is no longer the one playing
     now.loading = false;
     const Track& t = lib.tracks[now.track];
     if (r.readInfo) {
@@ -2596,7 +2870,7 @@ void App::forgetNowPlaying() {
 
 /** The loaded cover: uploaded, crossfaded in, and the palette from it. */
 void App::applyCover(TrackLoader::Result& r) {
-    if (r.gen != loadGen || now.track < 0) { r.release(); return; }
+    if (r.gen != loadGen || (now.track < 0 && !extOn)) { r.release(); return; }
 #ifdef GF_WINDOWED
     plat::mediaInfo(now.info.title, now.info.artist, now.info.album, r.mediaCover ? static_cast<const uint8_t*>(r.mediaCover->pixels) : nullptr,
                     r.mediaCover ? r.mediaCover->w : 0, r.mediaCover ? r.mediaCover->h : 0, r.mediaJpeg);
@@ -2618,7 +2892,7 @@ void App::applyCover(TrackLoader::Result& r) {
         now.cover = SDL_CreateTextureFromSurface(renderer_, r.cover);
         if (now.cover) SDL_SetTextureScaleMode(now.cover, SDL_ScaleModeLinear);
         // The overlay's copy, made again for the track shown: a cover set in the track menu changes it.
-        if (player.remote()) thumbFor(now.track, true);
+        if (player.remote() && now.track >= 0 && !extOn) thumbFor(now.track, true);
     }
     if (r.blur) {
         now.blur = SDL_CreateTextureFromSurface(renderer_, r.blur);
@@ -2857,6 +3131,10 @@ void App::openSearch() {
 void App::toast(const std::string& s) {
     toastText = s;
     toastT = 3.2f;
+    logLine(s);
+}
+
+void App::logLine(const std::string& s) {
     // the app's log (Settings › Support sends its last lines with a report): what it told you, and when
     const time_t t = std::time(nullptr);
     char b[16];
@@ -2939,16 +3217,46 @@ std::string App::trackSub(int t) const {
 int main(int argc, char** argv) {
     // The running program, where an update's new one is swapped in
     const std::string self = plat::selfPath(argc, argv);
+#ifndef GF_WINDOWED
+    // The settings folder, before anything reads it: gatefold-nx moved to songate-nx, a move cut off finished (cfgmove.hpp)
+    cfgmove::Result folder = cfgmove::atLaunch(Updater::thisVersion());
+#endif
+#if defined(GF_DEV) && !defined(GF_WINDOWED)
+    // Tests of the move alone (the preview: nothing of the app's own saves mixed in): GF_CFGMOVE_ONLY stops here; GF_CFGMOVE_BACK=<version>
+    // moves it back as an install of that version would, then stops
+    if (const char* v = getenv("GF_CFGMOVE_BACK")) {
+        std::string log;
+        const bool ok = cfgmove::back(v, log);
+        printf("[cfgmove] back %s:%s\n", ok ? "ok" : "FAILED", log.c_str());
+        return 0;
+    }
+    if (getenv("GF_CFGMOVE_ONLY")) {
+        printf("[cfgmove] dir=%s backups=%s moved=%d returned=%d both=%d legacy=%d:%s\n", folder.dir.c_str(), folder.backups.c_str(), int(folder.moved),
+               int(folder.returned), int(folder.both), int(folder.legacy), folder.log.c_str());
+        return 0;
+    }
+#endif
     if (plat::swapsSelf()) {
         // An update installed while Gatefold was closed some other way (the console restarted): its .nro is swapped in
         // before anything reads this one, and the new one starts instead.
-        if (const std::string next = Updater::finishPending(Store::Dir, self); !next.empty() && plat::relaunch(next)) return 0;
+        if (const std::string next = Updater::finishPending(Store::Dir, self); !next.empty()) {
+#ifndef GF_WINDOWED
+            const bool wentBack = App::goBackIfDue();   // an older version's: its folder is gatefold-nx
+#endif
+            if (plat::relaunch(next)) return 0;
+#ifndef GF_WINDOWED
+            if (wentBack) folder = cfgmove::atLaunch(Updater::thisVersion());   // it did not start: this one carries on, moved forward again
+#endif
+        }
 #ifndef GF_WINDOWED
         Updater::cleanLegacy(Store::Dir, self);   // after the rebranding: 1.x's .nro and overlay, once (the first launch)
 #endif
     }
     App app;
     app.selfPath = self;
+#ifndef GF_WINDOWED
+    app.folder = folder;
+#endif
     if (app.init()) app.run();
     app.shutdown();
     return 0;

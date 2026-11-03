@@ -83,13 +83,13 @@ int main(int argc, char** argv) {
         g_card.assign(u.begin(), u.end());
     }
     fs::remove_all(fs::u8path(g_card));
-    fs::create_directories(fs::u8path(g_card) / "config" / "gatefold-nx");
+    fs::create_directories(fs::u8path(g_card) / "config" / "songate-nx");
     // the card's mix.tsv: the two tracks' analyses, under their console paths
     // the queue holds the PC paths themselves (dr_flac opens its file on its own, past the sdmc:/ mapping)
     const std::string pa = g_music + "/" + a, pb = g_music + "/" + b;
     {
         std::ifstream in(fs::u8path(argv[5]), std::ios::binary);
-        std::ofstream mix(fs::u8path(g_card + "/config/gatefold-nx/mix.tsv"), std::ios::binary);
+        std::ofstream mix(fs::u8path(g_card + "/config/songate-nx/mix.tsv"), std::ios::binary);
         auto norm = [](std::string s) { std::replace(s.begin(), s.end(), '\\', '/'); return s; };
         const std::string ka = norm(g_music + "/" + a), kb = norm(g_music + "/" + b);
         for (std::string line; std::getline(in, line);) {
@@ -112,8 +112,8 @@ int main(int argc, char** argv) {
         std::ifstream in(fs::u8path(modelArg), std::ios::binary);
         const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         if (!mf.parse(text)) { fprintf(stderr, "not a model: %s\n", modelArg.c_str()); return 2; }
-        fs::create_directories(fs::u8path(g_card) / "config" / "gatefold-nx" / "models");
-        std::ofstream(fs::u8path(g_card + "/config/gatefold-nx/models/test.model"), std::ios::binary) << text;
+        fs::create_directories(fs::u8path(g_card) / "config" / "songate-nx" / "models");
+        std::ofstream(fs::u8path(g_card + "/config/songate-nx/models/test.model"), std::ios::binary) << text;
         snprintf(c.automixFile, sizeof c.automixFile, "test.model");
     }
     c.crossfade = 4;

@@ -46,13 +46,13 @@ namespace {
 
     // ---- Persistence paths ---------------------------------------------
 
-    constexpr const char* kSavedFile = "/config/gatefold-nx/overlay-playlist.txt";
-    constexpr const char* kStateFile = "/config/gatefold-nx/overlay-source.txt";
+    std::string savedFile() { return gfCfgFile("overlay-playlist.txt"); }
+    std::string stateFile() { return gfCfgFile("overlay-source.txt"); }
 
     // ---- Disk helpers --------------------------------------------------
 
     void writeState() {
-        FILE* f = fopen(kStateFile, "w");
+        FILE* f = fopen(stateFile().c_str(), "w");
         if (!f) return;
         if (g_source == Source::Folder)
             fprintf(f, "Folder:%s\n", g_folder_path.c_str());
@@ -62,7 +62,7 @@ namespace {
     }
 
     void writeSaved() {
-        FILE* f = fopen(kSavedFile, "w");
+        FILE* f = fopen(savedFile().c_str(), "w");
         if (!f) return;
         for (const auto& p : g_saved)
             fprintf(f, "%s\n", p.c_str());
@@ -70,7 +70,7 @@ namespace {
     }
 
     void readState() {
-        FILE* f = fopen(kStateFile, "r");
+        FILE* f = fopen(stateFile().c_str(), "r");
         if (!f) {
             g_source = Source::Playlist;
             g_folder_path.clear();
@@ -94,7 +94,7 @@ namespace {
 
     void readSaved() {
         g_saved.clear();
-        FILE* f = fopen(kSavedFile, "r");
+        FILE* f = fopen(savedFile().c_str(), "r");
         if (!f) return;
         char buf[FS_MAX_PATH + 2] = {};
         while (fgets(buf, (int)sizeof(buf), f)) {

@@ -19,11 +19,19 @@
 #include "automix.hpp"
 #include "bgclient.hpp"
 #include "gfx.hpp"
+#include "connect.hpp"
+#include "filecopy.hpp"
+#include "together.hpp"
+#include "airplay.hpp"
+#include "syncer.hpp"
+#include "identity.hpp"
+#include "lastfm.hpp"
 #include "levels.hpp"
 #include "mood.hpp"
 #include "report.hpp"
 #include "library.hpp"
 #include "loader.hpp"
+#include "songprint.hpp"
 #include "metacache.hpp"
 #include "metadata.hpp"
 #include "palette.hpp"
@@ -33,6 +41,7 @@
 #include "store.hpp"
 #include "thumbs.hpp"
 #include "ui.hpp"
+#include "cfgmove.hpp"
 #include "updater.hpp"
 #include "waveform.hpp"
 #include "words.hpp"
@@ -85,7 +94,7 @@ struct SheetRow {
 /** The track menu (+ on a track): its page and what it is working on. */
 struct Sheet {
     // NewList, Smart and SmartForm (view_smart.cpp) belong to no track: + in the sidebar opens them.
-    enum Page { Closed, Menu, Tags, Cover, Delete, Info, Lists, NewList, Smart, SmartForm, Sleep, Job, Jobs, Colour, PlFile, Confirm, EqPreset, ActList, ListActions,
+    enum Page { Closed, Menu, Tags, Cover, Delete, Info, Lists, NewList, Smart, SmartForm, Sleep, Devices, Job, Jobs, Colour, PlFile, Confirm, EqPreset, ActList, ListActions,
                 PlMenu, PlIcon,     // PlMenu / PlIcon: a playlist page's ⋯ and its icons (recipe: the playlist, name: its name)
                 FileMenu, FileInfo, FileLink,     // Files: a file's menu, its details, the track an .lrc goes with (dir: the file)
                 Release,                          // Settings → Updates: a release's changelog and Install (recipe: its index)
@@ -148,6 +157,7 @@ private:
     BgClient bg;     // the background player (sysmodule), when it runs: it then does the playback
     ThumbWorker thumbs;   // covers for its overlay
     TrackLoader loader;   // a track's tags, lyrics and cover, read and decoded on a worker core
+    SongPrints prints;    // listening together: prints of a song held as two files (together.hpp)
     unsigned loadGen = 0;
     Library lib;
     MetaCache meta;
@@ -225,11 +235,12 @@ private:
     unsigned mixSeeksSeen = 0;            // Player::seeks() last frame (a seek through a join's show: endJoinShow)
     void holdOrderForAutomix(bool rebuild = false);        // Shuffle set aside while an Automix playlist is queued, back after (app.cpp)
     automix::Model mixModel() const;      // Settings › Debug's Automix model in dev builds; a release plays automix::Latest
-    // Automix's models over the air (the user, 2026-10-30): the ones downloaded (config/gatefold-nx/models/*.model), read at
+    // Automix's models over the air (the user, 2026-10-30): the ones downloaded (the settings folder's models/*.model), read at
     // launch and after a download; the one chosen in Settings › Updates › Automix models plans the joins (planJoin)
     struct ModelEntry { std::string file; automix::ModelFile m; };
     std::vector<ModelEntry> modelFiles;
     void loadModelFiles();
+    static const char* bundledModelFile();   // Automix V1.2.0's file, bundled (view_automix.cpp)
     const ModelEntry* mixFile() const;    // the downloaded model chosen, or nullptr (a built-in one)
     std::string mixName() const;          // the model playing, by its name
     automix::Plan planJoin(const mixan::Info* a, double dur, const mixan::Info* b, double fallback, const automix::Join* want) const;
@@ -391,8 +402,12 @@ private:
     int joinDrops_ = 0;
     std::string joinWhy_;
     double profFrame_[8] = {};   // this frame's sections (profMark)
+    double profPrev_[8] = {};    // the last whole frame's
     const char* updSlow_ = "";
     double updSlowMs_ = 0;
+    const char* updPrevSlow_ = "";       // the last whole frame's
+    double updPrevMs_ = 0;
+    double updTotalMs_ = 0, updPrevTotalMs_ = 0;   // update() as a whole
     Uint64 updAt_ = 0;
     void updMark(const char* step) {
         const Uint64 t = SDL_GetPerformanceCounter();
@@ -590,6 +605,9 @@ private:
     float sideOpen() const { return std::clamp((sideW - css::SideWCollapsed) / (css::SideW - css::SideWCollapsed), 0.f, 1.f); }
     int marqueeTrack = -2;   // the player bar's long title and artist scroll from marqueeAt, again for each track
     double marqueeAt = 0;
+    /** A line too long for its room scrolls in a loop instead of ending in "…" (the player bar's, and Now playing's artist and
+     *  album: the user, 2026-11-02): it rests 3 s at its start, then 30 px/s, the cut edge faded; still with Motion off. */
+    void marqueeLine(const std::string& s, Font f, float x, float y, float w, const Rgb& c);
     float volumeShown = 1;
     float coverBeat = 0;     // the cover's eased bass pulse
     double persistAt = 0;    // when the debounced save is due (0: nothing pending)
@@ -600,6 +618,11 @@ private:
     std::vector<float> pcm_;
     // Settings → About → Frame times: the last 120 frames, interval and the work before the present
     float frameMs_[120] = {}, workMs_[120] = {};
+    // dev, with Frame times on: every 5 s in the log, the slowest frame and those over 33 ms, the same in a session or not (session 11:
+    // the "Second" lines stop 70 s after launch, and a session's own line counts only its time)
+    double frameLogAt_ = 0;
+    float frameLogWorst_ = 0;
+    int frameLogSlow_ = 0, frameLogN_ = 0;
     int frameAt_ = 0;
     std::string frameStats_, profStats_;
     std::string startStats_;   // how long launch took, by step (Frame times): what the console spends before the first frame
@@ -650,7 +673,7 @@ private:
     void update();
     void rebuildIndex();
     /** Reads the music folder again; files: a walk already made (the launch check's), else it walks now. */
-    void rescan(const std::vector<std::string>* files = nullptr);
+    void rescan(const std::vector<std::string>* files = nullptr, Library* built = nullptr);   // built: already made from files, on a worker
     // The music folder's file list, remembered (library.tsv): launch builds from it instead of walking the
     // card, then a walk on another core checks it, and a rescan follows only when something changed.
     std::vector<std::string> libFiles_;    // the list the library was built from, sorted
@@ -812,6 +835,7 @@ private:
     std::string hintText_;
     SDL_FRect hintAt_{};   // "Automix playlist", with a little magic (widgets.cpp)
     void eqGlyph(float x, float cy, const Rgb& c);
+    void eqGlyph(float x, float cy, const Rgb& c, bool moving);   // moving: Now playing's, an outside source (AirPlay) too
     void lyricDots(float x, float cy, float d, const Rgb& c, float alpha, bool current);
     void coverBox(int track, float x, float y, float size, float rad, float alpha = 1);
     bool trackRow(Id id, int track, int number, float x, float y, float w, float h, bool showAlbum);
@@ -881,6 +905,9 @@ private:
     void tourBack();      // B: the chapter list closes, else the step before
     void endTour();       // back to the page it started on
     void drawTour();
+#ifdef GF_DEV
+    void tourCheck();     // GF_TOURCHECK=<0 Basic, 1 Advanced, 2 Complete>: walks that tour by itself and logs what each step lit
+#endif
     int tourCount() const;
     const std::vector<TourStep>& tourSteps() const { return tourStepsAt(tourLevel); }   // the chosen tour's
     static const std::vector<TourStep>& tourStepsAt(int level);   // 0 Basic, 1 Advanced, 2 Complete
@@ -1025,6 +1052,12 @@ private:
     // ================= view_updates.cpp: Settings → Updates (updater.hpp): releases, changelogs, install, roll back, backups
 public:
     std::string selfPath;   // the running program (plat::selfPath)
+#ifndef GF_WINDOWED
+    cfgmove::Result folder;   // what main found of the settings folder (cfgmove::atLaunch): logged, and asked about when both are there
+    /** An older version's .nro went in (Updater::takeBack): the folder back to gatefold-nx before it starts. True when one was due. */
+    static bool goBackIfDue();
+    void askBothFolders();
+#endif
     void frame();
 #ifdef GF_WINDOWED
     static constexpr int kNarrowW = 1170;   // under this the pages need the sidebar's room: it folds by itself, and comes back
@@ -1061,7 +1094,7 @@ public:
     float lightsP_ = 0, lightsHold_ = 0;
     bool cameFromInside_ = false;
     int lightDown_ = -1;
-    SDL_FRect titleKeep_[2] = {};           // what is pressed in the title bar, not dragged: the rest of it moves the window
+    SDL_FRect titleKeep_[3] = {};           // what is pressed in the title bar, not dragged: the rest of it moves the window
     static SDL_HitTestResult hitTest(SDL_Window* w, const SDL_Point* p, void* self);
     bool typingByTouch_ = false;            // the last input was a finger or a pad: the text card brings the on-screen keyboard
     bool closePending_ = false;             // × during the text card: done when it has closed
@@ -1081,7 +1114,7 @@ private:
     bool updateQuiet = false;           // the check at launch: only a toast when a newer version is out
     std::vector<UpdBackup> backupsShown;
     double backupsAt = -100;
-    std::string backupRoot() const;     // store.backupDir, else sdmc:/config/gatefold-nx-backups
+    std::string backupRoot() const;     // store.backupDir, else sdmc:/config/songate-nx-backups
     // ---- Settings → Storage and reset: where each browser starts (the music-folder picker chooses it), what Gatefold keeps
     int folderFor = -1;                 // 0 Files, 1 import, 2 export, 3 covers, 4 backups; −1 the picker is the music folder's
     std::string& folderPickField();
@@ -1112,6 +1145,250 @@ private:
     void crashRows(std::vector<SheetRow>& rows);
     void supportScan();                 // (starts the worker once; again after a report)
     void supportTick();                 // every frame: takes the workers' results in
+    Identity identity;                  // Connections: what makes a track the same on two devices (identity.hpp)
+    Connect connect;                    // Connections: finding other devices, pairing, the link (connect.hpp)
+    void allowConnections();            // the switch: says what it means first
+    void connectTick();                 // every frame: on or off, and what the worker has to say
+    void connectEnterCode(const std::string& peerId);
+    void connectAddress();
+    double connectAt = 0;
+    Syncer syncer;                      // one sync with a paired device (syncer.hpp)
+    Copier copier;                      // the songs this device lacks (filecopy.hpp)
+    // listening together (together.hpp, view_together.cpp)
+    struct Tog {
+        enum Stage { Off, Inviting, Joining, On } stage = Off;
+        bool host = false, hadBackground = false, queueTaken = false;
+        std::string peerId, peerName;
+        std::vector<together::Song> songs;
+        std::vector<int> tracks;              // each song's track here, -1 not here
+        std::vector<uint8_t> have;            // the starter: which songs the other device holds
+        int song = -1, pendingSong = -1, missing = 0;
+        int64_t serial = 0;
+        size_t signature = 0;                 // of the queue sent
+        double position = 0, startAt = 0, since = 0, readySince = 0, loggedAt = 0, rejoinAt = 0;
+        bool rejoining = false;
+        int playingSong = -1;                 // while the next song waits for this one to end
+        automix::Plan plan;                   // the join under way: the same on both
+        bool joinArmed = false, planNone = false;
+        bool joinAutomix = false;             // the join under way is Automix's (else a crossfade): only then its label and animation
+        int joinSong = -1;
+        bool linkLost = false, awaitingResume = false, rejoinNew = false;   // the link dropped: each plays on, on the shared clock
+        double lostAt = 0, resumedAt = 0;
+        double worstFrame = 0;                // dev log
+        uint64_t frameAt = 0;
+        bool natural = false, prepared = false, loaded = false, saidReady = false, theyReady = false, nextSent = false, paused = false;
+        Queue savedQueue;
+        double savedPosition = 0;            // where this device was in it when the session took it
+        // One song, two files (together.hpp): the device that did not start it, for a song it holds as another file, the shift
+        // between the two, which every position from the starter goes through; 0 when the fit was unclear
+        std::vector<uint8_t> otherFile;       // 1: matched by its tags and length, not its bytes
+        std::unordered_map<int, double> shift;
+        struct Printing { double from = 0, since = 0; std::vector<uint8_t> theirs, mine; bool theirsIn = false, mineIn = false; };
+        std::unordered_map<int, Printing> printing;
+        bool waiting = false, waitNatural = false;   // a Prepare held until its song's shift is known
+        int waitSong = -1;
+        double waitPosition = 0, waitSince = 0;
+        bool joinShifted = false;             // the join under way: its next song's own shift added
+        bool onlyHost = false;                // Who changes what plays (T7): only the starter; set there, told to the other
+        int order = 0;                        // the other device: the starter's order (Order), shown in its bar
+        int whoSent = -1;                     // the starter: the order last told (-1: tell it again)
+        double askedWhereAt = -100;           // the other device: when it last asked where things stand
+    } tog;
+    unsigned togPrintGen = 0;           // a session's prints: one from before is dropped
+    bool togetherOn() const;
+    bool togetherGuest() const;
+    /** The other device, while the starter alone changes what plays: its Previous, Play, Next, seek and order are off. */
+    bool togetherLocked() const;
+    /** The bar's and the Canvas's playing controls are someone else's: AirPlay's iPhone, or the starter of a session. */
+    bool controlsOff() const { return extOn || togetherLocked(); }
+    void togetherSetOnlyHost(bool only);
+    void togetherSendWho();
+    /** The order the bar shows: in a session, the other device shows the starter's, which decides what comes next on both. */
+    Order shownOrder() const { return togetherOn() && !tog.host ? Order(tog.order) : store.order; }
+    /** The bar's order button: the next order here, or, on the other device of a session, asked of the starter. */
+    void cycleOrder();
+    void togetherSend(const together::Message& m);
+    together::Song togetherSong(int track) const;
+    void togetherBegin(const std::string& peerId, const std::string& peerName, bool host);
+    void togetherEnd(const std::string& why);
+    void togetherStart(const std::string& peerId, const std::string& peerName);
+    void togetherLeave();
+    void togetherSendQueue();
+    void togetherPrepare(int song, double position, bool natural);
+    void togetherCancelNext();
+    void togetherPlanJoin();
+    void togetherArmJoin(int song, const automix::Plan& plan);
+    void togetherJoinStep();
+    void togetherRejoin(int song, double moment, double position);
+    void togetherResume();
+    /** The device that did not start it: a position in the starter's file of `song` as one in this device's, and back. */
+    double togetherMine(int song, double theirs) const;
+    double togetherTheirs(int song, double mine) const;
+    bool togetherShiftKnown(int song) const;
+    void togetherAskPrint(int song);
+    void togetherPrintsTick();
+    void togetherPrepareGuest(int song, double position, bool natural);
+    bool togChirps = true;              // dev: Settings > Devices
+    int soloStage_ = 0;                 // dev, GF_SOLO_SYNC: 0 not yet, 1 loaded, 2 started
+    double soloAt_ = 0;
+    /** After a session: this device's own song from its queue back in the player and on screen, at its place (the background
+     *  player takes it from there). */
+    void togetherOwnBack(double at, bool play);
+    void togetherPrepareHere(int song, double position, bool natural);
+    void togetherLoadNow();
+    void togetherStartAt(double at);
+    bool togetherTrap(bool seek, double seconds);
+    void togetherHostSeek(double seconds);
+    void togetherSeekHere(double at, double seconds, bool playing);
+    void togetherHostPause();
+    void togetherHostPlay();
+    bool togetherPlayAt(int orderPos);
+    void togetherFinished();
+    void togetherHandle(const together::Message& m);
+    void togetherTick();                // every frame
+    /** A device this console does not know wants to play over AirPlay: Allow once, Always, or Cancel. answer: 0 no, 1 once, 2 always
+     *  (no AirPlay in it: the preview draws it for a mock-up). */
+    void airplayQuestion(const std::string& name, std::function<void(int)> answer);
+#ifdef GF_AIRPLAY
+    AirPlay airplay;                    // an iPhone plays here (airplay.hpp)
+    bool airplayOn = false, airplayHadBackground = false;
+#endif
+    // An outside source on screen (AirPlay): its song, artist, album and cover in now.info and now.cover, as a track's, and no
+    // library song under them (no like, actions or Up next); your own song comes back when it ends
+    bool extOn = false;
+    std::string marqueeTitle;   // the bar's marquee starts again for a new title (an outside source keeps no track)
+    std::string extFrom;
+    void extBegin(const std::string& from);
+    void extInfo(const std::string& title, const std::string& artist, const std::string& album);
+    void extCover(std::vector<uint8_t> image);
+    double extClearAt = 0;   // "no cover" said: cleared at this time unless a cover comes first (iOS says none between songs)
+    void extTick();          // every frame while an outside source plays
+    void extEnd();
+    double extPos = 0, extPosAt = 0;   // where the outside song was, and when that was said (it runs on from there)
+    void extProgress(double position, double duration);
+    /** Where the song shown is: the player's, or an outside source's as it last said, counted on. */
+    double shownPosition() const;
+#ifdef GF_AIRPLAY
+    std::vector<std::string> airplayIds() const;
+    unsigned airplayCoverGen = 0;   // the cover last taken (AirPlay::View::coverGen)
+    unsigned airplayProgressGen = 0;
+    double airplayLoggedAt = 0;          // dev: the stream's numbers in the log every 10 s
+    bool airplayAsking = false;          // the question about a new device is up
+    size_t airplayAllowedSent = size_t(-1);   // the remembered devices AirPlay was told of (their count, and they change only here)
+    void airplayTick();                 // every frame
+#endif
+    // handoff (view_together.cpp): this device's queue and place move to the other, which takes over
+    void handoffTo(const std::string& peerId, const std::string& peerName);
+    void handoffTake(const together::Message& m, const std::string& name, double receivedAt);
+    void handoffPlay(int track, bool playing, double at);
+    void handoffUndo();
+    std::string handoffPeer, handoffName;     // sent, and waiting for its answer
+    double handoffSince = 0;
+    Queue handoffOld;                         // the queue this device had: Undo, for a while
+    double handoffOldAt = 0, handoffOldUntil = 0;
+    std::vector<Connect::Paired> devicesLinked;   // kept once a second: asked for by the player bar every frame
+    double devicesAt = -10;
+    bool devicesPaired = false;
+    bool syncBusy = false;                // a sync or a copy under way: the arrows by the name (Connections' tick, twice a second)
+    float syncIconA = 0;                  // … faded in and out
+    bool copyShown = false;
+    Copier::State copyWas = Copier::State::Idle;
+    double copyStartedAt = 0, copyGapMs = 0;   // how fast, and the longest frame while it ran
+    void syncNow(const std::string& peerId, bool answering);   // copies the library a little each frame, then begins
+    void syncBuildStep();
+    struct SyncBuild {
+        bool on = false, wantIdentity = false;
+        size_t next = 0;
+        unsigned epoch = 0;
+        std::vector<Identity::Want> wants;
+        Syncer::Job job;
+    };
+    SyncBuild syncBuild;
+    unsigned syncIdentityEpoch = ~0u;    // the library the identities were read from
+    size_t syncIdentityEdits = 0;
+    double syncWorstMs = 0;              // the longest a sync held a frame
+    void saveLevels();                  // all at once: when Songate closes
+    struct GainEntry { uint64_t hash; float track, album; };   // GfbgGain
+    std::vector<GainEntry> gainsOut;
+    bool gainsBuilding = false;         // gains.bin, a little each frame
+    size_t gainsNext = 0;
+    unsigned gainsEpoch = 0;
+    void gainsStep();
+#ifdef GF_DEV
+    Uint64 syncFrameAt = 0;
+    double syncGapMs = 0, syncStepMs = 0;   // the longest frame during a sync; update's slowest step then
+    std::string syncStep;
+    double syncPhaseGap[10] = {}, syncPhaseUpdate[10] = {};   // by phase: the longest frame, and how much of it was update()
+    double syncIdleGap = 0;              // the longest frame with no sync running, once settled: what a sync is measured against
+    double syncWorstProf[8] = {};        // the longest frame's sections
+    double syncAfterUntil = 0, syncAfterGap = 0, syncAfterAt = 0, syncAfterProf[8] = {};   // the 20 seconds after a sync: its longest frame, and when
+    int syncAfterSlow = 0;               // … and how many frames took over 33 ms
+    std::string syncAfterStep;
+    int tlSec = -1, tlSlow = 0;          // the first 70 seconds, second by second
+    double tlWorst = 0, tlPresent = 0, tlUpdate = 0;
+    std::string syncWorstStep;           // and update's slowest step in it
+    int syncWorstPhase = 0;
+#endif
+    void syncApply(const syncdata::Changes& c);
+    void syncDeleteStep();               // every frame while a sync has songs to delete
+    void rebuildBehind(bool walk);       // the library without stopping a frame: after a sync's deletions, or songs that arrived
+    std::vector<std::string> syncDeleting, syncDeleted;   // still to go; gone
+    bool syncDeleteOn = false, syncRebuilding = false;    // deleting; the library without them being built, on a worker
+    std::thread syncRebuild;
+    std::atomic<bool> syncRebuilt{ false };
+    Library syncNext;
+    std::vector<std::string> syncNextFiles;
+    unsigned syncRebuildEpoch = 0;
+    std::string syncPeer, syncPeerName;  // the sync waiting for the identities
+    bool syncWaiting = false, syncAnswering = false, syncShown = false;
+    std::string syncLinked;             // who was linked at the last look: a new link syncs, if automatic
+    uint64_t syncStamp() const;         // changes whenever what is shared changes
+    std::string folderInMusic(const std::string& path) const;   // a folder playlist's folder within the music folder, or ""
+    /** The playlists Connections carries: your own and folder ones (smart ones are made from each library). */
+    static bool syncedList(const FolderPlaylist& p) { return p.own() || p.folder(); }
+    uint64_t syncSent = 0, syncLast = 0;   // the stamp of the last sync; the latest one looked at
+    unsigned syncPlaysSent = 0;          // stats.gen() at the last sync
+    double syncChangedAt = 0, syncAt = -100, syncStampAt = 0;
+    bool syncAskedLater = false;         // the other device asked before this one had settled
+    bool syncWatchIdentity = false;      // identities being checked behind a sync that did not wait: if one changed, sync again
+    double syncSharedAt = -1000;         // measurements and covers: they are heavy, so now and then, never during startup
+    double syncShareTriedAt = -1000;     // … and if the other device would not, not asked again at once
+    bool syncShareDue() const { return store.syncResults && time > 30 && time - syncSharedAt > 600 && time - syncShareTriedAt > 300; }
+    bool syncSettled() const;            // nothing automatic while Songate is still starting up
+    void identityMeasure();             // every track of the library, on its worker
+    Identity::Want identityWant(const Track& t) const;
+#ifdef GF_DEV
+    bool identityAsked = false;
+#endif
+    // Settings › Last.fm (lastfm.hpp)
+    Lastfm lastfm;
+    void allowLastfm();                 // the switch: says what is sent and where first
+    void lastfmTick();                  // every frame: what was heard, what plays, the background player's scrobbles
+    bool lastfmSong(const Track& t, double duration, int64_t when, Lastfm::Song& out) const;   // false: not enough tags
+    void lastfmHeard(const std::string& path, int64_t when);
+    SDL_Texture* lastfmCode(int& side);  // the sign-in page's QR code: made once, dropped by lastfmTick
+    double lfmHeard = 0;                // seconds of the current track heard here
+    int64_t lfmBegan = 0;               // when they began
+    bool lfmDone = false, lfmSaid = false;   // scrobbled; announced
+    double lfmBgAt = 0;
+    std::vector<std::pair<std::string, int64_t>> lfmBgWait;   // the background player's, until the library knows them
+    SDL_Texture* lfmQr = nullptr;
+    int lfmQrSide = 0;
+    bool lfmShowUrl = false;
+#ifdef GF_WINDOWED
+    std::string lfmOpened;              // the sign-in page the browser was sent to
+#endif
+    void logLine(const std::string& s); // the app's log, without a toast
+    void saveLog();                     // log.txt, by the writer thread: every 30 s with news, and as Songate leaves for HOME
+    // The opening (view_opening.cpp)
+    void openingScene(double t, float alpha);
+    void openingFirst();
+    void drawOpening();
+    double openingAt_ = -1;
+    bool openingDone_ = false, openingSkip_ = false;
+    std::vector<float> chime_;          // the bells, until they have rung
+    std::thread chimeThread_;           // joined in drawOpening or at exit
+    std::atomic<bool> chimeReady_{ false };
     std::string reportBody() const;     // the form and the app's part, Markdown (the worker adds the console's and the crashes)
     std::thread supportThread_, reportThread_;
     std::atomic<bool> supportReady_{ false }, reportDone_{ false };
@@ -1133,7 +1410,7 @@ private:
     void defaultSettings();  // ... without asking (Reset settings, and a factory reset's Settings part)
     // Settings → Reset → Factory reset: a sheet of what Gatefold keeps, each with a switch (factoryPick), then Erase what
     // is ticked, or Erase everything (asks twice). It is done when Gatefold closes (factoryMask_), which then starts again.
-    enum FactoryPart { FacSettings, FacMusic, FacPlaylists, FacLiked, FacEdits, FacLyrics, FacEqPresets, FacStats, FacQueue, FacCaches, FacParts };
+    enum FactoryPart { FacSettings, FacMusic, FacPlaylists, FacLiked, FacEdits, FacLyrics, FacEqPresets, FacStats, FacQueue, FacLastfm, FacConnections, FacCaches, FacParts };
     void openFactory();
     void factoryRows(std::vector<SheetRow>& rows);
     void factoryErase(unsigned mask);   // asks (twice for everything), then closes Gatefold
@@ -1159,6 +1436,7 @@ private:
     // ================= view_smart.cpp: smart playlists
     void openNewList();
     void openSleep();
+    void openDevices();                 // the player bar's devices button: what can be done with other devices, from anywhere
     // Settings → Appearance → Custom: the colour picker (view_smart.cpp). The field changes live, so the
     // interface shows the colour as it is picked; Cancel (and B) put back what it was.
     struct ColourPick {
@@ -1212,6 +1490,9 @@ private:
     void undoTagEdits(int track);
     void setTrackCover(const std::string& image);
     void deleteTrack(int track);
+    bool deleteSong(int track);          // the file and what is kept about it, without a word or a rescan
+    void syncNoteDeleted(const std::string& path);   // for other devices that follow deletions
+    void allowDeletes();                 // the switch: says what it means first
     void listCoverDir(const std::string& dir);
     bool keyboard(const char* header, const std::string& initial, std::string& out);
     void loadTrackCoverAgain();
@@ -1221,6 +1502,6 @@ private:
     bool settingsFocusFirst = false;   // a category was chosen: its first setting takes the focus next frame
     int settingsCatSeen_ = -1;   // the category last drawn: opening one may read the card once (drawSettings)
     /** Settings' categories that other pages open by number (the progress cards, the equalizer button). */
-    enum SettingsCat { SetAppearance = 0, SetPlayback = 1, SetEqualizer = 2, SetLibrary = 3, SetStorage = 4, SetReset = 9, SetUpdates = 10, SetSupport = 11 };   // (Reset above Updates: the user, 2026-10-30)
+    enum SettingsCat { SetAppearance = 0, SetPlayback = 1, SetEqualizer = 2, SetLibrary = 3, SetStorage = 4, SetDevices = 9, SetLastfm = 10, SetReset = 11, SetUpdates = 12, SetSupport = 13 };   // (Reset above Updates: the user, 2026-10-30)
     std::string settingsQuery;
 };

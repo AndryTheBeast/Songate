@@ -39,6 +39,10 @@ body:
         - Canvas and lyrics
         - Sound and equalizer
         - Background player and overlay
+        - Devices and sync
+        - Listen together and Handoff
+        - AirPlay
+        - Last.fm
         - The PC's window, tray and keyboard
         - Updates and settings
         - Something else
@@ -49,4 +53,4 @@ body:
     attributes:
       label: Songate version
       description: Settings › About. Optional, but it helps.
-      placeholder: 2.0.0 BETA 1
+      placeholder: 2.0.0 BETA 2

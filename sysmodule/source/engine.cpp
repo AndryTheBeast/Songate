@@ -20,13 +20,17 @@ extern "C" size_t gfHeapSize;   // main.cpp
 
 namespace {
 
-constexpr const char* Dir = "sdmc:/config/gatefold-nx";
+/** The settings folder (gfcfgdir.h), looked for once: the app starts the player again after it moves the folder. */
+const std::string& Dir() {
+    static const std::string d = gfcfgPick();
+    return d;
+}
 constexpr int BufFrames = 1536, BufCount = 5;   // 5 × 32 ms in flight: room to open the next track without a gap
 constexpr size_t BufBytes = (BufFrames * 4 + 0xFFF) & ~size_t(0xFFF);
 
 u64 nowMs() { return armTicksToNs(armGetSystemTick()) / 1000000; }
 
-std::string cfgPath(const char* f) { return std::string(Dir) + "/" + f; }
+std::string cfgPath(const char* f) { return Dir() + "/" + f; }
 
 bool exists(const std::string& p) {
     struct stat st;
@@ -310,7 +314,7 @@ float Engine::levelFor(const std::string& path) const {
 
 /** Gatefold rewrites GFBG_GAINS as it measures: its header's generation says when to read it again. */
 void Engine::watchGains() {
-    FILE* f = fopen(GFBG_GAINS, "rb");
+    FILE* f = fopen(cfgPath(GFBG_GAINS_FILE).c_str(), "rb");
     if (!f) return;
     GfbgGainsHeader h{};
     if (fread(&h, sizeof h, 1, f) != 1 || h.magic != GFBG_GAINS_MAGIC || h.count > 100000) { fclose(f); return; }
@@ -453,7 +457,7 @@ void Engine::saveGameVolumes() {
         copy = gameVolumes_;
     }
     mkdir("sdmc:/config", 0777);
-    mkdir(Dir, 0777);
+    mkdir(Dir().c_str(), 0777);
     if (FILE* f = fopen(cfgPath("bg-games.txt").c_str(), "wb")) {
         for (const auto& [p, v] : copy) fprintf(f, "%016llx=%.3f\n", (unsigned long long)p, double(v));
         fclose(f);
@@ -599,6 +603,7 @@ bool Engine::adopt(s32 pos, std::unique_ptr<Decoder> d, const std::string& p, co
     lvl_ = lvlTarget_ = levelFor(p);   // levelled from the first sample, also across a gapless join
     heardFrames_ = 0;
     counted_ = false;
+    scrobbled_ = false;
     base_ = start > 0.5 ? start : 0;
     outFrames_ = 0;
     resumeAt_ = 0;
@@ -786,7 +791,7 @@ bool Engine::mixInfo(const std::string& path, mixan::Info& out) {
     for (int k = 0; k < 2; k++)
         if (infoPath_[k] == path) { out = info_[k]; return infoOk_[k]; }
     bool ok = false;
-    if (FILE* f = fopen(GFBG_MIX, "rb")) {
+    if (FILE* f = fopen(cfgPath(GFBG_MIX_FILE).c_str(), "rb")) {
         static char line[2048];   // (the watch thread's only)
         const size_t n = path.size();
         while (fgets(line, sizeof line, f)) {
@@ -846,7 +851,7 @@ void Engine::watchAutomix() {
         modelOk_ = false;
         std::string text;
         if (!modelFile.empty())
-            if (FILE* f = fopen((std::string(GFBG_MODELS) + "/" + modelFile).c_str(), "rb")) {
+            if (FILE* f = fopen((cfgPath(GFBG_MODELS_DIR) + "/" + modelFile).c_str(), "rb")) {
                 char buf[1024];
                 for (size_t n; (n = fread(buf, 1, sizeof buf, f)) > 0 && text.size() < 65536;) text.append(buf, n);
                 fclose(f);
@@ -910,7 +915,7 @@ void Engine::watchAutomix() {
 
 /** A playlist's kind (GFBG_KIND_*) from GFBG_PLAYLISTS: its "!kinds" line, a letter per "#" line in the file's order. */
 char Engine::kindOf(const std::string& name) {
-    FILE* f = fopen(GFBG_PLAYLISTS, "rb");
+    FILE* f = fopen(cfgPath(GFBG_PLAYLISTS_FILE).c_str(), "rb");
     if (!f) return 0;
     std::string kinds, line;
     char out = 0;
@@ -999,6 +1004,11 @@ int Engine::produce(s16* out, int frames) {
             if (!counted_ && double(heardFrames_) >= need * GFBG_RATE) {
                 counted_ = true;
                 if (plays_.size() < 256) plays_.push_back(playing_);
+            }
+            const double half = std::min(240.0, dur * 0.5);   // Lastfm::threshold
+            if (!scrobbled_ && dur > 30 && double(heardFrames_) >= half * GFBG_RATE) {
+                scrobbled_ = true;
+                if (scrobbles_.size() < 256) scrobbles_.push_back({ playing_, u32(heardFrames_ / GFBG_RATE) });
             }
         }
         if (got >= want) break;
@@ -1319,7 +1329,7 @@ bool Engine::playRandomFolder() {
  * read line by line so a big file costs no memory. Shuffled afresh, or where it was left (listStart), and faded in.
  */
 bool Engine::playPlaylist(u64 hash) {
-    FILE* f = fopen(GFBG_PLAYLISTS, "rb");
+    FILE* f = fopen(cfgPath(GFBG_PLAYLISTS_FILE).c_str(), "rb");
     if (!f) return false;
     // Packed as the queue is, straight away (a std::string per path cost several times the paths themselves); a list
     // too big for the heap plays as far as it fits, rather than aborting the module.
@@ -1605,25 +1615,38 @@ void Engine::loadFiles() {
 /** "time<TAB>path" lines for Gatefold (Stats, stats.cpp), which renames the file away to read it. */
 void Engine::writePlays() {
     mutexLock(&m_);
-    if (plays_.empty()) { mutexUnlock(&m_); return; }
+    if (plays_.empty() && scrobbles_.empty()) { mutexUnlock(&m_); return; }
     std::vector<std::string> plays = std::move(plays_);
     plays_.clear();
+    std::vector<Heard> heard = std::move(scrobbles_);
+    scrobbles_.clear();
     mutexUnlock(&m_);
     u64 t = 0;
     if (R_FAILED(timeGetCurrentTime(TimeType_UserSystemClock, &t))) t = 0;   // 0: Gatefold dates it when it reads it
     // Opened and wound to its end rather than with "a": the plays must not depend on append mode.
-    const std::string path = cfgPath("bg-plays.txt");
-    FILE* f = fopen(path.c_str(), "r+b");
-    if (!f) f = fopen(path.c_str(), "wb");
-    if (!f) return;
-    fseek(f, 0, SEEK_END);
-    for (const auto& p : plays) fprintf(f, "%llu\t%s\n", (unsigned long long)t, p.c_str());
-    fclose(f);
+    auto open = [](const std::string& path) {
+        FILE* f = fopen(path.c_str(), "r+b");
+        if (!f) f = fopen(path.c_str(), "wb");
+        if (f) fseek(f, 0, SEEK_END);
+        return f;
+    };
+    if (!plays.empty())
+        if (FILE* f = open(cfgPath("bg-plays.txt"))) {
+            for (const auto& p : plays) fprintf(f, "%llu\t%s\n", (unsigned long long)t, p.c_str());
+            fclose(f);
+        }
+    // "began<TAB>path" (0: no clock); a megabyte is far more than Songate keeps, should it never open again
+    if (!heard.empty())
+        if (FILE* f = open(cfgPath("bg-scrobbles.txt"))) {
+            if (ftell(f) < 1024 * 1024)
+                for (const auto& h : heard) fprintf(f, "%llu\t%s\n", t > h.secs ? (unsigned long long)(t - h.secs) : 0ULL, h.path.c_str());
+            fclose(f);
+        }
 }
 
 void Engine::saveSession() {
     mkdir("sdmc:/config", 0777);
-    mkdir(Dir, 0777);
+    mkdir(Dir().c_str(), 0777);
     // Next to the old one and renamed over it: a power cut mid-write never loses the queue.
     const std::string tmp = cfgPath("bg-session.tmp"), dst = cfgPath("bg-session.txt");
     FILE* f = fopen(tmp.c_str(), "wb");
@@ -1673,7 +1696,7 @@ void Engine::saveSession() {
 void Engine::saveConfig() {
     GfbgConfig c = config();
     mkdir("sdmc:/config", 0777);
-    mkdir(Dir, 0777);
+    mkdir(Dir().c_str(), 0777);
     if (FILE* f = fopen(cfgPath("bg-config.txt").c_str(), "wb")) {
         fprintf(f, "onOpen=%d\nonHome=%d\nonClose=%d\nonReturn=%d\nfadeOut=%.2f\nfadeIn=%.2f\ngameVolume=%.3f\n", c.onOpen, c.onHome,
                 c.onClose, c.onReturn, double(c.fadeOut), double(c.fadeIn), double(c.gameVolume));

@@ -14,6 +14,7 @@
  */
 #pragma once
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -41,6 +42,56 @@ public:
     void stop();
     void togglePause();
     void seek(double seconds);
+    /**
+     * Listening together. On: the audio callback's times are fitted to a line, which says when any sample of this device's stream
+     * plays on this device's clock (tools/clicktest proved it on both platforms). Shared time is the other device's clock where that
+     * one started the session, this device's own otherwise.
+     *   syncClock: the offset from this clock to shared time, at `at`, and its slope. Each frame.
+     *   syncDelay: this device's output delay, seconds: what it writes that much ahead of the shared moment.
+     *   syncStart: a track loaded paused at `position` starts at that shared moment, on its exact sample.
+     *   syncPauseAt: it pauses at that shared moment.
+     * While it plays, one frame more or one fewer is taken into a buffer when the stream falls off the shared clock: at most 488 ppm
+     * at 2048 frames, 0.85 cents, for one buffer. Seeks and pauses are the session's: see trap.
+     */
+    void syncEnable(bool on);
+    bool syncEnabled() const { return syncOn_; }
+    void syncClock(double at, double offset, double slope);
+    void syncDelay(double seconds) { syncDelay_ = seconds; }
+    void syncStart(double sharedAt, double position);
+    void syncPauseAt(double sharedAt) { syncPause_ = sharedAt; }
+    /** Silent now, waiting for a syncStart. */
+    void syncHold();
+    /** On this device, in shared time: now (from the fit), and the stream's error against the shared clock, seconds. */
+    double syncNow() const;
+    float syncError() const { return syncErr_; }
+    /** Started, or waiting to? */
+    bool syncRunning() const { return syncRun_ || syncWait_; }
+    /** The next load() may take what prepare() made, with no Automix plan. */
+    void prepareTimed(const std::string& path, double offset, bool exact = false);
+    /** Its stream fell off the shared clock by more than a trim mends. Once. */
+    bool takeLost() { return syncLost_.exchange(false); }
+    /** The shared moment this position of the running start plays at, and that position at a moment. */
+    double syncMomentOf(double position) const { return syncWantT_.load() + (position - syncWantP_.load()); }
+    double syncPositionAt(double moment) const { return syncWantP_.load() + (moment - syncWantT_.load()); }
+    /** Freezes noticed: dev log. */
+    unsigned syncFreezes() const { return syncFroze_; }
+    /** Pressing pause or seeking, while a session runs: the session decides what happens, on both. Returns true when it took it over. */
+    std::function<bool(bool seek, double seconds)> trap;
+    /** Plays and seeks on behalf of a session, not asked of the trap. */
+    void seekNow(double seconds);
+#ifdef GF_DEV
+    /** Dev: a quiet chirp each whole second of the song, for one microphone to time real music by (tools/clicktest/analyze.py). */
+    void syncChirps(bool on) { syncChirps_ = on; }
+#endif
+    /**
+     * Sound from elsewhere (AirPlay): read gives 48 kHz stereo on the audio thread, and plays over nothing else: the caller stops the
+     * music first. Through levelling (streamLevel, from the stream's own measurement), the equalizer, then the volume set times gain.
+     */
+    void streamBegin(std::function<int(int16_t*, int)> read);
+    void streamEnd();
+    void streamGain(float g) { streamGain_ = g; }
+    void streamLevel(float g) { streamLevel_ = g; }   // linear; eased over a few seconds in the hook
+    bool streaming() const { return streamOn_; }
     /** How many seeks so far (the UI thread's): a join's show ends on one (App::endJoinShow). */
     unsigned seeks() const { return seeks_; }
     /** The main thread, once a frame: closes an outgoing voice whose fade has ended (not on the audio thread). */
@@ -73,6 +124,10 @@ public:
 
     /** 0..1, applied to music playback. */
     void setVolume(float v);
+    /** Plays stereo floats at 48 kHz once over whatever else sounds, at the volume set (the opening's bells); `sound` must outlive it. */
+    void playOnce(const std::vector<float>* sound);
+    bool oncePlaying() const { return oncePlaying_; }
+    void stopOnce() { if (oncePlaying_) onceStop_ = true; }
     /** Volume levelling (levels.hpp): a linear gain on everything played here, eased over ~0.4 s, or at once. */
     void setLevel(float gain, bool now = false) { levelTarget_ = gain; if (now) level_ = gain; }
     /** The equalizer for what is played here (the background player has its own, GfbgCmd_SetEq). */
@@ -98,6 +153,38 @@ private:
     static void musicFinished();
     static void ffHook(void* self, unsigned char* stream, int len);
     void feedRing(const float* stereo, int frames);
+    void syncTick(int frames, double now);
+
+    // listening together (the audio thread's, but for what is atomic or under syncLock_)
+    struct SyncFit {
+        static constexpr int N = 1024;
+        double f[N], t[N], slope = 1.0 / 48000, lastF = 0, lastT = 0;
+        int n = 0, at = 0;
+        void clear() { n = at = 0; slope = 1.0 / 48000; }
+        void add(double frame, double when);
+        double time(double frame) const { return lastT + (frame - lastF) * slope; }
+    };
+    SyncFit syncFit_;
+    std::mutex syncLock_;
+    double syncAt_ = 0, syncOffset_ = 0, syncSlope_ = 0;   // syncLock_
+    double syncOffsetIn_[3] = {};                          // the callback's copy
+    double syncFrames_ = 0, syncTrim_ = 0, syncSum_ = 0, syncOwed_ = 0, syncBase_ = 0;
+    double syncT_ = 0, syncP_ = 0;                         // playing: this shared moment is this position
+    std::atomic<double> syncDelay_{ 0 }, syncWantT_{ 0 }, syncWantP_{ 0 }, syncPause_{ 0 }, syncTimeNow_{ 0 }, syncTimeAt_{ 0 };
+    std::atomic<bool> syncOn_{ false }, syncWait_{ false }, syncRun_{ false }, syncReset_{ false }, syncChirps_{ false }, prepTimed_{ false };
+    std::atomic<bool> syncLost_{ false }, prepExact_{ false };
+    std::atomic<unsigned> syncFroze_{ 0 };
+    int syncBad_ = 0;
+    std::atomic<bool> syncRebase_{ false };
+    double syncRebaseP_ = 0;
+    std::atomic<float> syncErr_{ 0 };
+    std::function<int(int16_t*, int)> stream_;
+    std::atomic<bool> streamOn_{ false };
+    std::atomic<float> streamGain_{ 1.f }, streamLevel_{ 1.f };
+    float streamLv_ = 1.f;   // the audio thread's eased copy
+    float streamMono_[8192 * 2] = {};
+    int16_t syncBuf_[(4096 + 2) * 2] = {};
+    int16_t syncLast_[2] = {};
 
     BgClient* bg_ = nullptr;
     unsigned seeks_ = 0;
@@ -149,6 +236,9 @@ private:
     unsigned lastRead_ = 0;
     int channels_ = 2;
     bool float32_ = false;
+    const std::vector<float>* once_ = nullptr;
+    size_t onceAt_ = 0;
+    std::atomic<bool> oncePlaying_{ false }, onceStop_{ false };   // (the audio thread ends it, so `sound` is never freed under it)
     std::atomic<float> volume_{ 1.f }, vol_{ 1.f };   // vol_: volume_ eased in the hook, so a slider drag never crackles
     std::atomic<float> level_{ 1.f }, levelTarget_{ 1.f };
 };

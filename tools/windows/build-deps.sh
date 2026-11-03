@@ -91,6 +91,11 @@ b_curl() {
     -DCURL_USE_LIBPSL=OFF -DUSE_LIBIDN2=OFF -DUSE_WIN32_IDN=OFF -DUSE_NGHTTP2=OFF -DCURL_BROTLI=OFF -DCURL_ZSTD=OFF -DCURL_USE_LIBSSH2=OFF \
     -DBUILD_LIBCURL_DOCS=OFF -DBUILD_MISC_DOCS=OFF -DENABLE_CURL_MANUAL=OFF -DZLIB_ROOT="$P" -DZLIB_LIBRARY="$P/lib/z.lib" -DZLIB_INCLUDE_DIR="$P/include"
 }
+b_mbedtls() {   # AirPlay's RSA and AES (session 11): the console's version (devkitPro's portlibs), so both run one code path; Apache-2.0
+  unpack mbedtls mbedtls-2.28.10.tar.bz2 mbedtls-2.28.10
+  cm mbedtls "$SRC/mbedtls-2.28.10" -DENABLE_PROGRAMS=OFF -DENABLE_TESTING=OFF -DUSE_SHARED_MBEDTLS_LIBRARY=OFF -DUSE_STATIC_MBEDTLS_LIBRARY=ON \
+    -DMBEDTLS_FATAL_WARNINGS=OFF -DINSTALL_MBEDTLS_HEADERS=ON
+}
 b_tremor() {   # no build system for this compiler; a short list of files
   [ -d "$SRC/tremor-master" ] || tar -xf "$DL/tremor/tremor-master.tar.gz" -C "$SRC"
   rm -rf "$BLD/tremor"; mkdir -p "$BLD/tremor" "$PREFIX/include/tremor"
@@ -123,7 +128,7 @@ b_ffmpeg() {   # the console's version, audio only, LGPL, DLLs so that it stays 
   cd "$HERE"
 }
 
-ALL=(zlib ogg opus opusfile flac mpg123 jpeg curl tremor ffmpeg)
+ALL=(zlib ogg opus opusfile flac mpg123 jpeg curl mbedtls tremor ffmpeg)
 for n in "${@:-${ALL[@]}}"; do
   echo "=== $n"
   "b_$n"

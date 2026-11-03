@@ -39,7 +39,7 @@ include $(DEVKITPRO)/libnx/switch_rules
 #---------------------------------------------------------------------------------
 # Songate overlay: Songate.ovl for Ultrahand (Gatefold.ovl before 2.0.0) (switch/.overlays/). Built on sys-tune 2.1's
 # overlay (GPL-2, see LICENSE-sys-tune) and libultrahand, talking to Gatefold's background player.
-VERSION		?=	2.0.0 BETA 1
+VERSION		?=	2.0.0 BETA 2
 API_VERSION	?=	4
 APP_TITLE	:=	Songate
 APP_AUTHOR	:=	AndryTheBeast
@@ -84,7 +84,8 @@ CFLAGS := -g -Wall -Os -ffunction-sections -fdata-sections -flto \
           $(ARCH) $(DEFINES)
 
 # Enable appearance overriding
-UI_OVERRIDE_PATH := /config/gatefold-nx/overlay/
+# a theme, wallpaper or translations for the overlay, inside Songate's settings folder (it moved there from gatefold-nx in BETA 2)
+UI_OVERRIDE_PATH := /config/songate-nx/overlay/
 CFLAGS += -DUI_OVERRIDE_PATH="\"$(UI_OVERRIDE_PATH)\""
 
 # Enable Widget

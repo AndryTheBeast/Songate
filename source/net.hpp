@@ -1,7 +1,7 @@
 /*
  * Gatefold NX · net.hpp
- * The updater's only way online: HTTPS GETs to GitHub, never at launch unless Settings → Updates allows it; and Settings ›
- * Support's report, one POST when you send it.
+ * The updater's only way online: HTTPS GETs to GitHub, never at launch unless Settings → Updates allows it; Settings ›
+ * Support's report, one POST when you send it; and Last.fm, once Settings › Last.fm allows it.
  * On the console it is libcurl over the Switch's own ssl service (its certificates, peers verified); in the PC
  * preview a stand-in serves a local folder (GF_NET=<folder>: releases.json and <tag>/<asset>), so the whole
  * flow can be tried without the internet.
@@ -30,5 +30,8 @@ bool download(const std::string& url, const std::string& file, std::string& err,
 /** A POST of JSON (Settings › Support's reports): `secret` a header line ("Authorization: …") wiped, here and in curl's
  *  copy, once the request is done; the answer's body in out. */
 bool post(const std::string& url, const std::string& json, char* secret, std::string& out, std::string& err);
+/** A POST of a form (Last.fm). Its errors come as a body with a 4xx status, so true means an answer came, whatever the
+ *  status: the body in out, the status, and the server's Date header. */
+bool form(const std::string& url, const std::string& body, std::string& out, long& status, std::string& date, std::string& err, Progress* p);
 
 }  // namespace net

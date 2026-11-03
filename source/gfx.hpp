@@ -79,6 +79,8 @@ public:
     void circle(float cx, float cy, float rad, const Rgb& c, float alpha = 1);
     /** An antialiased line through the points, `thick` wide (its edges feathered by a pixel): curves, as the join editor's. */
     void polyline(const std::vector<SDL_FPoint>& pts, float thick, const Rgb& c, float alpha = 1);
+    /** A filled, antialiased triangle (its edges feathered by a pixel): arrowheads, as the sync arrows'. */
+    void triangle(SDL_FPoint a, SDL_FPoint b, SDL_FPoint c, const Rgb& col, float alpha = 1);
     /** Image in a rounded box, cropped to fill it (CSS object-fit: cover); zoom > 1 crops further (Ken Burns). */
     /** image() and roundRect() with a radius per corner (top-right, bottom-right, bottom-left, top-left): mosaics. */
     void imageCorners(SDL_Texture* t, float x, float y, float w, float h, const float* rads, float alpha = 1);
@@ -109,7 +111,9 @@ public:
     /** Songate's wordmark (wordmark.inc: Fraunces Black, made once by tools/brand/wordmark.py): its letters in a gradient
      *  across, a → b → c, over their own blurred glow (glowC, glowA), with a shimmer of white crossing them while shine is in
      *  0..1 (where the light is, across the word). x is its left, cy the letters' middle. Its width and height as made. */
-    void wordmark(float x, float cy, const Rgb& a, const Rgb& b, const Rgb& c, const Rgb& glowC, float glowA, float shine, float alpha = 1);
+    void wordmark(float x, float cy, const Rgb& a, const Rgb& b, const Rgb& c, const Rgb& glowC, float glowA, float shine, float alpha = 1, float big = 1, float reveal = 2);
+    /** The four-pointed star of the opening, centred. */
+    void sparkle(float cx, float cy, float size, const Rgb& c, float alpha);
     static int wordmarkW();
     static int wordmarkH();
     static float wordmarkMid();
@@ -225,6 +229,8 @@ private:
     SDL_Texture* glowTex_ = nullptr;
     SDL_Texture* bandTex_ = nullptr;
     SDL_Texture* wordTex_ = nullptr;       // the wordmark's letters, white (alpha from wordmark.inc)
+    SDL_Texture* wordBigTex_ = nullptr;    // … four times as many pixels, for the opening (the PC's wordTex_ is this one)
+    SDL_Texture* starTex_ = nullptr;       // sparkle()'s
     SDL_Texture* wordGlowTex_ = nullptr;   // … and their blur
     bool holdCache_ = false;
     SDL_Texture* veilTex_ = nullptr;

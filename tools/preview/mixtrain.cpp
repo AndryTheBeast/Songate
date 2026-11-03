@@ -17,6 +17,9 @@
  *   tools/mixtrain-fit.py <round dir>…                     what the ratings say, and a candidate
  *   mixtrain freeze <candidate> <name> <cache.tsv> <out.model>
  *   mixtrain filesame <cache.tsv> <file>.model             a model file against what it stands for
+ *   mixtrain sameplans <cache.tsv> <a>.model <b>.model     two model files, every join (a new format against what it copies)
+ * Which song follows which (round 8, 2026-10-31):
+ *   mixtrain partners <cache.tsv> <mood.tsv> <base>.model <out dir> <round> <seed> [songs]
  * Built by tools/preview/build-mixtrain.sh.
  */
 #include <algorithm>
@@ -640,7 +643,7 @@ static bool samePlan(const automix::Plan& x, const automix::Plan& y) {
            x.stretchFrom == y.stretchFrom && x.onBars == y.onBars && x.structured == y.structured && x.drop == y.drop && x.cut == y.cut &&
            x.bassCut == y.bassCut && x.cross == y.cross && x.keyDistance == y.keyDistance && x.keyClash == y.keyClash &&
            x.inLevel == y.inLevel && x.lpFrom == y.lpFrom && x.outPow == y.outPow && x.cutFade == y.cutFade && x.gate == y.gate &&
-           (!x.gate || (x.gateLevel == y.gateLevel && x.gateDuck == y.gateDuck && x.gateEvery == y.gateEvery));
+           (!x.gate || (x.gateLevel == y.gateLevel && x.gateDuck == y.gateDuck && x.gateEvery == y.gateEvery && x.gateBars == y.gateBars && x.gateLen == y.gateLen));
 }
 
 /**
@@ -702,6 +705,44 @@ static int fileSame(const std::string& cachePath, const std::string& modelPath) 
         for (const auto& [k, c] : was) printf(" %s %d", k.c_str(), c);
     }
     printf("\n");
+    return bad ? 1 : 0;
+}
+
+/** mixtrain sameplans <cache.tsv> <a>.model <b>.model: every join of every folder in its playlist order, planned by both. */
+static int samePlans(const std::string& cachePath, const std::string& pathA, const std::string& pathB) {
+    automix::ModelFile ma, mb;
+    std::string why;
+    std::ifstream fa(fs::u8path(pathA), std::ios::binary), fb(fs::u8path(pathB), std::ios::binary);
+    if (!ma.parse(std::string(std::istreambuf_iterator<char>(fa), {}), &why) || !mb.parse(std::string(std::istreambuf_iterator<char>(fb), {}), &why)) {
+        fprintf(stderr, "%s\n", why.c_str());
+        return 2;
+    }
+    std::vector<mixan::Info> all;
+    std::vector<std::string> paths;
+    std::ifstream in(cachePath, std::ios::binary);
+    for (std::string line; std::getline(in, line);) {
+        const size_t t1 = line.find('\t'), t2 = line.find('\t', t1 + 1);
+        if (t1 == std::string::npos || t2 == std::string::npos) continue;
+        mixan::Info i;
+        if (!mixan::Info::unpack(line.substr(t2 + 1), i) || !i.valid) continue;
+        all.push_back(i);
+        paths.push_back(line.substr(0, t1));
+    }
+    std::map<std::string, std::vector<int>> byFolder;
+    for (int i = 0; i < int(all.size()); i++) byFolder[utf8(fs::u8path(paths[size_t(i)]).parent_path().filename())].push_back(i);
+    int n = 0, bad = 0;
+    for (auto& [folder, idx] : byFolder) {
+        std::sort(idx.begin(), idx.end(), [&](int x, int y) { return paths[size_t(x)] < paths[size_t(y)]; });
+        std::vector<const mixan::Info*> ptr;
+        for (int i : idx) ptr.push_back(&all[size_t(i)]);
+        const std::vector<int> ord = automix::order(ptr, -1, automix::Model::V1_1_0);
+        for (size_t k = 0; k + 1 < ord.size(); k++) {
+            const mixan::Info &a = *ptr[size_t(ord[k])], &b = *ptr[size_t(ord[k + 1])];
+            n++;
+            if (!samePlan(automix::plan(&a, a.seconds, &b, 4, nullptr, ma), automix::plan(&a, a.seconds, &b, 4, nullptr, mb))) bad++;
+        }
+    }
+    printf("%s (format %d) against %s (format %d): %d joins, %d differ\n", ma.name.c_str(), ma.format, mb.name.c_str(), mb.format, n, bad);
     return bad ? 1 : 0;
 }
 
@@ -771,7 +812,10 @@ static bool readModelFile(const std::string& path, automix::ModelFile& m, std::s
 static bool withChanges(const automix::ModelFile& base, const std::vector<std::pair<std::string, std::string>>& ch, automix::ModelFile& out,
                         std::string& why) {
     std::string t = base.text();
-    for (const auto& [k, v] : ch) t += k + " " + v + "\n";
+    for (const auto& [k, v] : ch) {
+        if ((k == "gateKeys" || k == "gateBars" || k == "gateLen") && t.rfind("songate-automix-model 1\n", 0) == 0) t.replace(0, t.find('\n'), "songate-automix-model 2");   // a number of format 2
+        t += k + " " + v + "\n";
+    }
     return out.parse(t, &why);
 }
 
@@ -788,9 +832,10 @@ static const char* kindSpec(const automix::Plan& p) {
 /** What a demo sounds like, for telling versions apart (a number its kind of join never reads changes nothing heard). */
 static std::string heard(const automix::Plan& p) {
     char b[200];
-    snprintf(b, sizeof b, "%s %.3f %.3f %.3f %.2f %.3f %.3f %d %d %.2f %.2f %d %d %d %.0f %.2f", kindSpec(p), p.startOut, p.length, p.offset,
+    snprintf(b, sizeof b, "%s %.3f %.3f %.3f %.2f %.3f %.3f %d %d %.2f %.2f %d %d %d %.0f %.2f %d %.2f", kindSpec(p), p.startOut, p.length, p.offset,
              double(p.outPow), p.cross, p.bassCut, p.gate, p.gate ? p.gateEvery : 0, p.gate ? double(p.gateLevel) : 0.0,
-             p.gate ? double(p.gateDuck) : 0.0, int(p.join.volume), int(p.join.eq), int(p.join.filter), p.lpFrom, double(p.inLevel));
+             p.gate ? double(p.gateDuck) : 0.0, int(p.join.volume), int(p.join.eq), int(p.join.filter), p.lpFrom, double(p.inLevel),
+             p.gate ? p.gateBars : 0, p.gate ? double(p.gateLen) : 0.0);
     return b;
 }
 
@@ -855,16 +900,19 @@ static std::set<std::pair<std::string, std::string>> heardPairs(const std::strin
  * line): joins of each kind named, picked at random (the seed) from different folders of the library ordered as Automix
  * playlists by the base model, never a pair heard in an earlier round; each rendered three ways: the base model (the
  * reference) and the spec's two versions of that kind. A join where two versions would sound the same is passed over for
- * another. NN.mp3 (needs ffmpeg on the PATH), round.json, and the spec copied beside them; then mixtrain-page.py.
+ * another. "joins <kind> <count> near|clash|unknown" takes only joins of that key distance (0-2, 3 and more, not both sure).
+ * "versions 1" renders each join two ways, the reference and version 1. A retest need not be neighbours in a folder's order.
+ * NN.mp3 (needs ffmpeg on the PATH), round.json, and the spec copied beside them; then mixtrain-page.py.
  */
 static int build(const std::string& cachePath, const std::string& specPath, const std::string& outDir) {
     std::string err;
     const auto lines = specLines(specPath, err);
     if (!err.empty()) { fprintf(stderr, "%s\n", err.c_str()); return 2; }
-    int roundNo = 1;
+    int roundNo = 1, nVersions = 2;
     unsigned seed = 1;
     std::string basePath, exclude;
-    std::vector<std::pair<std::string, int>> wanted;
+    struct Wanted { std::string kind; int count; std::string keys; };
+    std::vector<Wanted> wanted;
     std::vector<std::pair<std::string, std::string>> retest;
     std::map<std::string, std::vector<std::pair<std::string, std::string>>> versions[3];   // [1], [2]: kind → changes
     std::map<std::string, std::vector<std::pair<std::string, std::string>>> alts[3];       // … and each one's alternative
@@ -874,9 +922,11 @@ static int build(const std::string& cachePath, const std::string& specPath, cons
         const std::string& k = w[0];
         if (k == "round" && w.size() == 2) roundNo = atoi(w[1].c_str());
         else if (k == "seed" && w.size() == 2) seed = unsigned(strtoul(w[1].c_str(), nullptr, 10));
+        else if (k == "versions" && w.size() == 2) nVersions = std::clamp(atoi(w[1].c_str()), 1, 2);
         else if (k == "base" && w.size() == 2) basePath = rel(w[1]);
         else if (k == "exclude" && w.size() == 2) exclude = rel(w[1]);
-        else if (k == "joins" && w.size() == 3) wanted.push_back({ w[1], atoi(w[2].c_str()) });
+        else if (k == "joins" && (w.size() == 3 || (w.size() == 4 && (w[3] == "near" || w[3] == "clash" || w[3] == "unknown"))))
+            wanted.push_back({ w[1], atoi(w[2].c_str()), w.size() == 4 ? w[3] : "" });
         else if (k == "retest" && w.size() == 3) retest.push_back({ slash(w[1]), slash(w[2]) });
         else if ((k == "version" || k == "alternative") && w.size() >= 5 && w.size() % 2 == 1 && (w[2] == "1" || w[2] == "2")) {
             auto& ch = (k == "version" ? versions : alts)[atoi(w[2].c_str())][w[1]];
@@ -888,10 +938,10 @@ static int build(const std::string& cachePath, const std::string& specPath, cons
     // each kind's three models: the base, and its two versions (checked now: a number the format does not know stops here)
     std::map<std::string, automix::ModelFile> model[3], alt[3];
     std::set<std::string> kinds;
-    for (const auto& [kind, n] : wanted) kinds.insert(kind);
+    for (const Wanted& w : wanted) kinds.insert(w.kind);
     for (int v = 1; v <= 2; v++) for (const auto& [kind, ch] : versions[v]) kinds.insert(kind);
     for (const std::string& kind : kinds) {
-        for (int v = 1; v <= 2; v++) {
+        for (int v = 1; v <= nVersions; v++) {
             if (!versions[v].count(kind)) { fprintf(stderr, "%s: no version %d for %s joins\n", specPath.c_str(), v, kind.c_str()); return 2; }
             if (!withChanges(base, versions[v][kind], model[v][kind], err)) { fprintf(stderr, "version %d of %s: %s\n", v, kind.c_str(), err.c_str()); return 2; }
             if (alts[v].count(kind) && !withChanges(base, alts[v][kind], alt[v][kind], err)) { fprintf(stderr, "alternative %d of %s: %s\n", v, kind.c_str(), err.c_str()); return 2; }
@@ -931,7 +981,7 @@ static int build(const std::string& cachePath, const std::string& specPath, cons
     // three then sound apart
     auto distinct = [&](Join& j) {
         std::set<std::string> seen{ heard(planOf(j, 0)) };
-        for (int v = 1; v <= 2; v++) {
+        for (int v = 1; v <= nVersions; v++) {
             j.alt[v] = false;
             if (seen.count(heard(planOf(j, v))) && alt[v].count(j.kind)) j.alt[v] = true;
             if (!seen.insert(heard(planOf(j, v))).second) return false;
@@ -955,28 +1005,44 @@ static int build(const std::string& cachePath, const std::string& specPath, cons
                     usedFolders.insert(all[size_t(j.a)].folder);
                     found = true;
                 }
-        if (!found) fprintf(stderr, "retest: no such join in the library's folders: %s -> %s\n", ra.c_str(), rb.c_str());
+        if (!found) {   // not neighbours in any folder's order: the pair as it is
+            int ia = -1, ib = -1;
+            for (int i = 0; i < int(all.size()); i++) {
+                if (ends(slash(all[size_t(i)].path), ra)) ia = i;
+                if (ends(slash(all[size_t(i)].path), rb)) ib = i;
+            }
+            if (ia >= 0 && ib >= 0) {
+                Join j{ ia, ib, kindSpec(automix::plan(&all[size_t(ia)].info, all[size_t(ia)].info.seconds, &all[size_t(ib)].info, 4, nullptr, base)) };
+                if (!model[1].count(j.kind)) { fprintf(stderr, "retest %s: a %s join, and the spec has no versions for it\n", ra.c_str(), j.kind.c_str()); return 2; }
+                if (!distinct(j)) fprintf(stderr, "retest %s -> %s: two of its versions sound the same\n", ra.c_str(), rb.c_str());
+                chosen.push_back(j);
+                found = true;
+            }
+        }
+        if (!found) fprintf(stderr, "retest: not in the library: %s -> %s\n", ra.c_str(), rb.c_str());
     }
     std::mt19937 rng(seed);
-    for (const auto& [kind, count] : wanted) {
+    for (const auto& [kind, count, keys] : wanted) {
         auto v = joins[kind];
         std::shuffle(v.begin(), v.end(), rng);
         int got = 0, same = 0;
         for (Join& j : v) {   // from different folders where it can, never a pair heard before, versions that sound apart
             if (got == count) break;
             if (excluded.count({ slash(all[size_t(j.a)].path), slash(all[size_t(j.b)].path) })) continue;
+            const int kd = planOf(j, 0).keyDistance;
+            if (!keys.empty() && keys != (kd < 0 ? "unknown" : kd >= 3 ? "clash" : "near")) continue;
             if (usedFolders.count(all[size_t(j.a)].folder) && v.size() > 8) continue;
             if (!distinct(j)) { same++; continue; }
             usedFolders.insert(all[size_t(j.a)].folder);
             chosen.push_back(j);
             got++;
         }
-        if (got < count) fprintf(stderr, "%s: %d of %d joins found (%d passed over: two versions sounded the same)\n", kind.c_str(), got, count, same);
+        if (got < count) fprintf(stderr, "%s %s: %d of %d joins found (%d passed over: two versions sounded the same)\n", kind.c_str(), keys.c_str(), got, count, same);
     }
     if (chosen.empty()) { fprintf(stderr, "no joins chosen\n"); return 1; }
     struct Demo { int join, version; };
     std::vector<Demo> demos;
-    for (int k = 0; k < int(chosen.size()); k++) for (int v = 0; v < 3; v++) demos.push_back({ k, v });
+    for (int k = 0; k < int(chosen.size()); k++) for (int v = 0; v <= nVersions; v++) demos.push_back({ k, v });
     std::shuffle(demos.begin(), demos.end(), rng);
     fs::create_directories(fs::u8path(outDir));
     fs::copy_file(fs::u8path(specPath), fs::u8path(outDir) / "round.spec", fs::copy_options::overwrite_existing);
@@ -1014,6 +1080,121 @@ static int build(const std::string& cachePath, const std::string& specPath, cons
 }
 
 /**
+ * mixtrain partners <cache.tsv> <mood.tsv> <base>.model <out dir> <round> <seed> [songs, 8]: one outgoing song into three next
+ * songs of its folder, all planned as the same kind of join by the base model, so the partner is what differs (the user's
+ * rounds 6-7: "these songs do not connect"; every rated pair so far was the order score's own pick). Version 0 the score's top
+ * partner; 1 the nearest in sound (brightness and loudness, library standard deviations), at most half as far as the top
+ * partner; 2 the middle of the kind's scores, not near in sound. Partners 1 and 2 keep the top partner's join about as long, and
+ * 1 its score within a point, so a partner's tempo or key does not stand in for its sound. Never a pair heard before (rounds under <out dir>'s folder),
+ * different folders, no next song twice, at most three songs of a kind of join.
+ */
+static int partners(const std::string& cachePath, const std::string& moodPath, const std::string& basePath, const std::string& outDir, int roundNo,
+                    unsigned seed, int songs) {
+    std::string err;
+    automix::ModelFile base;
+    if (!readModelFile(basePath, base, err)) { fprintf(stderr, "the base model: %s\n", err.c_str()); return 2; }
+    std::vector<Track> all = loadCache(cachePath);
+    std::map<std::string, std::pair<double, double>> sound;   // path → brightness, loudness
+    {
+        std::ifstream in(fs::u8path(moodPath), std::ios::binary);
+        for (std::string line; std::getline(in, line);) {
+            std::vector<std::string> f;
+            size_t a = 0;
+            for (size_t b; (b = line.find('\t', a)) != std::string::npos; a = b + 1) f.push_back(line.substr(a, b - a));
+            f.push_back(line.substr(a));
+            mixan::Mood m;
+            if (f.size() >= 6 && mixan::Mood::unpack(f[5], m)) sound[f[0]] = { m.bright, m.loud };
+        }
+    }
+    double meanB = 0, meanL = 0, sdB = 0, sdL = 0;
+    for (const auto& [k, v] : sound) { meanB += v.first; meanL += v.second; }
+    meanB /= double(sound.size()); meanL /= double(sound.size());
+    for (const auto& [k, v] : sound) { sdB += (v.first - meanB) * (v.first - meanB); sdL += (v.second - meanL) * (v.second - meanL); }
+    sdB = std::sqrt(sdB / double(sound.size())); sdL = std::sqrt(sdL / double(sound.size()));
+    fprintf(stderr, "%zu tracks, %zu with their sound; brightness sd %.0f Hz, loudness sd %.2f dB\n", all.size(), sound.size(), sdB, sdL);
+    auto apart = [&](const Track& a, const Track& b) {
+        const auto &x = sound[a.path], &y = sound[b.path];
+        return std::hypot((x.first - y.first) / sdB, (x.second - y.second) / sdL);
+    };
+    const auto excluded = heardPairs(utf8(fs::u8path(outDir).parent_path()));
+    std::map<std::string, std::vector<int>> byFolder;
+    for (int i = 0; i < int(all.size()); i++) if (sound.count(all[size_t(i)].path)) byFolder[all[size_t(i)].folder].push_back(i);
+    std::vector<std::string> folders;
+    for (const auto& [f, idx] : byFolder) if (idx.size() >= 30) folders.push_back(f);
+    std::mt19937 rng(seed);
+    std::shuffle(folders.begin(), folders.end(), rng);
+    struct Cand { int t; double score, d, length; std::string kind; };
+    struct Set { int a; Cand p[3]; };
+    std::vector<Set> sets;
+    std::set<int> usedB;
+    std::map<std::string, int> kinds;
+    for (const std::string& folder : folders) {
+        if (int(sets.size()) == songs) break;
+        std::vector<int> idx = byFolder[folder];
+        std::sort(idx.begin(), idx.end());
+        std::shuffle(idx.begin(), idx.end(), rng);
+        for (int ia : idx) {
+            const Track& a = all[size_t(ia)];
+            std::vector<Cand> c;
+            for (int ib : idx) {
+                const Track& b = all[size_t(ib)];
+                if (ib == ia || usedB.count(ib) || excluded.count({ slash(a.path), slash(b.path) })) continue;
+                const automix::Plan pl = automix::plan(&a.info, a.info.seconds, &b.info, 4, nullptr, base);
+                if (!pl.off) c.push_back({ ib, automix::joinScore(&a.info, &b.info), apart(a, b), pl.length, kindSpec(pl) });
+            }
+            if (c.size() < 8) continue;
+            const Cand top = *std::max_element(c.begin(), c.end(), [](const Cand& x, const Cand& y) { return x.score < y.score; });
+            if (top.kind == "fade" || top.kind == "cut" || kinds[top.kind] >= 3 || top.d < 1) continue;
+            std::vector<Cand> same;
+            for (const Cand& x : c) if (x.kind == top.kind && x.t != top.t && x.length >= 0.7 * top.length && x.length <= 1.4 * top.length) same.push_back(x);
+            std::vector<Cand> close;
+            for (const Cand& x : same) if (x.score >= top.score - 1) close.push_back(x);
+            if (same.size() < 6 || close.empty()) continue;
+            const Cand near = *std::min_element(close.begin(), close.end(), [](const Cand& x, const Cand& y) { return x.d < y.d; });
+            if (near.d > 0.5 * top.d) continue;
+            std::vector<Cand> rest;
+            for (const Cand& x : same) if (x.t != near.t && x.d >= 1) rest.push_back(x);
+            if (rest.size() < 2) continue;
+            std::sort(rest.begin(), rest.end(), [](const Cand& x, const Cand& y) { return x.score > y.score; });
+            sets.push_back({ ia, { top, near, rest[rest.size() / 2] } });
+            kinds[top.kind]++;
+            for (const Cand& x : sets.back().p) usedB.insert(x.t);
+            break;
+        }
+    }
+    if (int(sets.size()) < songs) fprintf(stderr, "%zu of %d songs found\n", sets.size(), songs);
+    if (sets.empty()) return 1;
+    struct Demo { int set, version; };
+    std::vector<Demo> demos;
+    for (int k = 0; k < int(sets.size()); k++) for (int v = 0; v < 3; v++) demos.push_back({ k, v });
+    std::shuffle(demos.begin(), demos.end(), rng);
+    fs::create_directories(fs::u8path(outDir));
+    std::ofstream js(fs::u8path(outDir + "/round.json"), std::ios::binary);
+    js << "{\n  \"round\": " << roundNo << ",\n  \"seed\": " << seed << ",\n  \"base\": " << jsonStr(base.name) << ",\n  \"baseFile\": " << jsonStr(slash(basePath))
+       << ",\n  \"lede\": " << jsonStr("One song into three different next songs, the same way each time. Rate how well the two songs connect") << ",\n  \"demos\": [\n";
+    static const char* const names[3] = { "top", "sound", "middle" };
+    for (size_t d = 0; d < demos.size(); d++) {
+        const Set& s = sets[size_t(demos[d].set)];
+        const int v = demos[d].version;
+        const Cand& c = s.p[v];
+        const Track &a = all[size_t(s.a)], &b = all[size_t(c.t)];
+        const automix::Plan p = automix::plan(&a.info, a.info.seconds, &b.info, 4, nullptr, base);
+        char file[32];
+        snprintf(file, sizeof file, "%02zu.mp3", d + 1);
+        const bool ok = renderMp3(p, a.path, b.path, outDir + "/" + file, 10, 10);
+        fprintf(stderr, "%02zu %s %s: %.1f s%s\n", d + 1, c.kind.c_str(), names[v], p.length, ok ? "" : " (RENDER FAILED: is ffmpeg on the PATH?)");
+        js << "    {\"file\": " << jsonStr(file) << ", \"join\": " << demos[d].set << ", \"version\": " << v << ", \"kind\": " << jsonStr(c.kind) << ", \"a\": " << jsonStr(a.path)
+           << ", \"b\": " << jsonStr(b.path) << ", \"aName\": " << jsonStr(a.name) << ", \"bName\": " << jsonStr(b.name) << ", \"folder\": " << jsonStr(a.folder)
+           << ", \"bpmA\": " << a.info.bpm << ", \"bpmB\": " << b.info.bpm << ", \"keyDistance\": " << p.keyDistance << ", \"length\": " << p.length
+           << ", \"score\": " << c.score << ", \"apart\": " << c.d << ", \"joinAt\": 10, \"voicesTogether\": " << vocalOverlap(p, a, b) << ", \"changes\": {"
+           << (v ? std::string("\"partner\": ") + jsonStr(names[v]) : std::string()) << "}, \"tune\": " << tuneJson(base.tune) << "}" << (d + 1 < demos.size() ? "," : "") << "\n";
+    }
+    js << "  ]\n}\n";
+    printf("round %d: %zu songs, %zu demos in %s\n", roundNo, sets.size(), demos.size(), outDir.c_str());
+    return 0;
+}
+
+/**
  * mixtrain freeze <candidate> <name> <cache.tsv> <out.model>: a new model from a candidate ("base <file>.model" then the
  * numbers it changes, as tools/mixtrain-fit.py writes it), named; never over a file that exists (a model never changes).
  * Plans every join of the library's folders with the base and with the new model and says what changes, by kind.
@@ -1035,7 +1216,6 @@ static int freezeModel(const std::string& candPath, const std::string& name, con
     if (basePath.empty() || !readModelFile(basePath, base, err)) { fprintf(stderr, "the base model: %s\n", basePath.empty() ? "none (base <file>.model)" : err.c_str()); return 2; }
     ch.push_back({ "name", name });
     if (!withChanges(base, ch, m, err)) { fprintf(stderr, "%s\n", err.c_str()); return 2; }
-    m.format = automix::ModelFile::Format;
     if (m.name == base.name) { fprintf(stderr, "the new model needs a name of its own\n"); return 2; }
     std::vector<Track> all = loadCache(cachePath);
     std::map<std::string, std::vector<int>> byFolder;
@@ -1067,7 +1247,7 @@ static int freezeModel(const std::string& candPath, const std::string& name, con
     for (const auto& [k, c] : before) printf(" %s %d", k.c_str(), c);
     printf("\n  after: ");
     for (const auto& [k, c] : after) printf(" %s %d", k.c_str(), c);
-    printf("\nTry it: copy it to the console's config/gatefold-nx/models/ and choose it in Settings › Updates › Automix models.\n");
+    printf("\nTry it: copy it to the console's config/songate-nx/models/ and choose it in Settings › Updates › Automix models.\n");
     return 0;
 }
 
@@ -1076,6 +1256,9 @@ int main(int argc, char** argv) {
     if (argc >= 4 && std::string(argv[1]) == "mood") return analyseAll(argv[2], argv[3], argc > 4 ? atoi(argv[4]) : 10, true);
     if (argc >= 3 && std::string(argv[1]) == "same") return same(argv[2]);
     if (argc >= 4 && std::string(argv[1]) == "filesame") return fileSame(argv[2], argv[3]);
+    if (argc >= 5 && std::string(argv[1]) == "sameplans") return samePlans(argv[2], argv[3], argv[4]);
+    if (argc >= 8 && std::string(argv[1]) == "partners")
+        return partners(argv[2], argv[3], argv[4], argv[5], atoi(argv[6]), unsigned(atoi(argv[7])), argc > 8 ? atoi(argv[8]) : 8);
     if (argc >= 5 && std::string(argv[1]) == "build") return build(argv[2], argv[3], argv[4]);
     if (argc >= 6 && std::string(argv[1]) == "freeze") return freezeModel(argv[2], argv[3], argv[4], argv[5]);
     if (argc >= 4 && std::string(argv[1]) == "modelfile") return modelFile(argv[2], argv[3]);
@@ -1086,6 +1269,8 @@ int main(int argc, char** argv) {
                     "mixtrain build <cache.tsv> <round.spec> <out dir>                    a training round from a spec\n"
                     "mixtrain freeze <candidate> <name> <cache.tsv> <out.model>           a new model from a candidate\n"
                     "mixtrain filesame <cache.tsv> <file>.model                           a model file against what it stands for\n"
+                    "mixtrain sameplans <cache.tsv> <a>.model <b>.model                   two model files, every join\n"
+                    "mixtrain partners <cache.tsv> <mood.tsv> <base>.model <out dir> <round> <seed> [songs]   a song into three next songs\n"
                     "mixtrain round <cache.tsv> <out dir> <round> [seed] [plan.tsv]       (Songate's own rounds)\n");
     return 2;
 }

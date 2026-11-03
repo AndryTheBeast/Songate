@@ -34,7 +34,8 @@ OUT = PREVIEW / 'out'
 LIVE = PREVIEW / 'out-live'
 RUN = LIVE / 'run'
 CARD = LIVE / 'card'
-CFG = CARD / 'sdmc' / 'config' / 'gatefold-nx'
+CFG = CARD / 'sdmc' / 'config' / 'songate-nx'
+OLD_CFG = CARD / 'sdmc' / 'config' / 'gatefold-nx'   # before BETA 2: Songate moves it at launch
 MUSIC = Path(os.environ.get('GF_LIVE_MUSIC', r'D:\Music'))
 MIX = os.environ.get('GF_LIVE_MIX', 'Melatonin')
 PORT = int(os.environ.get('GF_LIVE_PORT', '8790'))
@@ -53,9 +54,10 @@ def prepare_card(reset=False):
     music = CARD / 'sdmc' / 'Music'
     if not music.exists():
         subprocess.run(['cmd', '/c', 'mklink', '/J', str(music), str(MUSIC)], check=True, capture_output=True)
-    if reset and CFG.exists():
-        shutil.rmtree(CFG)   # the config only: never anything through the junction
-    if (CFG / 'settings.txt').exists():
+    for c in (CFG, OLD_CFG):
+        if reset and c.exists():
+            shutil.rmtree(c)   # the config only: never anything through the junction
+    if (CFG / 'settings.txt').exists() or (OLD_CFG / 'settings.txt').exists():
         return
     CFG.mkdir(parents=True, exist_ok=True)
     shutil.copy(HERE / 'card-settings.txt', CFG / 'settings.txt')

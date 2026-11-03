@@ -64,6 +64,9 @@ public:
 
     /** True when the sysmodule runs and speaks our protocol. */
     bool connect();
+    /** Whether the background player may be playing now, connected or not: a look in a session of its own, closed at once.
+     *  Running but not readable (another protocol) counts as playing. The opening's bells: never over music. */
+    static bool mayBePlaying();
     void disconnect();
     bool connected() const { return connected_; }
 

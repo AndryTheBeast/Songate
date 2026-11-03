@@ -4,6 +4,7 @@
 #include "../../source/platform.hpp"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 
@@ -86,23 +87,36 @@ long long bootStamp() {
 void placeThread(int, int) {}
 bool netStart() { return true; }
 void netStop() {}
+std::vector<Net> networks() { return {}; }
+std::string deviceName() { return "Preview"; }
+int64_t freeBytes(const std::string&) { return -1; }
+bool appletMode() { return false; }
+bool randomBytes(uint8_t* out, size_t n) { for (size_t i = 0; i < n; i++) out[i] = uint8_t(rand()); return true; }
 
 int bgProtocol() { return 6; }   // gfbg.h's GFBG_PROTOCOL
 bool bgRestart(std::string&) {
     printf("[updater] the background player restarts\n");
     return true;
 }
+// There is no background player here: ending it "works" (cfgmove may then move the folder), unless GF_BGEND_FAIL says no
 bool bgEnd() {
-    printf("[updater] factory reset: the background player ends\n");
-    return false;
+    const bool ok = !getenv("GF_BGEND_FAIL");
+    printf("[platform] the background player ends%s\n", ok ? "" : ": refused (GF_BGEND_FAIL)");
+    return ok;
 }
-void bgStart(bool) { printf("[updater] factory reset: moved aside, the background player starts again\n"); }
+void bgStart(bool ended) { if (ended) printf("[platform] the background player starts again\n"); }
 
 std::string assetPath(const char* relative) { return std::string("romfs:/") + relative; }
 std::vector<FontData> systemFonts() { return {}; }
 const char* configParent() { return "sdmc:/config"; }
-const char* configDir() { return "sdmc:/config/gatefold-nx"; }
-const char* backupDir() { return "sdmc:/config/gatefold-nx-backups"; }
+// Settled at launch by cfgmove::atLaunch (the names in gfcfgdir.h); Store::Dir points at this buffer from before main
+char gCfgDir[64] = "sdmc:/config/songate-nx", gCfgBackups[64] = "sdmc:/config/songate-nx-backups";
+const char* configDir() { return gCfgDir; }
+const char* backupDir() { return gCfgBackups; }
+void useConfigDir(const char* dir, const char* backups) {
+    snprintf(gCfgDir, sizeof gCfgDir, "%s", dir);
+    snprintf(gCfgBackups, sizeof gCfgBackups, "%s", backups);
+}
 const char* root() { return "sdmc:/"; }
 const char* rootName() { return "the SD card"; }
 bool isRoot(const std::string& path) { return path.empty() || path == "sdmc:/" || path == "sdmc:"; }

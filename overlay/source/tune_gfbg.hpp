@@ -18,6 +18,9 @@ void gfSetStopAfter(bool on);
 void gfSetSleep(float seconds);
 bool gfEq(GfbgEq* out);
 void gfSetEq(const GfbgEq& e);
+/** A file in Songate's settings folder, wherever it is now (gfcfgdir.h: config/songate-nx, or gatefold-nx before the move). */
+std::string gfCfgFile(const char* name);
+
 /** The names of Gatefold's playlists (GFBG_PLAYLISTS), in its order. */
 std::vector<std::string> gfPlaylistNames();
 /** The name of the playlist whose name hashes to `hash`, "" when there is none. */

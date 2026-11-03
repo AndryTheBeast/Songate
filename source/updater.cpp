@@ -6,6 +6,11 @@
 #include "words.hpp"
 #include "updater.hpp"
 
+#ifndef GF_WINDOWED
+#include "cfgmove.hpp"
+#include "gfcfgdir.h"
+#endif
+
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -21,7 +26,7 @@
 #include "platform.hpp"
 
 #ifndef GF_VERSION
-#define GF_VERSION "2.0.0 BETA 1"
+#define GF_VERSION "2.0.0 BETA 2"
 #endif
 
 namespace {
@@ -781,7 +786,7 @@ std::vector<UpdModel> readModels(const std::string& text) {
         x.format = int(j.i("format"));
         x.mixan = int(j.i("mixan"));
         for (const Json& n : j["notes"].arr) if (n.kind == Json::Str) x.notes.push_back(n.str);
-        // a plain file name only: it is written into config/gatefold-nx/models/
+        // a plain file name only: it is written into the settings folder's models/
         const bool plain = !x.file.empty() && x.file.find_first_of("/\\:") == std::string::npos && x.file[0] != '.' &&
                            x.file.size() > 6 && x.file.compare(x.file.size() - 6, 6, ".model") == 0;
         if (!x.name.empty() && plain && x.sha256.size() == 64) out.push_back(std::move(x));
@@ -1211,6 +1216,9 @@ void Updater::doInstall(UpdRelease r, bool fresh, std::string backupRoot) {
     if (!movedTo.empty()) pending += "-" + self_ + "\n@" + movedTo + "\n";
     if (overlayV1) pending += "-sdmc:/" + std::string(kOverlay) + "\n";
     writeAll(up + "/pending.txt", pending);
+    // A release before 2.0.0 BETA 2 reads config/gatefold-nx: the folder goes back there once its .nro is in (App::goBackIfDue)
+    if (cfgmove::usesOldFolder(r.version)) writeAll(up + "/back.txt", r.version + "\n");
+    else remove((up + "/back.txt").c_str());
     writeAll(up + "/installed.txt", "version=" + r.version + "\nfrom=" + thisVersion() + "\nbackup=" + backup + "\nbgChanged=" + (bgChanged ? "1" : "0") +
                                         "\nfresh=" + (fresh ? "1" : "0") + "\ndate=" + stamp() +
                                         "\nboot=" + std::to_string(bootStamp()) + "\n");
@@ -1244,7 +1252,8 @@ std::string Updater::backupNow(const std::string& root, const std::string& note)
     int files = 0;
     // Left out: the downloads, and caches Gatefold makes again by itself (the overlay's covers, the tag cache)
     // (art/ is the covers cache: thousands of small files, and copying them took the console a minute and a half)
-    if (!copyTree(dir_, backup, { "updates", "thumbs", "art", "tags.tsv" }, bytes, files)) {
+    // and the Last.fm account: a key to it never sits in a backup, a restore asks you to sign in again
+    if (!copyTree(dir_, backup, { "updates", "thumbs", "art", "tags.tsv", "lastfm-session.txt", "connect-key.txt", "connect-peers.tsv" }, bytes, files)) {
         removeTree(backup);
         return {};
     }
@@ -1347,14 +1356,16 @@ const std::vector<std::vector<const char*>>& Updater::factoryFiles() {
     static const std::vector<std::vector<const char*>> files = {
         { "bg-config.txt" },                                                          // settings: the background player's
         {},                                                                           // the music folder (settings.txt)
-        { "playlists.txt", "lists.txt", "playlist-icons.tsv", "bg-playlists.txt", "mixes.tsv", "automix-lists.tsv" },   // playlists
-        { "liked.txt" },                                                              // Liked
-        { "edits.tsv", "covers.tsv", "covers" },                                      // tag edits and chosen covers
+        { "playlists.txt", "lists.txt", "playlist-icons.tsv", "bg-playlists.txt", "mixes.tsv", "automix-lists.tsv", "sync-lists.tsv" },   // playlists
+        { "liked.txt", "sync-seen.tsv" },                                             // Liked (and what Connections saw: a reset here is no unlike there)
+        { "edits.tsv", "covers.tsv", "covers", "sync-seen.tsv" },                     // tag edits and chosen covers
         { "lyric-offsets.tsv" },                                                      // lyric timings
         { "eq-presets.txt" },                                                         // saved equalizer presets
         { "stats.tsv", "bg-plays.txt" },                                              // play counts and statistics
         { "session.txt", "bg-session.txt", "bg-places.txt", "overlay-playlist.txt" }, // the queue
-        { "art", "thumbs", "tags.tsv", "library.tsv", "loudness.tsv", "mix.tsv", "mood.tsv", "gains.bin", "updates" },   // caches
+        { "lastfm-session.txt", "scrobbles.tsv", "bg-scrobbles.txt" },                // the Last.fm account and what waits to be sent
+        { "connect-key.txt", "connect-peers.tsv", "airplay-devices.tsv", "ledger.tsv", "sync-lists.tsv", "sync-seen.tsv", "sync-peers.txt", "sync-plays.tsv", "copy-peers.txt", "copied.txt", "sync-gone.txt" },   // this device's key, the devices paired with it, what was synced
+        { "art", "thumbs", "tags.tsv", "library.tsv", "loudness.tsv", "mix.tsv", "mood.tsv", "gains.bin", "identity.tsv", "updates" },   // caches
     };
     return files;
 }
@@ -1387,4 +1398,15 @@ void Updater::factoryReset(const std::string& configDir, unsigned mask) {
 void Updater::eraseLeftovers(const std::string& configDir) {
     const std::string aside = configDir + ".erased";
     if (isDir(aside)) removeTree(aside);
+#ifndef GF_WINDOWED
+    if (isDir(GFCFG_OLD ".erased")) removeTree(GFCFG_OLD ".erased");   // one BETA 1 left (a factory reset there, never launched after)
+#endif
+}
+
+std::string Updater::takeBack(const std::string& configDir) {
+    std::string v;
+    if (!readAll(configDir + "/updates/back.txt", v)) return {};
+    remove((configDir + "/updates/back.txt").c_str());
+    while (!v.empty() && (v.back() == '\n' || v.back() == '\r')) v.pop_back();
+    return v;
 }

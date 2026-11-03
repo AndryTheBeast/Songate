@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <switch.h>
 
+#include "gfcfgdir.h"
 #include "gfeqcfg.h"
 
 #define GFBG_SERVICE    "gatefold"           // sm name, 8 characters at most
@@ -130,7 +131,7 @@ typedef struct {
     // protocol 6
     u32 automixModel;  // the Automix model Gatefold plays (automix::Model: 0 V1.0.0, 1 V1.1.0…), for an Automix playlist's joins
     u32 reserved6[3];
-    char automixFile[64];   // a downloaded model's file in config/gatefold-nx/models/ ("": the built-in automixModel)
+    char automixFile[64];   // a downloaded model's file in the settings folder's models/ ("": the built-in automixModel)
 } GfbgConfig;
 
 /** Crossfade: consecutive tracks of one album keep their join (gapless, live albums). */
@@ -153,7 +154,7 @@ typedef enum { GfbgListStart_Continue = 0, GfbgListStart_Shuffle = 1 } GfbgListS
 #define GFBG_KIND_SMART   'S'
 #define GFBG_KIND_MOOD    'M'
 #define GFBG_KIND_AUTOMIX 'A'
-#define GFBG_PLAYLISTS "sdmc:/config/gatefold-nx/bg-playlists.txt"
+#define GFBG_PLAYLISTS_FILE "bg-playlists.txt"   // in the settings folder (gfcfgdir.h), as the others
 
 typedef struct {
     u64 programId;     // the game in front, 0 on the HOME menu (or when it is Gatefold)
@@ -176,8 +177,8 @@ typedef struct {
 /** SetQueue (protocol 6): the queue is an Automix playlist (its name is the playlist's): its tracks are joined by Automix
  *  from Gatefold's analysis (mix.tsv), in their own order: never shuffled (SetMode's Shuffle plays it in order). */
 #define GfbgQueue_Automix 2
-#define GFBG_MIX "sdmc:/config/gatefold-nx/mix.tsv"
-#define GFBG_MODELS "sdmc:/config/gatefold-nx/models"
+#define GFBG_MIX_FILE "mix.tsv"
+#define GFBG_MODELS_DIR "models"
 /** SetQueue's answer when the queue does not fit in the player's heap (it keeps the queue it had; nothing else changes). */
 #define GFBG_QUEUE_TOO_BIG MAKERESULT(Module_Libnx, LibnxError_OutOfMemory)
 
@@ -213,14 +214,14 @@ typedef struct {
  * player reads the header every couple of seconds and the whole file when `gen` changes. The mode
  * is GfbgConfig.reserved[0]: GfbgLevel_*. Auto: the album gain, but the track gain while shuffling.
  */
-#define GFBG_GAINS "sdmc:/config/gatefold-nx/gains.bin"
+#define GFBG_GAINS_FILE "gains.bin"
 #define GFBG_GAINS_MAGIC 0x564C4647u   // "GFLV"
 typedef enum { GfbgLevel_Off = 0, GfbgLevel_Track = 1, GfbgLevel_Album = 2, GfbgLevel_Auto = 3 } GfbgLevel;
 typedef struct { u32 magic, count, gen, reserved; } GfbgGainsHeader;
 typedef struct { u64 hash; float track, album; } GfbgGain;   // dB, the peak limit already in
 
 #define GFBG_ART    307
-#define GFBG_THUMBS "sdmc:/config/gatefold-nx/thumbs"
+#define GFBG_THUMBS_DIR "thumbs"
 
 /** FNV-1a 64: thumbnail names and the map's keys. */
 static inline u64 gfbgHash(const void* data, size_t n) {

@@ -12,7 +12,7 @@
 #include <mutex>
 
 #ifndef GF_VERSION
-#define GF_VERSION "2.0.0 BETA 1"
+#define GF_VERSION "2.0.0 BETA 2"
 #endif
 
 namespace net {
@@ -42,6 +42,7 @@ struct Sink {
     std::string* str = nullptr;
     FILE* file = nullptr;
     Progress* p = nullptr;
+    std::string* date = nullptr;   // the Date header, when wanted
 };
 
 size_t onData(char* data, size_t size, size_t n, void* user) {
@@ -49,6 +50,16 @@ size_t onData(char* data, size_t size, size_t n, void* user) {
     const size_t len = size * n;
     if (s->str) s->str->append(data, len);
     if (s->file && fwrite(data, 1, len, s->file) != len) return 0;   // the card is full: curl stops with a write error
+    return len;
+}
+
+size_t onHeader(char* data, size_t size, size_t n, void* user) {
+    Sink* s = static_cast<Sink*>(user);
+    const size_t len = size * n;
+    if (s->date && len > 5 && (data[0] | 32) == 'd' && (data[1] | 32) == 'a' && (data[2] | 32) == 't' && (data[3] | 32) == 'e' && data[4] == ':') {
+        s->date->assign(data + 5, len - 5);
+        while (!s->date->empty() && (s->date->back() == '\r' || s->date->back() == '\n' || s->date->back() == ' ')) s->date->pop_back();
+    }
     return len;
 }
 
@@ -78,7 +89,8 @@ std::string explain(CURLcode rc, long status) {
     }
 }
 
-bool run(const std::string& url, Sink& sink, std::string& err, const std::string* json = nullptr, const char* secret = nullptr) {
+bool run(const std::string& url, Sink& sink, std::string& err, const std::string* json = nullptr, const char* secret = nullptr,
+         const std::string* form = nullptr, long* statusOut = nullptr) {
     std::string e;
     if (!begin(e)) { err = e; return false; }
     CURL* c = curl_easy_init();
@@ -89,6 +101,10 @@ bool run(const std::string& url, Sink& sink, std::string& err, const std::string
         headers = curl_slist_append(headers, "Content-Type: application/json");
         curl_easy_setopt(c, CURLOPT_POSTFIELDS, json->c_str());
         curl_easy_setopt(c, CURLOPT_POSTFIELDSIZE, long(json->size()));
+    }
+    if (form) {
+        curl_easy_setopt(c, CURLOPT_POSTFIELDS, form->c_str());   // (application/x-www-form-urlencoded by itself)
+        curl_easy_setopt(c, CURLOPT_POSTFIELDSIZE, long(form->size()));
     }
     if (secret) headers = curl_slist_append(headers, secret);
     curl_easy_setopt(c, CURLOPT_URL, url.c_str());
@@ -101,7 +117,11 @@ bool run(const std::string& url, Sink& sink, std::string& err, const std::string
     curl_easy_setopt(c, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);   // release assets redirect to GitHub's file host
     curl_easy_setopt(c, CURLOPT_MAXREDIRS, 5L);
-    curl_easy_setopt(c, CURLOPT_FAILONERROR, 1L);
+    if (!form) curl_easy_setopt(c, CURLOPT_FAILONERROR, 1L);   // (a form's errors are in the body)
+    if (sink.date) {
+        curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, onHeader);
+        curl_easy_setopt(c, CURLOPT_HEADERDATA, &sink);
+    }
     curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 2L);
     curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 20L);
@@ -116,6 +136,7 @@ bool run(const std::string& url, Sink& sink, std::string& err, const std::string
     const CURLcode rc = curl_easy_perform(c);
     long status = 0;
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &status);
+    if (statusOut) *statusOut = status;
     curl_easy_cleanup(c);
     for (curl_slist* h = headers; h; h = h->next)   // (the secret's copy: wiped before it is freed)
         if (h->data) { volatile char* d = h->data; while (*d) *d++ = 0; }
@@ -162,6 +183,17 @@ bool post(const std::string& url, const std::string& json, char* secret, std::st
     const bool ok = run(url, s, err, &json, secret);
     if (secret) { volatile char* d = secret; while (*d) *d++ = 0; }
     return ok;
+}
+
+bool form(const std::string& url, const std::string& body, std::string& out, long& status, std::string& date, std::string& err, Progress* p) {
+    out.clear();
+    date.clear();
+    status = 0;
+    Sink s;
+    s.str = &out;
+    s.p = p;
+    s.date = &date;
+    return run(url, s, err, nullptr, nullptr, &body, &status);
 }
 
 bool download(const std::string& url, const std::string& file, std::string& err, Progress* p) {
@@ -230,6 +262,36 @@ bool post(const std::string& url, const std::string& json, char* secret, std::st
     (void)url;
     out = "{\"number\": " + std::to_string(n) + ", \"html_url\": \"https://github.com/AndryTheBeast/songate-reports/issues/" + std::to_string(n) + "\"}";
     SDL_Delay(400);   // a little of the wait a real request has
+    return true;
+}
+
+/** The preview: <GF_NET>/lastfm/<method>.xml answers (none: a plain ok); each request is added to <GF_NET>/lastfm/sent.txt. */
+bool form(const std::string& url, const std::string& body, std::string& out, long& status, std::string& date, std::string& err, Progress* p) {
+    (void)url;
+    (void)p;
+    const char* root = getenv("GF_NET");
+    if (!root || !*root) { err = "No internet connection"; return false; }
+    const std::string dir = std::string(root) + "/lastfm";
+    mkdir(dir.c_str(), 0777);   // (the shim's)
+    if (FILE* f = fopen((dir + "/sent.txt").c_str(), "ab")) {
+        fwrite(body.data(), 1, body.size(), f);
+        fputc('\n', f);
+        fclose(f);
+    }
+    std::string method;
+    const size_t m = body.find("method=");
+    if (m != std::string::npos) method = body.substr(m + 7, body.find('&', m) == std::string::npos ? std::string::npos : body.find('&', m) - m - 7);
+    out = "<lfm status=\"ok\"></lfm>";
+    if (FILE* f = fopen((dir + "/" + method + ".xml").c_str(), "rb")) {
+        out.clear();
+        char buf[4096];
+        size_t n;
+        while ((n = fread(buf, 1, sizeof buf, f)) > 0) out.append(buf, n);
+        fclose(f);
+    }
+    status = 200;
+    date.clear();
+    SDL_Delay(100);
     return true;
 }
 

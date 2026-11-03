@@ -235,6 +235,41 @@ void placeThread(int core, int priority) {
 bool netStart() { return R_SUCCEEDED(socketInitializeDefault()); }
 void netStop() { socketExit(); }
 
+std::vector<Net> networks() {
+    std::vector<Net> out;
+    if (R_FAILED(nifmInitialize(NifmServiceType_User))) return out;
+    u32 ip = 0, mask = 0, gate = 0, dns1 = 0, dns2 = 0;
+    if (R_SUCCEEDED(nifmGetCurrentIpConfigInfo(&ip, &mask, &gate, &dns1, &dns2)) && ip) out.push_back({ ip, ip | ~mask });
+    nifmExit();
+    return out;
+}
+
+std::string deviceName() {
+    SetSysDeviceNickName n{};
+    if (R_SUCCEEDED(setsysInitialize())) {
+        const Result rc = setsysGetDeviceNickname(&n);
+        setsysExit();
+        if (R_SUCCEEDED(rc) && n.nickname[0]) return n.nickname;
+    }
+    return "Nintendo Switch";
+}
+
+int64_t freeBytes(const std::string&) {
+    s64 n = 0;
+    FsFileSystem* fs = fsdevGetDeviceFileSystem("sdmc");
+    return fs && R_SUCCEEDED(fsFsGetFreeSpace(fs, "/", &n)) ? int64_t(n) : -1;
+}
+
+bool appletMode() {
+    const AppletType t = appletGetAppletType();
+    return t != AppletType_Application && t != AppletType_SystemApplication;
+}
+
+bool randomBytes(uint8_t* out, size_t n) {
+    randomGet(out, n);
+    return true;
+}
+
 // ---- the background player
 
 int bgProtocol() { return GFBG_PROTOCOL; }
@@ -287,8 +322,14 @@ std::vector<FontData> systemFonts() {
 }
 
 const char* configParent() { return "sdmc:/config"; }
-const char* configDir() { return "sdmc:/config/gatefold-nx"; }
-const char* backupDir() { return "sdmc:/config/gatefold-nx-backups"; }
+// Settled at launch by cfgmove::atLaunch (the names in gfcfgdir.h); Store::Dir points at this buffer from before main
+char gCfgDir[64] = "sdmc:/config/songate-nx", gCfgBackups[64] = "sdmc:/config/songate-nx-backups";
+const char* configDir() { return gCfgDir; }
+const char* backupDir() { return gCfgBackups; }
+void useConfigDir(const char* dir, const char* backups) {
+    snprintf(gCfgDir, sizeof gCfgDir, "%s", dir);
+    snprintf(gCfgBackups, sizeof gCfgBackups, "%s", backups);
+}
 const char* root() { return "sdmc:/"; }
 const char* rootName() { return "the SD card"; }
 bool isRoot(const std::string& path) { return path.empty() || path == "sdmc:/" || path == "sdmc:"; }

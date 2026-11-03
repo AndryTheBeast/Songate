@@ -78,6 +78,35 @@ void Stats::countPlay(const std::string& path, int64_t when) {
     dirty_ = true;
 }
 
+PlayStat Stats::mine(const std::string& path) const {
+    const auto it = map_.find(path);
+    PlayStat s = it == map_.end() ? PlayStat{} : it->second;
+    s.plays = std::max(0, s.plays - others(path));
+    return s;
+}
+
+int Stats::others(const std::string& path) const {
+    const auto it = others_.find(path);
+    return it == others_.end() ? 0 : it->second;
+}
+
+void Stats::adopt(const std::string& path, int others, int64_t last, int64_t added) {
+    PlayStat& s = map_[path];
+    int& o = others_[path];
+    s.plays += others - o;
+    o = others;
+    s.last = std::max(s.last, last);
+    if (added) s.added = s.added ? std::min(s.added, added) : added;
+    gen_++;
+    dirty_ = true;
+}
+
+std::string Stats::serialiseOthers() const {
+    std::string out;
+    for (const auto& [p, n] : others_) if (n) out += p + "\t" + std::to_string(n) + "\n";
+    return out;
+}
+
 void Stats::wantDates(const std::vector<std::string>& paths) {
     std::vector<std::string> want;
     for (const auto& p : paths) {
@@ -122,6 +151,10 @@ bool Stats::poll() {
             it->second.last = std::max(it->second.last, s.last);
             if (!it->second.added) it->second.added = s.added;
         }
+        for (const auto& [p, n] : f.others) {
+            map_[p].plays += n;
+            others_[p] = n;
+        }
         loaded_ = true;
     }
     for (const auto& [p, t] : f.dates) {
@@ -144,7 +177,7 @@ std::string Stats::serialise() {
     out.reserve(map_.size() * 96);
     char nums[64];
     for (const auto& [p, s] : map_) {
-        snprintf(nums, sizeof nums, "\t%d\t%lld\t%lld\n", s.plays, (long long)s.last, (long long)s.added);
+        snprintf(nums, sizeof nums, "\t%d\t%lld\t%lld\n", std::max(0, s.plays - others(p)), (long long)s.last, (long long)s.added);   // what was played here
         out += p;
         out += nums;
     }
@@ -160,9 +193,13 @@ void Stats::run() {
             if (n < 4 || c[0].empty()) return;
             f.file[std::string(c[0])] = { int(num(c[1])), num(c[2]), num(c[3]) };
         });
+        eachLine(readFile(dir_ + "/sync-plays.tsv"), [&](std::string_view* c, int n) {
+            if (n >= 2 && !c[0].empty()) f.others[std::string(c[0])] = int(num(c[1]));
+        });
         std::lock_guard<std::mutex> g(m_);
         found_.loaded = true;
         found_.file = std::move(f.file);
+        found_.others = std::move(f.others);
     }
     const std::string plays = dir_ + "/bg-plays.txt", taken = dir_ + "/bg-plays.take";
     std::unique_lock<std::mutex> g(m_);

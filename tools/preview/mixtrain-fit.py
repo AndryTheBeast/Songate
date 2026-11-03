@@ -39,6 +39,19 @@ def changes_of(demo, ref):
     return out
 
 
+def key_class(demo):
+    k = demo.get('keyDistance', -1)
+    return 'unknown' if k < 0 else 'clash' if k >= 3 else 'near'
+
+
+def per_join(gs):
+    """Each join once: a number both of a join's versions changed is that join's mean, not two joins."""
+    joins = defaultdict(list)
+    for g, r, j in gs:
+        joins[(r, j)].append(g)
+    return [(sum(v) / len(v), r, j) for (r, j), v in joins.items()]
+
+
 def main():
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8')   # (the report has arrows; Windows' console is not UTF-8 by default)
@@ -57,6 +70,7 @@ def main():
     lines = []
     say = lambda s='': lines.append(s)
     across = defaultdict(list)       # (kind, number, value) → [(gain, round, join)]
+    by_key = defaultdict(list)       # (kind, key distance, number, value) → the same
     together = defaultdict(list)     # (kind, the whole change) → gains
     base_file = newest.get('baseFile', '')
     for folder, r, rated in rounds:
@@ -94,6 +108,7 @@ def main():
                     together[(kind, label)].append(g)
                     for k, x in ch.items():
                         across[(kind, k, x)].append((g, r['round'], j))
+                        by_key[(kind, key_class(ref), k, x)].append((g, r['round'], j))
                 if rated[ref['file']][1]:
                     rows['(reference)'].append((0, f"{ref['aName']} -> {ref['bName']}", rated[ref['file']][1]))
             for label, gs in rows.items():
@@ -113,6 +128,7 @@ def main():
     say(f"## Across the rounds given (settled: tried on {opts['--settled']}+ joins, better on {opts['--share']:.0%}+, mean {opts['--gain']:+g}+)")
     settled = {}
     for (kind, k, x), gs in sorted(across.items(), key=lambda kv: (kv[0][0], kv[0][1])):
+        gs = per_join(gs)
         vals = [g for g, _, _ in gs]
         share = sum(g > 0 for g in vals) / len(vals)
         mean = sum(vals) / len(vals)
@@ -121,6 +137,11 @@ def main():
         say(f"  {kind:10} {k} {x}: {len(vals)} joins in round(s) {sorted(set(r for _, r, _ in gs))}, better on {share:.0%}, mean {mean:+.2f} → {state}")
         if ok:
             settled.setdefault(k, []).append((kind, x, mean))
+    say()
+    say('By key distance (near 0-2, clash 3 and more, unknown: not both sure):')
+    for (kind, keys, k, x), gs in sorted(by_key.items()):
+        vals = [g for g, _, _ in per_join(gs)]
+        say(f"  {kind:10} {keys:8} {k} {x}: {len(vals)} joins, better on {sum(g > 0 for g in vals)}, worse on {sum(g < 0 for g in vals)}, mean {sum(vals) / len(vals):+.2f}")
     # the candidate: each settled number once (a model's numbers are for every kind): one settled at two values, on one kind
     # or on two, is left out for you to decide
     cand, conflicts, notes = {}, [], []

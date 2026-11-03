@@ -15,6 +15,9 @@ EYEBROW = ('Training from ' + r['base']) if r.get('base') else 'Automix ' + ('V1
 BUTTON = 'Send to Claude' if for_claude else 'Save the ratings'
 AFTER = ("'. Tell Claude it is sent.'" if for_claude else
                    json.dumps(". Put it in the round's folder, then run tools/mixtrain-fit.py on it."))
+# (a round of its own may say what to rate: mixtrain partners)
+LEDE = r.get('lede') or 'Rate how good the join sounds'
+LEDE2 = '.' if r.get('lede') else ', the join itself, not the songs. Some joins come back more than once, made a little differently: rate each as you hear it.'
 demos = r['demos']
 e = lambda s: html.escape(str(s), quote=True)
 
@@ -95,8 +98,7 @@ h1 {{ font: 800 clamp(30px, 6vw, 44px)/1.05 var(--display); margin: 0 }}
   <span class="eyebrow">{EYEBROW}</span>
   <h1>Round {n}: rate the joins</h1>
   <p class="lede">{len(demos)} demos from your library, each a join between two songs. The line on each player marks where the join
-  starts (about 10 s in). Rate how good the join sounds, <strong>0 (awful) to 10 (you can't tell where one song ends)</strong>,
-  the join itself, not the songs. Some joins come back more than once, made a little differently: rate each as you hear it.
+  starts (about 10 s in). {LEDE}, <strong>0 (awful) to 10 (you can't tell where one song ends)</strong>{LEDE2}
   Your ratings stay in this browser as you go; <strong>{BUTTON}</strong> saves them as a file once they're done.</p>
 </header>
 <section class="demos">

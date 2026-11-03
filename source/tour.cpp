@@ -12,6 +12,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 
 namespace {
 constexpr uint64_t Golden = 0x9e3779b97f4a7c15ull;   // a segmented control's options: its id + golden × (k + 1)
@@ -46,7 +48,8 @@ const char kArrowUp[] = GF_ARROW("M5.5 14.67h13L12 6.67z");
 const char kArrowLeft[] = GF_ARROW("M14.67 5.5v13L6.67 12z");
 const char kArrowRight[] = GF_ARROW("M9.33 5.5v13L17.33 12z");
 #undef GF_ARROW
-const char* const kChapters[] = { "Welcome", "Playing", "Library", "Playlists", "Files", "Sound", "Canvas", "Background player", "Settings" };
+const char* const kChapters[] = { "Welcome", "Playing", "Library", "Playlists", "Files", "Sound", "Canvas", "Background player", "Devices",
+                                  "Settings" };
 constexpr int kChapterCount = int(std::size(kChapters));
 // The three tours the first card offers (the user, 2026-10-30)
 struct TourLevel { const char* icon; const char* name; const char* what; };
@@ -240,20 +243,20 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           "spectrum. A track without lyrics switches to Minimal by itself and back with the next one that has some.",
           settings(6), { { "set.cvlayout", 0, 3 }, { "set.cvfloat" }, { "set.cvzoom" }, { "set.cvidle" } } },
         // ---- Looks (Complete)
-        { 2, 8, ICON_SUN, "Colours",
+        { 2, 9, ICON_SUN, "Colours",
           "From the cover takes the whole interface's colours from the album playing, on a dark or a light background. "
           "Dark and Light are fixed; Custom is yours, with a colour picker. Saturation and the colour transition fine-tune "
-          "it.",
+          "it. Opening, further down, turns the opening animation and its bells on or off.",
           settings(App::SetAppearance), { { "set.theme", 0 }, { "set.theme", 1 }, { "set.theme", 3 }, { "set.theme", 4 } } },
-        { 2, 8, ICON_SIDEBAR, "The sidebar, your way",
+        { 2, 9, ICON_SIDEBAR, "The sidebar, your way",
           "Fold the sidebar to icons, reorder its tabs, hide the ones you never use (Now playing stays), add dividing "
           "lines, and show Files. " GF_CAP_TAP " the button at the top left to fold it any time.",
           settings(App::SetAppearance), { { "set.side" } } },
-        { 2, 8, ICON_SLIDERS, "The visualizer",
+        { 2, 9, ICON_SLIDERS, "The visualizer",
           "The spectrum's sensitivity, smoothing, number of bars and peak caps, for Now playing and the Canvas apart, and "
           "how much the cover pulses with the bass.",
-          settings(7), { { "set.vsens" }, { "set.vbands" }, { "set.vpeaks" } } },
-        { 2, 8, ICON_GAME, "Controls",
+          settings(7), { { "set.vsens" }, { "set.vbands", 0, 3 }, { "set.vpeaks" } } },
+        { 2, 9, ICON_GAME, "Controls",
           GF_TOUR_POINTER,
           settings(8), { { "set.ptrspeed" }, { "set.ptraccel" } } },
         // ---- Background player and overlay
@@ -277,36 +280,73 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           "Songate's own icons. Play from any track, add one or all to the queue, all without leaving the game.",
           nullptr, {} },
 #endif
+        // ---- Devices (session 11, the user: "update the in-app tour with the new features"; the texts approved by the user first)
+        { 0, 8, ICON_LINK, "Your devices",
+          "Pair " GF_THIS_CONSOLE " with Songate on another device, a PC or a Switch: one shows a code, the other types it. "
+          "Then your playlists, likes, play counts and tag edits stay the same on both, synced over your own network, with "
+          "no account and nothing online.",
+          settings(App::SetDevices), { { "set.cnon" } } },
+        { 1, 8, ICON_REFRESH, "Syncing",
+          "Sync runs by itself a few seconds after anything changes, or when you choose. Music files, turned on, copies "
+          "here the songs the other device has and this one lacks, into the same folders, and never replaces anything.",
+          // the Sync row alone: with a device paired, Music files is a screen further down, and both could not be lit in view
+          settings(App::SetDevices), { { "set.cnauto", 0, 2 } } },
+        { 0, 8, ICON_MUSIC, "Listen together",
+          "Both devices play one queue, in time, whether in one room or two. Start it here, or with the link button at the "
+          "top once a device is paired. Your own queue comes back when you leave, and nothing of the session is saved.",
+          settings(App::SetDevices), { { "set.tgstart0" }, { "set.tgout", 0, 3 } } },
+        { 1, 8, ICON_SLIDERS, "Who changes what plays",
+          "The device that starts decides: Both, or Only this device. With Only, the other device's Next, pause and seek "
+          "are greyed out, and shuffle and repeat follow the one that started.",
+          settings(App::SetDevices), {} },
+        { 2, 8, ICON_WAVE, "Timing",
+          "Speakers, headphones and Bluetooth each delay the sound differently: move Timing once until the two sound as "
+          "one. Even when the two devices hold different files of one song, Songate lines them up by itself.",
+          settings(App::SetDevices), { { "set.tgout", 0, 3 }, { "set.tgnudge" } } },
+        { 1, 8, ICON_QUEUE, "Handoff",
+          "Handoff moves your queue and your place in the song to the other device, and this one pauses. Undo the handoff "
+          "brings your own queue back for two minutes.",
+          settings(App::SetDevices), {} },
+#ifdef GF_AIRPLAY
+        { 0, 8, ICON_VOL, "AirPlay",
+          "With Devices on, turn on Receive AirPlay, then pick Songate in an iPhone's AirPlay list. A new iPhone is asked about once, and "
+          "Always remembers it. The song, its cover and its progress show here. Play, skip and seek on the iPhone.",
+          settings(App::SetDevices), { { "set.airplay" } } },
+#endif
         // ---- Settings
-        { 0, 8, ICON_GEAR, "Settings",
+        { 0, 9, ICON_GEAR, "Settings",
           "Every option lives here, grouped by category. Find a setting searches them by name: \"sleep\" finds the sleep "
           "timer, " GF_THE_CONSOLE "'s sleep and the screen dimming.",
           settings(0), { { "@settingsCats" } } },
-        { 2, 8, ICON_FOLDER, "Storage",
+        { 2, 9, ICON_FOLDER, "Storage",
           "Where each browser opens, where backups go, and what Songate keeps " GF_KEPT_WHERE " (covers, measurements, "
           "tags), each with its size and a Clear button.",
           settings(App::SetStorage), { { "@main" } } },
-        { 1, 8, ICON_HISTORY, "Backups and resets",
+        { 1, 9, ICON_HISTORY, "Backups and resets",
           "Back up the settings now keeps a copy you can restore later, and Songate backs up by itself before every "
           "update. Reset settings puts every setting back as it came. Factory reset erases what you choose, or "
           "everything.",
           settings(App::SetReset), { { "set.backupnow" }, { "set.reset" }, { "set.factory" } } },
-        { 1, 8, ICON_DOWNLOAD, "Updates",
+        { 1, 9, ICON_DOWNLOAD, "Updates",
           "Updates stays off until you turn it on. Then Songate can check GitHub for new versions, show what changed, "
           "install one, or go back to an earlier one, and fetch new Automix models. With it off, Songate never goes "
           "online.",
           settings(App::SetUpdates), { { "set.updon" } } },
-        { 2, 8, ICON_BOLT, "Betas and Automix models",
+        { 2, 9, ICON_BOLT, "Betas and Automix models",
           "Beta versions lets you try new features before they are released: they can have bugs, so please report what "
           "you find. Automix models brings new ways of joining songs, downloaded and checked, and you can always go back "
           "to the one Songate came with.",
           settings(App::SetUpdates), { { "set.updbeta" }, { "set.model" } } },
-        { 1, 8, ICON_HELP, "Support",
+        { 1, 9, ICON_HELP, "Support",
           "Found a bug, or have an idea? Support sends it straight to Songate's developer, with what helps to fix it: "
           GF_VERSIONS_WORDS ". It stays off until you "
           "turn it on.",
           settings(App::SetSupport), { { "set.repon" } } },
-        { 0, 8, ICON_SPARKLE, "You're all set",
+        { 2, 9, ICON_MUSIC, "Last.fm",
+          "Scrobbles what you play to your Last.fm account: each track with tags, once you have heard half of it or 4 minutes. "
+          "It stays off until you turn it on and sign in.",
+          settings(App::SetLastfm), { { "set.lfon" } } },
+        { 0, 9, ICON_SPARKLE, "You're all set",
           GF_TOUR_END,
           nullptr, {} },
     };
@@ -382,7 +422,74 @@ void App::tourBack() {
     if (tourStep > 0) tourGo(tourStep - 1);
 }
 
+#ifdef GF_DEV
+// A dev check (session 11, before BETA 2): the chosen tour walked by itself, 1.5 s a step, each step's targets looked up as the
+// tour itself does (Ui::rectAny of the last frame) and logged: found or missing, and on screen or not. Film it (GF_FILM) for a
+// still of every step.
+void App::tourCheck() {
+    static const int level = getenv("GF_TOURCHECK") ? atoi(getenv("GF_TOURCHECK")) : -1;
+    static double at = 0;
+    static bool started = false, done = false;
+    if (level < 0 || done) return;
+    if (!started) {
+        static const double wait = getenv("GF_TOURCHECK_WAIT") ? atof(getenv("GF_TOURCHECK_WAIT")) : 3;   // a script's setup first
+        if (lib.tracks.empty() || time < wait) return;
+        started = true;
+        startTour();
+        tourLevel = level;
+        tourGo(1);
+        at = time;
+        printf("[tour] %s: %d steps\n", kLevels[level].name, int(tourSteps().size()));
+        return;
+    }
+    if (tourStep < 0) { done = true; return; }
+    if (time - at < 1.2) return;
+    static int logged = -1;
+    const auto& S = tourSteps();
+    if (logged != tourStep) {
+        logged = tourStep;
+        const TourStep& st = S[size_t(tourStep)];
+        std::string line, miss;
+        int found = 0, want = 0;
+        for (const TourTarget& tg : st.targets) {
+            const std::string key = tg.key;
+            if (key[0] == '@') { want++; found++; line += " " + key; continue; }
+            const int n = tg.seg > 0 ? tg.seg : 1;
+            for (int k = 0; k < n; k++) {
+                const SDL_FRect r = ui.rectAny(tg.seg > 0 ? uid(tg.key) + Golden * uint64_t(k + 1) : uid(tg.key, tg.i));
+                want++;
+                char b[160];
+                if (r.w > 0 && r.h > 0) {
+                    found++;
+                    const bool on = r.x >= -1 && r.y >= -1 && r.x + r.w <= css::W + 1 && r.y + r.h <= css::H + 1;
+                    snprintf(b, sizeof b, " %s%s ok%s", tg.key, tg.seg > 0 ? ("/" + std::to_string(k)).c_str() : tg.i ? ("#" + std::to_string(tg.i)).c_str() : "", on ? "" : " (off screen)");
+                } else {
+                    snprintf(b, sizeof b, " %s%s MISSING", tg.key, tg.i ? ("#" + std::to_string(tg.i)).c_str() : "");
+                }
+                line += b;
+            }
+        }
+        printf("[tour] %3d %-17s %-34s %s%s\n", tourStep, kChapters[st.chapter], st.title,
+               st.targets.empty() ? "card alone" : (std::to_string(found) + "/" + std::to_string(want) + ":").c_str(), line.c_str());
+        fflush(stdout);
+    }
+    if (time - at < 1.5) return;
+    if (tourStep + 1 >= int(S.size())) {
+        printf("[tour] end\n");
+        fflush(stdout);
+        endTour();
+        done = true;
+        return;
+    }
+    tourGo(tourStep + 1);
+    at = time;
+}
+#endif
+
 void App::drawTour() {
+#ifdef GF_DEV
+    tourCheck();
+#endif
     if (tourStep < 0) return;
     const auto& S = tourSteps();
     const TourStep& st = S[size_t(tourStep)];
@@ -413,7 +520,17 @@ void App::drawTour() {
         const std::string key = tg.key;
         if (key == "@main") add({ sideW, float(css::TbH), css::W - sideW, float(css::H - css::TbH - css::BarH) });
         else if (key == "@settingsCats") {
-            for (int i = 0; i < 16; i++) add(ui.rectAny(uid("set.cat", i)));
+            // the ones in view: past what fits the list scrolls, and those below (About under the player bar) are not lit
+            for (int i = 0; i < 16; i++) {
+                ScrollArea* a = nullptr;
+                SDL_FRect r = ui.rectAny(uid("set.cat", i), &a);
+                if (a) {
+                    const float y1 = std::max(r.y, a->view.y), y2 = std::min(r.y + r.h, a->view.y + a->view.h);
+                    r.h = y2 > y1 ? y2 - y1 : 0;
+                    r.y = y1;
+                }
+                add(r);
+            }
         } else if (tg.seg > 0) {
             for (int k = 0; k < tg.seg; k++) {
                 ScrollArea* a = nullptr;
@@ -430,11 +547,18 @@ void App::drawTour() {
     }
     if (have && scroll) {   // a row out of its list's view: the list scrolls to it
         const SDL_FRect v = scroll->view;
-        // from where the list is now (not added again each frame while it glides: that overshot)
-        if (t.y < v.y + 8) { scroll->target = scroll->y - (v.y + 8 - t.y); scroll->clamp(); }
+        // from where the list is now (not added again each frame while it glides: that overshot). Taller than the view (on the
+        // console: a long list of backups between Back up and Reset), its top: showing its bottom put the top out of view, and
+        // the list glided up and down for as long as the step showed (the user's recording, 2026-11-03)
+        if (t.h > v.h - 16) { scroll->target = scroll->y - (v.y + 8 - t.y); scroll->clamp(); }
+        else if (t.y < v.y + 8) { scroll->target = scroll->y - (v.y + 8 - t.y); scroll->clamp(); }
         else if (t.y + t.h > v.y + v.h - 8) { scroll->target = scroll->y + (t.y + t.h - (v.y + v.h - 8)); scroll->clamp(); }
         // the light and the card go where the part will be once the list has glided there, not after it as it moves
         t.y += scroll->y - scroll->target;
+        // and only the part in the list's view is lit: never over the top bar or the player bar
+        const float y1 = std::max(t.y, v.y), y2 = std::min(t.y + t.h, v.y + v.h);
+        t.h = std::max(0.f, y2 - y1);
+        t.y = y1;
     }
     // ---- where the light goes, and how (the user, 2026-10-28: some moves were smooth, others snapped)
     // A page just opened may not have drawn the part yet: the light waits where it was (up to 0.4 s) instead of going

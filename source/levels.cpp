@@ -3,6 +3,8 @@
  */
 #include "levels.hpp"
 
+#include <SDL2/SDL.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -107,11 +109,64 @@ void Levels::forget() {
         found_.clear();
         allAt_ = 0;
     }
+    saveOn_ = false;
+    saveList_.clear();
     map_.clear();
     done_ = moodDone_ = 0;
     dirty_ = true;
     gen_++;
     wake_.notify_all();
+}
+
+void Levels::saveBegin() {
+    saveList_.clear();
+    saveList_.reserve(map_.size());
+    for (const auto& kv : map_) saveList_.push_back(&kv);
+    saveAt_ = 0;
+    saveGen_ = gen_;
+    saveLoud_.clear();
+    saveMix_.clear();
+    saveMood_.clear();
+    saveLoud_.reserve(map_.size() * 96);
+    saveMix_.reserve(map_.size() * 140);
+    saveMood_.reserve(map_.size() * 110);
+    saveOn_ = true;
+}
+
+bool Levels::saveStep(double milliseconds, std::string& loud, std::string& mix, std::string& mood) {
+    if (!saveOn_) return false;
+    const Uint64 t0 = SDL_GetPerformanceCounter();
+    const Uint64 limit = Uint64(milliseconds * double(SDL_GetPerformanceFrequency()) / 1000.0);
+    char b[80];
+    while (saveAt_ < saveList_.size() && SDL_GetPerformanceCounter() - t0 < limit) {
+        const std::string& p = saveList_[saveAt_]->first;
+        const Level& l = saveList_[saveAt_]->second;
+        saveAt_++;
+        if (std::isnan(l.lufs)) snprintf(b, sizeof b, "\tx\t0\t0\n");
+        else snprintf(b, sizeof b, "\t%.2f\t%.6f\t%.0f\n", double(l.lufs), double(l.peak), double(l.blocks));
+        saveLoud_ += p;
+        saveLoud_ += b;
+        if (l.mix.seconds != 0) {
+            saveMix_ += p;
+            saveMix_ += '\t';
+            saveMix_ += l.mix.pack();
+            saveMix_ += '\n';
+        }
+        if (l.moodTried) {
+            saveMood_ += p;
+            saveMood_ += '\t';
+            saveMood_ += l.mix.mood.valid ? l.mix.mood.pack() : std::to_string(mixan::Mood::Version) + ",x";
+            saveMood_ += '\n';
+        }
+    }
+    if (saveAt_ < saveList_.size()) return false;
+    saveOn_ = false;
+    saveList_.clear();
+    loud = std::move(saveLoud_);
+    mix = std::move(saveMix_);
+    mood = std::move(saveMood_);
+    if (gen_ == saveGen_) dirty_ = false;
+    return true;
 }
 
 std::string Levels::serialise() {
@@ -218,6 +273,30 @@ void Levels::loadFile() {
         fileRead_ = true;
     }
     wake_.notify_all();
+}
+
+bool Levels::adopt(const std::string& path, const std::string& loud, const std::string& mix, const std::string& mood) {
+    Level l;
+    const char* c = loud.c_str();
+    char* e = nullptr;
+    if (*c == 'x') { e = const_cast<char*>(c + 1); }
+    else {
+        l.lufs = strtof(c, &e);
+        if (e == c) return false;
+    }
+    if (*e == '\t') l.peak = strtof(e + 1, &e);
+    if (*e == '\t') l.blocks = strtof(e + 1, &e);
+    if (!mixan::Info::unpack(mix, l.mix)) return false;
+    if (!mood.empty()) {
+        if (mixan::Mood::unpack(mood, l.mix.mood)) l.moodTried = true;
+        else if (mood == std::to_string(mixan::Mood::Version) + ",x") l.moodTried = true;
+    }
+    std::lock_guard<std::mutex> g(m_);
+    if (known_.count(path)) return true;   // measured here meanwhile: ours stands
+    known_.insert(path);
+    if (l.moodTried) moodKnown_.insert(path);
+    found_.emplace_back(path, l);
+    return true;
 }
 
 void Levels::pause(bool p) {

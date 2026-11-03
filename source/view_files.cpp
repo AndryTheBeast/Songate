@@ -395,6 +395,7 @@ void App::fileDelete(const std::string& path) {
     confirm(dir ? ICON_FOLDER : kindIcon(kindOf(name, false)), "Delete", name, sub, dir ? "Delete this folder?" : "Delete this file?", text, "Delete",
             [this, path, name, dir, n] {
                 const bool lib = inMusicFolder(path);
+                for (const Track& t : this->lib.tracks) if (t.path == path || under(t.path, path)) syncNoteDeleted(t.path);
                 if (!dir) {
                     if (remove(path.c_str()) != 0) { toast("Could not delete “" + name + "”"); return; }
                     files.gen++;
@@ -442,6 +443,8 @@ void App::fileDeleteMany(const std::vector<std::string>& paths) {
             [this, paths, n, inLib, what] {
                 files.selecting = false;
                 files.selected.clear();
+                for (const Track& t : lib.tracks)
+                    for (const auto& p : paths) if (t.path == p || under(t.path, p)) { syncNoteDeleted(t.path); break; }
                 startFileWork("Deleting " + what, parentOf(paths[0]), inLib, [paths, n, what](FileWork& w) {
                     w.total = n;
                     for (const auto& p : paths)

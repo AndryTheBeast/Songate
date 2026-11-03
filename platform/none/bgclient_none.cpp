@@ -8,9 +8,15 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 bool BgClient::connect() { return false; }
+#ifdef GF_DEV
+bool BgClient::mayBePlaying() { return getenv("GF_BGPLAYING") != nullptr; }   // the preview: as if it were playing
+#else
+bool BgClient::mayBePlaying() { return false; }
+#endif
 void BgClient::disconnect() {}
 bool BgClient::poll(double) { return false; }
 double BgClient::position(double) const { return 0; }

@@ -10,9 +10,9 @@
  * have a known layout, their SHA-256 is in a table here (and GitHub's own digest), and their changelog is the
  * release's notes. All three parts always come from the same release: the app, the background player and the overlay.
  *
- * Installing (on a worker, cores::Net): the zip is downloaded to config/gatefold-nx/updates/, its size and SHA-256
+ * Installing (on a worker, cores::Net): the zip is downloaded to config/songate-nx/updates/, its size and SHA-256
  * checked, each file unpacked (its CRC, and its SHA-256 when the manifest has one) next to where it goes as
- * "<file>.gfnew"; then config/gatefold-nx is copied to a dated backup folder; then the background player's files and
+ * "<file>.gfnew"; then config/songate-nx is copied to a dated backup folder; then the background player's files and
  * the overlay are swapped in (each renamed over the old one; one that cannot be, as an overlay Ultrahand holds, waits
  * as .gfnew). The app's own .nro is swapped when Gatefold closes (after romfsExit) or, if it was closed some other
  * way, at its next launch before anything reads it (Updater::finishPending, from main). Only the paths in
@@ -52,7 +52,7 @@ struct UpdRelease {
  * An Automix model sent over the air (the user, 2026-10-30): the model repository's latest release carries
  * songate-automix-models.json (each model's name, file, size, SHA-256, format, the lowest Songate that reads it, the analysis
  * it was trained on, notes) and the model files themselves (automix::ModelFile's text). Downloaded under the same permission
- * as releases, checked by size and checksum, kept in config/gatefold-nx/models/.
+ * as releases, checked by size and checksum, kept in config/songate-nx/models/.
  */
 struct UpdModel {
     std::string name, file, sha256, date, app = "2.0.0-beta";
@@ -77,7 +77,7 @@ class Updater {
 public:
     enum Phase { Idle, Checking, Downloading, Verifying, Unpacking, BackingUp, Installing };
 
-    /** configDir: sdmc:/config/gatefold-nx; self: the running .nro. Reads the last check's cache (no network). */
+    /** configDir: sdmc:/config/songate-nx (gatefold-nx before BETA 2); self: the running .nro. Reads the last check's cache (no network). */
     void start(const std::string& configDir, const std::string& self);
     void stop();   // waits for the worker (a download is stopped first)
 
@@ -89,9 +89,9 @@ public:
     /** Whether this Songate can play a listed model; why not, when it cannot (a newer one is needed). */
     static bool modelUsable(const UpdModel& m, std::string* why = nullptr);
     void cancel() { prog_.cancel = true; }
-    /** Copies a backup back over config/gatefold-nx when Gatefold closes. */
+    /** Copies a backup back over the settings folder when Gatefold closes. */
     void restoreAtExit(const std::string& backup);
-    /** Copies config/gatefold-nx into a new dated folder under root (caches left out); its path, or "" when it failed. */
+    /** Copies the settings folder into a new dated folder under root (caches left out); its path, or "" when it failed. */
     std::string backupNow(const std::string& root, const std::string& note);
     void cancelRestore();
     std::string restorePending() const;
@@ -133,7 +133,7 @@ public:
     std::string installerFile() const;   // the update waiting to run
 #endif
     /** The first launch after the rebranding (1.x was Gatefold NX): its .nro, and its overlay once Songate's is in, removed
-     *  (the HOME menu's homebrew and Ultrahand would list both); the settings folder stays config/gatefold-nx. Not while an
+     *  (the HOME menu's homebrew and Ultrahand would list both); the settings folder stayed config/gatefold-nx then (songate-nx from BETA 2: cfgmove). Not while an
      *  update waits (going back to 1.x puts them there on purpose). */
     static void cleanLegacy(const std::string& configDir, const std::string& self);
     /** The background player again, from its (new) files: pm:shell ends it and starts it. False (why in err) when not allowed. */
@@ -147,6 +147,9 @@ public:
     static const std::vector<std::vector<const char*>>& factoryFiles();
     /** At the next launch, on a worker: what factoryReset moved aside is deleted (thousands of covers: never at exit). */
     static void eraseLeftovers(const std::string& configDir);
+    /** An install of a release that reads config/gatefold-nx (cfgmove::usesOldFolder) left updates/back.txt: its version, once
+     *  (the file is removed: it would move back with the folder and be read again on the return), or empty. */
+    static std::string takeBack(const std::string& configDir);
 
 private:
     void run(std::function<void()> work);

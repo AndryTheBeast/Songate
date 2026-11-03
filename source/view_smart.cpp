@@ -291,6 +291,14 @@ void App::openPlaylistMenu(int ref) {
     ui.focusDefault();
 }
 
+void App::openDevices() {
+    if (sheet.preview) SDL_DestroyTexture(sheet.preview);
+    sheet = Sheet{};
+    sheet.page = Sheet::Devices;
+    sheet.returnFocus = ui.focusedId();
+    ui.focusDefault();
+}
+
 void App::openSleep() {
     if (sheet.preview) SDL_DestroyTexture(sheet.preview);
     sheet = Sheet{};
@@ -880,6 +888,60 @@ void App::drawSmartSheet() {
             rows.back().h = 44;
             rows.back().on = store.eq.preset == i;
         }
+    } else if (page == Sheet::Devices) {
+        // One place for what reaches other devices: AirPlay's rows go here when it comes (the user, 2026-11-02). Action rows, with an
+        // icon and their second line: as Choice rows they showed one line in a row made for two (the user, 2026-11-03: "way bigger")
+        if (tog.stage != Tog::Off) {
+            rows.push_back({ Row::Group, nullptr, "Listening with " + tog.peerName });
+            rows.back().h = 34;
+            if (tog.host && tog.stage == Tog::On) {
+                rows.push_back({ Row::Action, ICON_SLIDERS, "Who changes what plays", tog.onlyHost ? "Only this device: the other's controls are off" : "Both devices: Next, pause and seek from either", tog.onlyHost ? "Only me" : "Both", [this] { togetherSetOnlyHost(!tog.onlyHost); } });
+                rows.back().h = 58;
+            }
+            rows.push_back({ Row::Action, ICON_X, "Leave", tog.linkLost ? "Waiting for it: the link dropped" : "This device stops; the other plays on by itself", "", [this] { togetherLeave(); closeSheet(); } });
+            rows.back().h = 58;
+        } else {
+            for (const Connect::Paired& p : devicesLinked) {
+                rows.push_back({ Row::Group, nullptr, p.name });
+                rows.back().h = 34;
+                rows.push_back({ Row::Action, ICON_MUSIC, "Listen together", "One queue on both devices, in time", "", [this, id = p.id, name = p.name] { closeSheet(); togetherStart(id, name); } });
+                rows.back().h = 58;
+                rows.push_back({ Row::Action, ICON_QUEUE, "Handoff", "This queue moves there and plays on from here", "", [this, id = p.id, name = p.name] { closeSheet(); handoffTo(id, name); } });
+                rows.back().h = 58;
+            }
+            if (devicesLinked.empty()) {
+                rows.push_back({ Row::Group, nullptr, "No device linked: it has to be open, on this network" });
+                rows.back().h = 34;
+            }
+            if (time < handoffOldUntil) {
+                rows.push_back({ Row::Group, nullptr, "" });
+                rows.back().h = 10;
+                rows.push_back({ Row::Action, ICON_HISTORY, "Undo the handoff", "Your own queue comes back, paused", "", [this] { handoffUndo(); closeSheet(); } });
+                rows.back().h = 58;
+            }
+        }
+#ifdef GF_AIRPLAY
+        {
+            const AirPlay::View av = airplay.view();
+            rows.push_back({ Row::Group, nullptr, "AirPlay" });
+            rows.back().h = 34;
+            if (av.streaming) {
+                const std::string song = av.title.empty() ? "Playing here" : av.title + (av.artist.empty() ? "" : " · " + av.artist);
+                rows.push_back({ Row::Action, ICON_VOL, song, "From " + (av.peer.empty() ? std::string("an iPhone") : av.peer) + ": stop it there", "", [this] { closeSheet(); } });
+            } else {
+                rows.push_back({ Row::Action, ICON_VOL, store.airplayReceive ? "Receiving is on" : "Receive AirPlay", store.airplayReceive ? "Pick this device in an iPhone's AirPlay list" : "An iPhone on this network can play here", store.airplayReceive ? "On" : "Off", [this] {
+                                     store.airplayReceive = !store.airplayReceive;
+                                     persistSoon(0.3f);
+                                     closeSheet();
+                                 } });
+            }
+            rows.back().h = 58;
+        }
+#endif
+        rows.push_back({ Row::Group, nullptr, "" });
+        rows.back().h = 10;
+        rows.push_back({ Row::Action, ICON_GEAR, "Device settings", "Pairing, sync, AirPlay and listening together's timing", "", [this] { closeSheet(); settingsCat = SetDevices; navigate(View::Settings); } });
+        rows.back().h = 58;
     } else if (page == Sheet::Sleep) {
         const bool on = sleepLeft() > 0;
         for (int k = 0; k < 5; k++) {
@@ -966,7 +1028,7 @@ void App::drawSmartSheet() {
     const float hx = x + 24, hy = y + 24;
     g.roundRect(hx, hy, 64, 64, 14, pal.accent, 0.16f);
     g.roundStroke(hx, hy, 64, 64, 14, 1, pal.accent, 0.3f);
-    const bool sleep = page == Sheet::Sleep, job = page == Sheet::Job;
+    const bool sleep = page == Sheet::Sleep, job = page == Sheet::Job, devs = page == Sheet::Devices;
     const bool jobs = page == Sheet::Jobs;
     int running = 0;
     for (const JobCard& c : jobCards) running += c.shown > 0.01f;
@@ -1002,14 +1064,15 @@ void App::drawSmartSheet() {
     if (filePage && sheet.preview) g.image(sheet.preview, hx, hy, 64, 64, 14);   // an image shows itself
     else if (ownHead) g.icon(fileIcon, hx + 32, hy + 32, 28, pal.accentInk);
     else
-    g.icon(plp ? playlistIcon(sheet.recipe) : ask && sheet.askIcon ? sheet.askIcon : eqp ? ICON_EQ : actl || lacts ? ICON_GAME : rc ? rc->icon : plFile ? ICON_LIST : sleep ? ICON_MOON : jobs ? ICON_REFRESH : job ? (jb.stop == Stoppable::Levels ? ICON_WAVE : ICON_IMAGE) : page == Sheet::Smart ? PLI_SMART : ICON_LIST,
+    g.icon(plp ? playlistIcon(sheet.recipe) : ask && sheet.askIcon ? sheet.askIcon : eqp ? ICON_EQ : actl || lacts ? ICON_GAME : rc ? rc->icon : plFile ? ICON_LIST : devs ? ICON_LINK : sleep ? ICON_MOON : jobs ? ICON_REFRESH : job ? (jb.stop == Stoppable::Levels ? ICON_WAVE : ICON_IMAGE) : page == Sheet::Smart ? PLI_SMART : ICON_LIST,
            hx + 32, hy + 32, 28, pal.accentInk);
-    const std::string kick = ownHead ? fileKick : plp ? playlistKind(sheet.recipe) : ask ? sheet.askKicker : eqp ? "Equalizer" : actl ? "Background player" : lacts ? "Games" : rc ? kGroups[rc->group] : plFile ? "Playlist file" : sleep ? "Sleep timer" : job || jobs ? "In the background" : page == Sheet::Smart ? "New playlist" : "Playlists";
+    const std::string kick = ownHead ? fileKick : plp ? playlistKind(sheet.recipe) : ask ? sheet.askKicker : eqp ? "Equalizer" : actl ? "Background player" : lacts ? "Games" : rc ? kGroups[rc->group] : plFile ? "Playlist file" : devs ? "Devices" : sleep ? "Sleep timer" : job || jobs ? "In the background" : page == Sheet::Smart ? "New playlist" : "Playlists";
     const std::string title = ownHead ? fileTitle : plp ? plp->name : ask ? sheet.askTitle
                             : eqp ? "Preset"
                             : actl ? evNames[std::clamp(sheet.recipe, 0, 3)]
                             : lacts ? sheet.name
                             : rc ? rc->title
+                            : devs ? "Play with other devices"
                             : sleep ? (left > 0 ? "Pauses in " + fmtTime(std::ceil(left)) : stopAfterCurrent ? "Stops after this track" : "Pause the music in…")
                             : plFile ? plName
                             : job ? jb.label
@@ -1020,6 +1083,7 @@ void App::drawSmartSheet() {
                           : actl ? "The playlist it plays, faded in"
                           : lacts ? "The game events that play it; off, they do what they usually do"
                           : rc ? rc->desc
+                          : devs ? "Together, or handed over"
                           : sleep ? "It fades out over its last 10 seconds, then pauses where you were"
                           : plFile ? std::to_string(sheet.fileTracks.size()) + (sheet.fileTracks.size() == 1 ? " track" : " tracks") +
                                          (sheet.fileMissing ? " · " + std::to_string(sheet.fileMissing) + " not in your library" : std::string())

@@ -22,7 +22,7 @@ void App::drawNow(float x, float y, float w, float h) {
     const float art = std::min({ css::H * 0.52f, css::W * 0.40f, 620.f });
 #endif
     const float iw = std::min(760.f, w - padH * 2 - art - gap);
-    const bool has = now.track >= 0;
+    const bool has = now.track >= 0 || extOn;   // (an outside source: AirPlay)
     // Automix joining (automixFocus): the cover glides from its place to the middle of the screen and grows, frosted with
     // the hint, while the info (and the sidebar and bars: App::draw) fade out; as the join ends it glides back and they return
     const int mode = store.mixAnimNow;   // Settings › Appearance › Automix: Full, Immersive, Simple
@@ -89,8 +89,8 @@ void App::drawNow(float x, float y, float w, float h) {
     float cy = y + padT;
 
     // .np-kicker
-    eqGlyph(ix, cy + 8, pal.accentInk);
-    const std::string state = !has ? "Nothing playing" : isPlaying() ? "Playing" : "Paused";
+    eqGlyph(ix, cy + 8, pal.accentInk, isPlaying() || extOn);   // (AirPlay plays: the bars move with it)
+    const std::string state = extOn ? "Playing over AirPlay" : !has ? "Nothing playing" : isPlaying() ? "Playing" : "Paused";
     kicker(state, ix + 13 + 10, cy + 8, pal.accentInk, 0.14f);
     cy += 17 + 4;
     // the title, .np-artist and .np-album; in a Simple join (Settings › Appearance › Automix) the outgoing song's give way
@@ -110,8 +110,9 @@ void App::drawNow(float x, float y, float w, float h) {
         yy = cy + title.size() * titleLH + 2 + 4;
         std::string al = in.album;
         if (in.date.size() >= 4) al += (al.empty() ? "" : " · ") + in.date.substr(0, 4);
-        g.text(in.artist, { 24, Weight::SemiBold }, ix, yy, pal.text, 1, Align::Left, int(iw));
-        g.text(al, { css::Md }, ix, yy + 31 + 2, pal.text2, 1, Align::Left, int(iw));
+        // too long for the column: they scroll as the player bar's (one clock: a new song starts them again)
+        marqueeLine(in.artist, { 24, Weight::SemiBold }, ix, yy, iw, pal.text);
+        marqueeLine(al, { css::Md }, ix, yy + 31 + 2, iw, pal.text2);
     };
     if (mode == 2 && has && mixOld.on) {
         // (across the texts themselves, the wider song's: across the whole column a short title changed in a moment)
@@ -133,7 +134,7 @@ void App::drawNow(float x, float y, float w, float h) {
             for (size_t i = 0; i < bs.size(); i++) bx += chip(bs[i], bx, cy + 11, i == 0) + 6;
             // The first genre, as a chip that opens its page
             const int tr = old ? mixOld.track : now.track;
-            if (tr < 0 || tr >= int(lib.tracks.size())) return;
+            if (extOn || tr < 0 || tr >= int(lib.tracks.size())) return;
             const std::string& gs = lib.tracks[tr].genre;
             const std::string g1 = gs.substr(0, gs.find(';'));
             if (!g1.empty()) {
@@ -152,8 +153,13 @@ void App::drawNow(float x, float y, float w, float h) {
         else badgeRow(false);
         cy += 22;
     }
-    // .np-actions
-    if (has) {
+    // .np-actions; an outside source has none of a song here, only where it comes from
+    if (extOn) {
+        cy += 12;
+        g.icon(ICON_LINK, ix + 9, cy + 17, 16, pal.text2);
+        g.textC("From " + extFrom + " · play, pause and skip there", { css::Sm }, ix + 26, cy + 17, pal.text2, 1, Align::Left, int(iw - 26));
+        cy += 34;
+    } else if (has) {
         cy += 12;
         const Track& t = lib.tracks[now.track];
         const bool liked = store.isLiked(t.path);
@@ -207,7 +213,7 @@ void App::drawNow(float x, float y, float w, float h) {
 
     // The next track's title, artist and album in these fonts, rendered ahead a couple a frame (Gfx::warm),
     // so a track change does not begin with a frame spent rendering them.
-    if (has) {
+    if (has && !extOn) {
         const std::vector<int> nx = upNext(1);
         if (!nx.empty() && nx[0] != now.track) {
             const Track& n = lib.tracks[nx[0]];
@@ -242,7 +248,7 @@ void App::drawNow(float x, float y, float w, float h) {
  * backgrounds the halo read as a smudge and the shadow as a dark rim under the cover.
  */
 void App::drawNowCover(float ax, float ay, float art) {
-    const bool has = now.track >= 0;
+    const bool has = now.track >= 0 || extOn;
     const float s = art * (1 + coverBeat), sx = ax + (art - s) / 2, sy = ay + (art - s) * 0.6f;
     g.roundRect(sx, sy, s, s, 16, pal.surface);
     const float k = now.fade;
@@ -333,6 +339,10 @@ void App::drawSpectrum(float x, float y, float w, float h) {
 }
 
 void App::drawUpNext(float x, float y, float w, float h) {
+    if (extOn) {   // what plays next is the other device's
+        g.textC("What plays next is up to " + extFrom, { css::Base }, x + w / 2, y + 40, pal.text3, 1, Align::Center);
+        return;
+    }
     ScrollArea& sa = area("np.panel");
     const std::vector<int> nextTracks = upNext(15);
     sa.view = { x - 8, y, w + 16, h };

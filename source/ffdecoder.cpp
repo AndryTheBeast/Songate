@@ -160,7 +160,15 @@ bool FfDecoder::open(const std::string& path, int outRate, int outChannels) {
     fifo_.clear();
     pos_ = 0;
     eof_ = false;
-    return pkt_ && frame_;
+    zero_ = firstPts_ = 0;
+    seekAt_ = -1;
+    framesOut_ = firstNb_ = 0;
+    zeroKnown_ = false;
+    if (!pkt_ || !frame_) return false;
+    // the first two frames, kept to be played: where sample 0 sits, for an exact seek
+    decodeMore();
+    if (!zeroKnown_) decodeMore();
+    return true;
 }
 
 void FfDecoder::close() {
@@ -194,12 +202,30 @@ bool FfDecoder::decodeMore() {
     while (fifo_.size() == before && !eof_) {
         int r = avcodec_receive_frame(dec_, frame_);
         if (r == 0) {
+            const int64_t ts = frame_->best_effort_timestamp;
+            const bool timed = ts != AV_NOPTS_VALUE && dec_->sample_rate > 0;
+            const double at0 = timed ? double(ts) * av_q2d(fmt_->streams[stream_]->time_base) : 0;
+            if (!zeroKnown_ && framesOut_ < 2) {
+                // Sample 0 is the second frame's time less what the first one played: a first frame cut short by an encoder delay
+                // (MP3, AAC) keeps the time of its uncut start
+                if (framesOut_ == 0) { firstPts_ = at0; firstNb_ = frame_->nb_samples; zero_ = at0; }
+                else if (timed) { zero_ = at0 - double(firstNb_) / dec_->sample_rate; zeroKnown_ = true; }
+                framesOut_++;
+                if (!timed) zeroKnown_ = false, framesOut_ = 2;   // (no times: seeks stay as they were)
+            }
+            long long drop = 0;
+            if (seekAt_ >= 0) {
+                if (!timed) seekAt_ = -1;
+                else if (at0 + double(frame_->nb_samples) / dec_->sample_rate <= seekAt_) { av_frame_unref(frame_); continue; }   // all before
+                else { drop = std::max(0LL, (long long)std::llround((seekAt_ - at0) * outRate_)); seekAt_ = -1; }
+            }
             const int cap = swr_get_out_samples(swr_, frame_->nb_samples);
             const size_t at = fifo_.size();
             fifo_.resize(at + size_t(cap) * outCh_);
             uint8_t* outp = reinterpret_cast<uint8_t*>(fifo_.data() + at);
             const int got = swr_convert(swr_, &outp, cap, const_cast<const uint8_t**>(frame_->extended_data), frame_->nb_samples);
             fifo_.resize(at + size_t(std::max(got, 0)) * outCh_);
+            if (drop > 0) fifo_.erase(fifo_.begin() + long(at), fifo_.begin() + long(at + size_t(std::min<long long>(drop, std::max(got, 0))) * outCh_));
             av_frame_unref(frame_);
             continue;
         }
@@ -217,9 +243,9 @@ bool FfDecoder::decodeMore() {
     return fifo_.size() > before;
 }
 
-bool FfDecoder::skip(double seconds) {
+bool FfDecoder::skip(double seconds, bool exact) {
     if (!fmt_ || seconds <= 0) return fmt_ != nullptr;
-    if (seconds > 30) return seek(seconds);
+    if (seconds > 30 && !exact) return seek(seconds);
     long long left = (long long)std::llround(seconds * outRate_);
     while (left > 0) {
         if (pos_ >= fifo_.size() && !decodeMore()) return false;
@@ -322,13 +348,15 @@ bool FfDecoder::seek(double seconds) {
     if (!fmt_) return false;
     std::lock_guard<std::mutex> g(dm_);
     const AVStream* st = fmt_->streams[stream_];
-    const int64_t ts = av_rescale_q(int64_t(seconds * AV_TIME_BASE), AVRational{ 1, AV_TIME_BASE }, st->time_base);
+    const double raw = (zeroKnown_ ? zero_ : 0) + seconds;   // on the stream's own timestamps
+    const int64_t ts = av_rescale_q(int64_t(raw * AV_TIME_BASE), AVRational{ 1, AV_TIME_BASE }, st->time_base);
     if (av_seek_frame(fmt_, stream_, ts, AVSEEK_FLAG_BACKWARD) < 0) return false;
     avcodec_flush_buffers(dec_);
     swr_init(swr_);   // drop resampler history from before the jump
     fifo_.clear();
     pos_ = 0;
     eof_ = false;
+    seekAt_ = zeroKnown_ ? raw : -1;   // the packet's samples before the moment asked are dropped as they are decoded
     rr_.store(rw_.load());   // what was read ahead is from before the jump (the player holds its lock: no read meanwhile)
     rEof_ = false;
     if (pf_) fillLocked(outRate_ / 4);

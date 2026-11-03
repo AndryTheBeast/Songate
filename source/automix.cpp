@@ -949,9 +949,9 @@ void gainsAt(const Plan& p, double t, Gains& g) {
             const double r = 0.004 / beat;
             return phase < on ? float(std::clamp(std::min(phase, on - phase) / r, 0.0, 1.0)) : 0.f;
         };
-        if (p.gate == 1 && tt < c) {   // the stabs heard at near full level, as in that mix (the incoming one faded under
+        if (p.gate == 1 && tt < c && (p.gateBars <= 0 || tau < p.gateBars * 4 * beat)) {   // the stabs heard at near full level, as in that mix (the incoming one faded under
             // the outgoing one, they were lost); still without the bass where the EQ holds it out
-            const float k = stab(std::fmod(tau / beat, double(std::max(1, p.gateEvery))), 0.5), lv = std::max(g.in, p.gateLevel) * k;
+            const float k = stab(std::fmod(tau / beat, double(std::max(1, p.gateEvery))), p.gateLen), lv = std::max(g.in, p.gateLevel) * k;
             g.in = lv;
             for (int b = 0; b < 3; b++) g.bandIn[b] = lv * sw[b];
             if (p.gateDuck > 0) {   // the outgoing voice dips under each stab, so the stab is heard (round 5)
@@ -1957,6 +1957,380 @@ Plan plan(const mixan::Info* a, double dur, const mixan::Info* b, double fallbac
 
 }  // namespace file1
 
+// ==== Model files, format 2: format 1's planner copied (file1 never changes), for logic a format 1 file cannot ask for; not
+// frozen until a model is. Beside it ModelFile::gateKeys, the key distances the gate plays on (rounds 4-6).
+namespace file2 {
+
+Plan plan(const mixan::Info* a, double dur, const mixan::Info* b, double fallback, const Join* want, const Tune& t) {
+    Plan p;
+    Join j = want ? *want : Join{};
+    if (j.preset == Preset::Off) {   // no join: this track plays to its end, then the next one
+        p.join = j;
+        p.off = true;
+        p.startOut = dur;
+        return p;
+    }
+    const bool autoMode = j.preset == Preset::Auto;
+    const bool ok = a && b && a->valid && b->valid && a->end > 0 && b->seconds > 0;
+    const double endA = ok ? std::min(double(a->end), dur) : dur;
+    if (!ok) {   // not analysed: a plain fade
+        if (autoMode) {
+            j = fromPreset(Preset::Fade);
+            j.preset = Preset::Auto;
+        }
+        p.join = j;
+        p.length = j.seconds > 0 ? j.seconds : std::max(fallback, 4.0);
+        p.startOut = std::max(0.0, endA - p.length);
+        return p;
+    }
+    const double fade = a->end - a->fadeStart, quietIntro = b->introEnd - b->start;
+    const bool fades = fade >= 2;
+
+    // ---- can it be on the beat: both grids sure, and a beat of each within 20 ms over the whole mix as they are, or
+    // with the next track's tempo matched to this one's (within 8 %: Stretcher); one may be twice the other
+    const double P = a->period;
+    double err = 1e9, ratio = 1;   // how far apart a beat of each is per beat of this track (s); the next track's speed to match
+    const bool sure = a->confidence >= 0.5f && b->confidence >= 0.5f && a->period > 0 && b->periodIn > 0;
+    if (sure)
+        for (double m : { 1.0, 2.0, 0.5 })
+            if (std::fabs(b->periodIn * m - a->period) < err) {
+                err = std::fabs(b->periodIn * m - a->period);
+                ratio = b->periodIn * m / a->period;   // < 1: it is faster, slowed to this one's tempo
+            }
+    // no tempo change (the user, 2026-10-28, after Melatonin: "a lot of transitions create a lot of distortion because you
+    // are changing the speed of the music; I don't think automixing should change the speed": 14 of its 17 joins stretched
+    // a track by up to 8.4 %). On the beat only where the tempos meet as they are (a beat of each within 20 ms over the
+    // whole join); match() below then never stretches. The Stretcher and the player's support for it stay, unused
+    const bool stretchable = false;
+    auto asIs = [&](int n) { return err * n <= 0.02; };
+    // the tempos matched (v3): this track takes the next one's tempo a few beats before the join and keeps it to its end;
+    // the next one plays as it is. Its length then counts this track's beats at the next one's tempo (startOut set first)
+    auto match = [&](Plan& q, int n) {
+        if (asIs(n)) { q.length = n * P; return; }
+        q.speed = 1 / ratio;
+        q.length = n * P * ratio;
+        q.easeIn = 8 * P * ratio;
+        q.stretchFrom = std::max(double(a->start), q.startOut - q.easeIn * (1 + q.speed) / 2 - 1.5);
+    };
+    auto fits = [&](int n) { return sure && n * P <= t.beatMaxSec && (asIs(n) || stretchable); };
+    // where a mix of n beats ends on this track's grid: through the middle of a fade-out, or at its last beat
+    // bars (v2): where the analysis is sure of the downbeats, a join ends on beat 1 of this track and the next one starts
+    // on its own first beat 1, so their bars (and, with whole-bar lengths, their phrases) line up; else on any beat
+    const bool barsOut = a->barOut > 0 && a->barSureOut >= 0.5f, barsIn = b->barIn >= 0 && b->barSureIn >= 0.5f;
+    const double grid = barsOut ? 4 * P : P, ref = barsOut ? a->barOut : a->beatOut;   // this track's grid, and a point on it
+    auto endBeat = [&](int n) {
+        double t = fades ? a->fadeStart + 0.5 * fade + 0.5 * n * P : a->beatOut;
+        t = std::min(t, a->beatOut);
+        return ref - std::round((ref - t) / grid) * grid;
+    };
+    auto roomFor = [&](int n) { return endBeat(n) - n * P >= a->start + 15; };
+    // the last beat at full level: before a fade-out starts, else the last one (where a loop ends and an echo starts)
+    auto lastFullBeat = [&]() {
+        if (a->period <= 0) return fades ? double(a->fadeStart) : endA - 0.3;
+        if (!fades) return ref;
+        return ref - std::ceil((ref - a->fadeStart) / grid - 1e-9) * grid;
+    };
+    p.beatmatchable = fits(4);
+    // keys (v2 step 5): both sure (the whole track's), and three or more steps apart on the Camelot wheel: they clash. A
+    // key found a fifth off (the commonest error) is one step: it never turns a good pair into a clash
+    if (a->keySure >= 0.5f && b->keySure >= 0.5f) p.keyDistance = mixan::keyDistance(a->key, b->key);
+    const bool clash = p.keyDistance >= 3;
+
+    // ---- Auto, on the drop (v3, as Spotify's mixes do: automix-demo/reference, NEXT_SESSION.md "Automix v3, step 1"): the
+    // next track starts m bars before its drop (its first four bars with full bass), so the drop lands on X, the bar after
+    // this track's last bass phrase (on its 4-bar phrase grid). This track stays full; its bass is cut hard on a bar line
+    // B bars before X (a bridge with no bass at all); the next one rises from the start under a low-pass that opens by X,
+    // its bass held out until it slams in on the drop; this one then goes out over T bars. Whole bars on both grids; the
+    // keys left alone (Spotify's 9B into 3A sounds right: the tempo and the phrase make it)
+    const bool dropSure = b->dropAt > 0 && b->dropJump >= 6;   // its drop's beat found (a downbeat, even where the bars are unsure)
+    if (autoMode && sure && barsOut && (barsIn || dropSure) && a->bass.size() > 16 && b->bass.size() > 8 && a->bpm > 0 && (stretchable || asIs(12))) {
+        const Digits ba{ a->bass }, bb{ b->bass }, la{ a->bars };
+        int D = -1;   // the next track's drop
+        for (int i = 0; i + 3 < int(bb.size()) && i <= 64 && D < 0; i++)
+            if (std::min({ bb[size_t(i)], bb[size_t(i) + 1], bb[size_t(i) + 2], bb[size_t(i) + 3] }) >= 7) D = i;
+        int lastBass = -1;   // this track's last two bars with full bass, loud
+        for (int i = std::min(int(ba.size()), int(la.size())) - 1; i >= 1 && lastBass < 0; i--)
+            if (ba[size_t(i)] >= 7 && ba[size_t(i) - 1] >= 7 && la[size_t(i)] >= 6) lastBass = i;
+        // the drop's time, and how many of the next track's bars come before it
+        const double barB = 4 * double(b->periodIn);
+        double dropT = -1;
+        int before = 0;
+        if (dropSure) {
+            dropT = b->dropAt;
+            before = int(std::floor((dropT - b->start) / barB + 0.02));
+        } else if (D >= 0) {
+            before = D >= 4 ? D : 4;   // a drop sooner: from its first bar (one at bar 0: its bass held to bar 4)
+            dropT = b->barIn + before * barB;
+        }
+        if (dropT > 0 && before >= 4 && lastBass > 8) {
+            const double bar = 4 * P;   // this track's bar, its own time
+            // (a track with bass to its abrupt end: the last phrase boundary that leaves two bars of it, as Spotify cuts out)
+            const int xbEnd = int(std::floor((endA - a->barIn) / (4 * 60.0 / a->bpm) + 1e-6)) - 2;
+            int xb = a->phraseAt + 4 * int(std::floor((std::min(lastBass + 1, xbEnd) - a->phraseAt) / 4.0));
+            if (t.noSkip) {   // (round 2: the change where this track starts to fade out, or at its end: no full music skipped)
+                const double fadeAt = a->end - a->fadeStart >= 2 ? double(a->fadeStart) : endA;
+                const int xf = std::min(int(std::floor((fadeAt - a->barIn) / (4 * 60.0 / a->bpm) + 1e-6)), xbEnd);
+                // on a bar (a phrase's grid of 4 bars left 12 s of an abruptly ending song unplayed: round 2)
+                xb = std::max(xb, xf);
+            }
+            double X = a->barIn + xb * 4 * (60.0 / a->bpm);
+            X = a->barOut - std::round((a->barOut - X) / bar) * bar;   // on the outro's grid
+            int m = a->barSureOut >= 0.75f && (dropSure || b->barSureIn >= 0.75f) ? t.dropBars : std::min(8, t.dropBars);   // phrase-long: 16 bars where both are sure
+            m = std::min(m, before);
+            while (m > 4 && X - m * bar < a->start + 15) m -= 4;
+            const int T = std::clamp(int(std::floor((endA - X) / bar + 1e-6)), 0, t.exitBars);
+            while (m > 4 && !asIs((m + T) * 4)) m -= 4;   // shorter, so the beats stay together without a tempo change
+            const int n = (m + T) * 4;
+            if (T >= 1 && xb - m > 0 && X - m * bar >= a->start + 15 && (asIs(n) || stretchable)) {
+                int k = xb;   // the bars before X where this track has no bass of its own already: a bridge it makes itself
+                while (k > xb - m && k - 1 < int(ba.size()) && ba[size_t(k) - 1] <= 4) k--;
+                const int B = std::clamp(std::max(xb - k, int(std::lround(m * t.bridgeFrac))), 1, m / 2);
+                p.startOut = X - m * bar;
+                p.offset = std::max(0.0, dropT - m * barB);
+                match(p, n);
+                p.beatmatched = p.onBars = p.drop = true;
+                p.bpm = asIs(n) ? a->bpm : b->bpm;
+                p.beats = n;
+                p.cross = double(m) / (m + T);
+                p.bassCut = double(m - B) / (m + T);
+                p.echoAt = p.cross;
+                const double Pe = p.length / n;
+                p.echoDelay = Pe >= 0.25 ? Pe : 2 * Pe;
+                j = Join{};
+                j.volume = Volume::Drop;
+                j.eq = Eq::BassBridge;
+                j.filter = Filter::LowPassIn;
+                j.beats = n;
+                p.join = j;
+                return p;
+            }
+        }
+    }
+
+    // ---- Auto, between different tempos (v3, with no tempo change: the user, 2026-10-28): never two beats at once. The
+    // next track comes in on a downbeat of its own (its drop, else its first downbeat) exactly where this one's last bass
+    // phrase ends (X, on its phrase grid, as the drop join finds it), so the change lands on a phrase of both. Where the
+    // next track's bars just before that downbeat have no bass (no kick: pads, a voice, a riser), up to 8 of them play
+    // under this track's last bars, rising under a low-pass that opens by X, this track's bass cut a bar or two before (a
+    // bridge, as the drop join); else a clean cut on X (30 ms), as Spotify's S&M into Heads Will Roll
+    if (autoMode && a->confidence >= 0.5f && barsOut && b->confidence >= 0.5f && b->periodIn > 0 && !fits(16) && a->bass.size() > 8 &&
+        a->bars.size() >= a->bass.size() && a->bpm > 0 && (dropSure || barsIn)) {
+        const Digits ba{ a->bass }, bb{ b->bass }, la{ a->bars };
+        int lastBass = -1;   // this track's last two bars with full bass, loud
+        for (int i = int(ba.size()) - 1; i >= 1 && lastBass < 0; i--)
+            if (ba[size_t(i)] >= 7 && ba[size_t(i) - 1] >= 7 && la[size_t(i)] >= 6) lastBass = i;
+        const double bar = 4 * P, barB = 4 * double(b->periodIn);
+        if (lastBass > 8) {
+            const int xbEnd = int(std::floor((endA - a->barIn) / (4 * 60.0 / a->bpm) + 1e-6)) - 1;
+            int xb = a->phraseAt + 4 * int(std::floor((std::min(lastBass + 1, xbEnd) - a->phraseAt) / 4.0));
+            if (t.noSkip) {   // (round 2: the change where this track starts to fade out, or at its end: no full music skipped)
+                const double fadeAt = a->end - a->fadeStart >= 2 ? double(a->fadeStart) : endA;
+                const int xf = std::min(int(std::floor((fadeAt - a->barIn) / (4 * 60.0 / a->bpm) + 1e-6)), xbEnd);
+                // on a bar (a phrase's grid of 4 bars left 12 s of an abruptly ending song unplayed: round 2)
+                xb = std::max(xb, xf);
+            }
+            double X = a->barIn + xb * 4 * (60.0 / a->bpm);
+            X = a->barOut - std::round((a->barOut - X) / bar) * bar;   // on the outro's grid
+            const double entry = dropSure ? b->dropAt : b->barIn;     // the next track's downbeat it comes in on
+            const int entryBar = int(std::lround((entry - b->barIn) / barB));   // its bar, in the bass digits
+            if (X >= a->start + 20 && X < endA - 0.2 && entry >= 0) {
+                int k = 0;   // the next track's bars without bass just before it
+                while (k < t.tempoBridgeMax && entryBar - k - 1 >= 0 && entryBar - k - 1 < int(bb.size()) && bb[size_t(entryBar - k - 1)] <= 3) k++;
+                k = std::min({ k, int(std::floor((entry - b->start) / barB + 0.02)), int(std::floor((X - a->start - 15) / barB)) });
+                if (k < 2 && t.noCut) {
+                    // (round 2: no cut; the next kind of join below)
+                } else {
+                if (k >= 2) {   // a bridge
+                    const double over = k * barB, tail = std::clamp(P, 0.3, 0.6);
+                    p.startOut = X - over;
+                    p.offset = std::max(0.0, entry - over);
+                    p.length = over + tail;
+                    p.cross = over / p.length;
+                    const double cutAt = X - (t.tempoCutLead >= 0 ? t.tempoCutLead : k >= 4 ? 2 : 1) * bar;   // this track's bass, cut on its own bar line
+                    p.bassCut = std::clamp((cutAt - p.startOut) / p.length, 0.02, p.cross);
+                    p.drop = p.onBars = true;
+                    j = Join{};
+                    j.volume = Volume::Drop;
+                    j.eq = Eq::BassBridge;
+                    j.filter = Filter::LowPassIn;
+                    j.beatmatch = false;
+                    j.seconds = float(p.length);
+                } else {   // a cut on the phrase
+                    const double W = std::max(0.3, 2.0 * t.cutFade);
+                    p.startOut = X - W / 2;
+                    p.offset = std::max(0.0, entry - W / 2);
+                    p.length = W;
+                    p.cross = 0.5;
+                    p.cut = p.onBars = true;
+                    j = fromPreset(Preset::Cut);
+                    if (t.cutEcho) j.effect = Effect::Echo;
+                    j.beatmatch = false;
+                    j.seconds = float(W);
+                }
+                p.echoAt = p.cross;
+                p.echoDelay = P >= 0.25 ? P : 2 * P;
+                p.bpm = b->bpm;
+                j.preset = Preset::Auto;
+                p.join = j;
+                return p;
+                }
+            }
+        }
+    }
+
+    // ---- Auto, by structure (v2 step 2; a "rolling" transition, as Vande Veire & De Bie's automatic DJ): the outgoing
+    // track's outro begins after its last loud bars; the incoming one starts so its intro plays under those bars and its
+    // first loud section lands on the bar where that outro begins (the crossover: lows and highs change hands there);
+    // the outgoing one then fades through its outro. Up to 8 bars each side, whole bars, on the bars of both.
+    if (autoMode && sure && barsOut && barsIn && !a->bars.empty() && !b->bars.empty() && a->bpm > 0 && b->bpm > 0) {
+        const Median3 la{ a->bars }, lb{ b->bars };   // each bar's loudness, smoothed over three bars
+        constexpr int Loud = 7;   // within 1.5 dB of the body's level
+        int lastLoud = -1, firstLoud = -1;
+        for (int i = int(la.size()) - 1; i >= 1 && lastLoud < 0; i--)
+            if (la[size_t(i)] >= Loud && la[size_t(i) - 1] >= Loud) lastLoud = i;
+        for (int i = 0; i + 3 < int(lb.size()) && firstLoud < 0; i++)
+            if (lb[size_t(i)] >= Loud && lb[size_t(i) + 1] >= Loud && lb[size_t(i) + 2] >= Loud && lb[size_t(i) + 3] >= Loud) firstLoud = i;
+        if (lastLoud > 8 && firstLoud >= 0) {
+            const double bar = 4 * P, barB = 4 * 60.0 / b->bpm;
+            double X = a->barIn + (lastLoud + 1) * 4 * (60.0 / a->bpm);   // the outro's first bar, on the outgoing grid
+            X = a->barOut - std::round((a->barOut - X) / bar) * bar;
+            const int outro = int(std::floor((endA - X) / bar + 1e-6));
+            const int m = std::clamp(firstLoud, 2, clash ? t.clashBars : 8), f = std::clamp(outro, 1, clash ? t.clashBars : 8);   // clashing keys: short
+            const int n = (m + f) * 4;
+            const bool asIs = err * n <= 0.02;
+            const double start = X - m * bar;
+            if ((asIs || stretchable) && n * P <= 40 && start >= a->start + 15 && X < endA) {
+                p.startOut = start;
+                // the incoming track from where its first loud section is m bars away (its intro's start at the most)
+                p.offset = b->barIn + std::max(0, firstLoud - m) * barB;
+                match(p, n);
+                p.beatmatched = p.onBars = p.structured = true;
+                p.bpm = asIs ? a->bpm : b->bpm;
+                p.beats = n;
+                p.cross = double(m) / (m + f);
+                p.echoAt = p.cross;
+                const double Pe = p.length / n;   // a beat as heard
+                p.echoDelay = Pe >= 0.25 ? Pe : 2 * Pe;
+                j = fromPreset(Preset::Blend);   // both up to the crossover, a full EQ swap on it
+                j.beats = n;
+                if (clash) {   // the incoming harmony muffled until the crossover
+                    j.filter = Filter::LowPassIn;
+                    p.keyClash = true;
+                }
+                j.preset = Preset::Auto;
+                p.join = j;
+                return p;
+            }
+        }
+    }
+
+    // ---- Auto chooses
+    if (autoMode) {
+        int n = 0;
+        for (int c : { 32, 16, 8 })
+            if ((!clash || c <= t.clashBeats) && fits(c) && roomFor(c)) { n = c; break; }   // clashing keys: 8 beats at most
+        if (n) {
+            j = fromPreset(Preset::Blend);   // both up and a full EQ swap; a short one: a smooth bass swap
+            if (clash) {
+                j.filter = Filter::LowPassIn;
+                p.keyClash = true;
+            }
+            if (n < t.blendFrom) {
+                j.volume = Volume::Smooth;
+                j.eq = Eq::BassCentre;
+            }
+            j.beats = n;
+        } else if (fades) {
+            j = fromPreset(quietIntro > 3 ? Preset::Rise : Preset::Fade);
+            j.beatmatch = false;
+            if (a->bassOut > 0.15f && b->bassIn > 0.15f && j.eq == Eq::None) j.eq = Eq::BassCentre;
+            j.seconds = float(std::clamp(fade * t.fadeScale, quietIntro > 3 ? 4.0 : 3.0, clash ? 3.0 : 10.0));
+            p.keyClash = clash;
+        } else if (a->bpm > 0 && a->period > 0.2f && a->confidence >= 0.3f) {
+            j = fromPreset(Preset::Echo);
+        } else {
+            j = fromPreset(Preset::Fade);
+            j.seconds = float(2 * t.fadeScale);
+        }
+        j.preset = Preset::Auto;
+    }
+
+    bool loop = j.loopBars > 0 && a->confidence >= 0.5f && a->period > 0;
+    // ---- on the beat
+    if (j.beatmatch && p.beatmatchable) {
+        int n = j.beats > 0 ? j.beats : 0;
+        if (!n)
+            for (int c : { 32, 16, 8, 4 })
+                if (fits(c) && (loop || roomFor(c))) { n = c; break; }
+        n = std::clamp(n - n % 4, 4, 64);   // whole bars
+        while (n > 4 && !fits(n)) n -= 4;
+        if (loop && !asIs(n)) loop = false;   // a loop repeats this track's own bars: not while it is stretched
+        if (n >= 4 && fits(n)) {
+            double end = endBeat(n);
+            double start = end - n * P;
+            if (loop) {   // the bars before the last full-level beat repeat; half the mix before them, half over them
+                p.loopTo = lastFullBeat();
+                p.loopFrom = p.loopTo - j.loopBars * 4 * P;
+                start = p.loopTo - std::min(n / 2, j.loopBars * 4 * 2) * P;
+            }
+            // the editor's drag: whole beats earlier or later, within the track's music
+            if (j.shiftBeats) {
+                const double lo = std::ceil((a->start + 2 - start) / P), hi = std::floor((endA - 0.25 * n * P - start) / P);
+                if (lo <= hi) start += std::clamp(double(j.shiftBeats), lo, hi) * P;
+            }
+            if (start >= a->start + 2 || loop) {
+                p.startOut = std::max(0.0, start);
+                p.offset = barsIn ? b->barIn : b->beatIn;
+                p.onBars = barsOut && barsIn;
+                match(p, n);   // the tempos drift apart over this mix: this track takes the next one's
+                p.beatmatched = true;
+                p.bpm = asIs(n) ? a->bpm : b->bpm;
+                p.beats = n;
+                p.echoAt = 0.5;   // a beat: the mix has an even number of them
+                const double Pe = p.length / n;
+                p.echoDelay = Pe >= 0.25 ? Pe : 2 * Pe;
+                if (!loop) j.loopBars = 0;
+                p.join = j;
+                return p;
+            }
+            p.loopFrom = p.loopTo = -1;
+        }
+    }
+
+    // ---- timed to the music
+    double secs = j.seconds > 0 ? j.seconds : j.volume == Volume::Cut ? 0.2 : j.effect == Effect::Echo ? 4.0 * t.fadeScale : fades ? std::clamp(fade, 3.0, 10.0) : 4.0;
+    if (j.volume == Volume::Cut) secs = std::min(secs, 1.0);
+    p.length = secs;
+    p.echoDelay = a->period >= 0.25f ? a->period : a->period > 0 ? 2 * a->period : 0.375;
+    if (loop) {
+        p.loopTo = lastFullBeat();
+        p.loopFrom = p.loopTo - j.loopBars * 4 * P;
+        p.startOut = p.loopTo - 0.3 * secs;
+    } else if (j.effect == Effect::Echo) {
+        const double cut = lastFullBeat();   // the echo repeats its last beat at full level
+        p.echoAt = 0.3;
+        p.startOut = cut - p.echoAt * secs;
+    } else if (j.volume == Volume::Cut) {
+        p.startOut = endA - 0.05 - 0.5 * secs;
+    } else if (fades) {
+        p.startOut = endA - secs;                  // the fade ends with its music
+    } else if (quietIntro > 3) {
+        p.startOut = endA - secs * 0.5;            // the quiet opening half under this track's last seconds
+    } else {
+        p.startOut = endA - secs * 0.75;           // an abrupt end: heard nearly to its end
+    }
+    {   // the editor's drag, within the track's music
+        const double lo = std::max(0.0, double(a->start)), hi = std::max(lo, endA - 0.5);
+        p.startOut = std::clamp(p.startOut + j.shiftSec, lo, hi);
+    }
+    p.offset = std::max(0.0, double(b->start) - 0.02);
+    p.bpm = b->bpm;
+    p.join = j;
+    return p;
+}
+
+}  // namespace file2
+
 namespace {
 
 /** A number written so it reads back exactly (the shortest such). */
@@ -2011,7 +2385,23 @@ bool ModelFile::parse(const std::string& textIn, std::string* why) {
         else if (key == "app") m.app = val;
         else if (key == "order") m.order = val;
         else if (key == "mixan") m.mixan = atoi(val.c_str());
-        else if (key == "gateOn") {
+        else if (key == "gateKeys" && m.format >= 2) {
+            m.gateKeys = 0;
+            for (size_t s0 = 0; s0 <= val.size();) {
+                size_t s1 = val.find(',', s0);
+                if (s1 == std::string::npos) s1 = val.size();
+                const std::string keys = val.substr(s0, s1 - s0);
+                if (keys == "near") m.gateKeys |= KeysNear;
+                else if (keys == "clash") m.gateKeys |= KeysClash;
+                else if (keys == "unknown") m.gateKeys |= KeysUnknown;
+                else if (keys != "none" && !keys.empty()) return fail("gateKeys: " + keys + "?");
+                s0 = s1 + 1;
+            }
+        } else if (key == "gateBars" && m.format >= 2) {
+            m.gateBars = atoi(val.c_str());
+        } else if (key == "gateLen" && m.format >= 2) {
+            m.gateLen = float(strtod(val.c_str(), nullptr));
+        } else if (key == "gateOn") {
             m.gateOn = 0;
             for (size_t s0 = 0; s0 <= val.size();) {
                 size_t s1 = val.find(',', s0);
@@ -2054,6 +2444,14 @@ std::string ModelFile::text() const {
     if (gateOn & GateBeat) g += "beat,";
     o += g.empty() ? "none" : g.substr(0, g.size() - 1);
     o += '\n';
+    if (format >= 2) {
+        std::string k;
+        if (gateKeys & KeysNear) k += "near,";
+        if (gateKeys & KeysClash) k += "clash,";
+        if (gateKeys & KeysUnknown) k += "unknown,";
+        o += "gateKeys " + (k.empty() ? std::string("none") : k.substr(0, k.size() - 1)) + "\n";
+        o += "gateBars " + std::to_string(gateBars) + "\ngateLen " + exact(gateLen) + "\n";
+    }
     for (const Field& f : kFields) {
         const char* base = reinterpret_cast<const char*>(&tune) + f.at;
         std::string v;
@@ -2070,17 +2468,20 @@ std::string ModelFile::text() const {
 
 Plan plan(const mixan::Info* a, double dur, const mixan::Info* b, double fallback, const Join* want, const ModelFile& m) {
     const Tune& t = m.tune;
-    Plan p = file1::plan(a, dur, b, fallback, want, t);
+    Plan p = m.format >= 2 ? file2::plan(a, dur, b, fallback, want, t) : file1::plan(a, dur, b, fallback, want, t);
     p.inLevel = t.inLevel;
     p.lpFrom = t.lpFrom;
     p.outPow = !p.beatmatched && p.drop && t.bridgeOutPow > 0 ? t.bridgeOutPow : t.outPow;   // a bridge: drop, not beatmatched
     p.cutFade = t.cutFade;
     const unsigned kind = !p.beatmatched || p.bpm <= 0 ? 0u : p.drop ? ModelFile::GateDrop : p.structured ? ModelFile::GateStructure
                                                                                                              : ModelFile::GateBeat;
-    p.gate = kind & m.gateOn ? t.gate : 0;
+    const unsigned keys = p.keyDistance < 0 ? ModelFile::KeysUnknown : p.keyDistance >= 3 ? ModelFile::KeysClash : ModelFile::KeysNear;
+    p.gate = kind & m.gateOn && keys & m.gateKeys ? t.gate : 0;
     p.gateLevel = t.gateLevel;
     p.gateDuck = t.gateDuck;
     p.gateEvery = t.gateEvery;
+    p.gateBars = m.gateBars;
+    p.gateLen = m.gateLen;
     return p;
 }
 

@@ -111,6 +111,8 @@ struct Plan {
     // dips under each stab (0: not at all), and a stab every how many beats (2: beats 1 and 3). The defaults are round 4's
     float gateLevel = 0.85f, gateDuck = 0;
     int gateEvery = 2;
+    int gateBars = 0;          // format 2: the stabs only over the join's first bars, then the blend (0: to the crossover)
+    float gateLen = 0.5f;      // … and each stab's length (beats)
 };
 
 /** a: this track (dur: its length as the player knows it); b: the next one; fallback: the plain fade's length; want: an edited join. */
@@ -162,24 +164,31 @@ Plan planTuned(const mixan::Info* a, double dur, const mixan::Info* b, double fa
  * a file, planned by the planner of its format, so a new model can come over the air without a new Songate. Format 1 is the
  * tunable planner as it stood when V1.2.0 was frozen from round 5 (automix.cpp `file1`, a copy: it never changes), with every
  * Tune number and the kinds of join the gate plays on. A model that needs new logic (a new kind of join) needs a new format,
- * and one that needs a new analysis a higher mixan Version: both come with an app update. The file is text, a "key value"
+ * and one that needs a new analysis a higher mixan Version: both come with an app update. Format 2 (file2, a copy of file1)
+ * adds gateKeys. The file is text, a "key value"
  * line each ('#' starts a comment), its first line "songate-automix-model <format>":
  *   name Automix V1.2.0 · app 2.0.0 (the lowest Songate that reads it) · mixan 4 (the analysis it was trained on) ·
- *   order 1.0.0 (whose playlist order it uses) · gateOn drop,structure (or beat, or none) · then each Tune number by name.
+ *   order 1.0.0 (whose playlist order it uses) · gateOn drop,structure (or beat, or none) · format 2: gateKeys near,clash,unknown
+ *   (the key distances the gate plays on: 0-2, 3 and more, not both sure; or none) · gateBars 2 · gateLen 1 (Plan's) · then
+ *   each Tune number by name.
  */
 struct ModelFile {
-    static constexpr int Format = 1;   // the newest format this build plans
+    static constexpr int Format = 2;   // the newest format this build plans
     enum : unsigned { GateDrop = 1, GateStructure = 2, GateBeat = 4 };
+    enum : unsigned { KeysNear = 1, KeysClash = 2, KeysUnknown = 4 };
     int format = 0;
     std::string name, app = "2.0.0-beta", order = "1.0.0";   // app: format 1 came with the betas (2.0.0 BETA)
     int mixan = 0;
     Tune tune;
     unsigned gateOn = 0;   // the kinds of join on the beat the gate plays on (Tune::gate, gateLevel, gateDuck, gateEvery)
+    unsigned gateKeys = KeysNear | KeysClash | KeysUnknown;   // … and the key distances (format 2; format 1: all)
+    int gateBars = 0;          // format 2: Plan::gateBars, gateLen
+    float gateLen = 0.5f;
     /** false (and why) when the text is not a model this build can plan: another format, a later analysis, an unknown key */
     bool parse(const std::string& text, std::string* why = nullptr);
     std::string text() const;
 };
-/** A join planned by a model file (format 1). */
+/** A join planned by a model file (the planner of its format). */
 Plan plan(const mixan::Info* a, double dur, const mixan::Info* b, double fallback, const Join* want, const ModelFile& m);
 /** A built-in model as a model file (V1.1.0's numbers: the proof that a file plans as the built-in model does). */
 ModelFile builtinFile(Model m);

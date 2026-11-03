@@ -252,6 +252,25 @@ void Store::load() {
         else if (k == "updateToasted") updateToasted = v;
         else if (k == "betas") betas = v == "1";
         else if (k == "reports") reports = v == "1";
+        else if (k == "lastfm") lastfm = v == "1";
+        else if (k == "openingSound") openingSound = v == "1";
+        else if (k == "opening") opening = v == "1";
+        else if (k == "lastfmScrobble") lastfmScrobble = v == "1";
+        else if (k == "lastfmNow") lastfmNow = v == "1";
+        else if (k == "connections") connections = v == "1";
+        else if (k == "connectAim") connectAim = v;
+        else if (k == "syncKinds") syncKinds = unsigned(atoi(v.c_str())) & 15u;
+        else if (k == "syncHand") syncAuto = v != "1";
+        else if (k == "syncResults") syncResults = v == "1";
+        else if (k == "syncFiles") syncFiles = v == "1";
+        else if (k == "togetherOutput") togetherOutput = std::clamp(atoi(v.c_str()), 0, 2);
+        else if (k == "handoffFrom") handoffFrom = v;
+        else if (k == "airplayReceive") airplayReceive = v == "1";
+        else if (k == "togetherDelay0") togetherDelay[0] = std::clamp(atoi(v.c_str()), -300, 300);
+        else if (k == "togetherDelay1") togetherDelay[1] = std::clamp(atoi(v.c_str()), -300, 300);
+        else if (k == "togetherDelay2") togetherDelay[2] = std::clamp(atoi(v.c_str()), -300, 300);
+        else if (k == "syncDeletes") syncDeletes = v == "1";
+        else if (k == "syncDeleteFrom") syncDeleteFrom = strtoull(v.c_str(), nullptr, 10);
     }
     if (!filesTabKnown) hiddenTabs |= 64u;   // Files stays hidden until Settings → Appearance shows it
     if (!linesKnown && std::none_of(tabOrder.begin(), tabOrder.end(), isLine)) {   // the line Files had, now one of yours
@@ -319,10 +338,22 @@ void Store::load() {
             a = b;
         }
     }
+    airplayDevices.clear();
+    for (const auto& l : readLines(path("airplay-devices.tsv"))) {
+        const size_t tab = l.find('\t');
+        if (tab != std::string::npos && tab > 0) airplayDevices.push_back({ l.substr(0, tab), l.substr(tab + 1) });
+    }
     covers.clear();
     for (const auto& l : readLines(path("covers.tsv"))) {
         const size_t tab = l.find('\t');
-        if (tab != std::string::npos) covers[l.substr(0, tab)] = l.substr(tab + 1);
+        if (tab == std::string::npos) continue;
+        std::string file = l.substr(tab + 1);
+#ifndef GF_WINDOWED
+        // a chosen cover kept in the folder under its old name (a backup from before BETA 2, restored): the folder as it is now
+        constexpr const char* kOld = "sdmc:/config/gatefold-nx/";
+        if (file.rfind(kOld, 0) == 0 && std::string(Dir).rfind("sdmc:/config/gatefold-nx", 0) != 0) file = std::string(Dir) + "/" + file.substr(strlen(kOld));
+#endif
+        covers[l.substr(0, tab)] = file;
     }
     lyricNudge.clear();
     for (const auto& l : readLines(path("lyric-offsets.tsv"))) {
@@ -364,6 +395,16 @@ void Store::saveEqPresets() const {
         out += '\n';
     }
     writeFile("eq-presets.txt", std::move(out));
+}
+
+void Store::saveAirplayDevices() const {
+    std::string t;
+    for (const auto& d : airplayDevices) {
+        std::string n = d.name;
+        for (char& c : n) if (c == '\t' || c == '\n' || c == '\r') c = ' ';
+        t += d.id + "\t" + n + "\n";
+    }
+    writeFile("airplay-devices.tsv", std::move(t));
 }
 
 void Store::saveEdits() const {
@@ -439,6 +480,11 @@ void Store::save() const {
                                 { "exportDir", &exportDir }, { "coverDir", &coverDir }, { "backupDir", &backupDir } })
         if (!v->empty()) appendf(f, "%s=%s\n", k, v->c_str());
     appendf(f, "updates=%d\nupdateAtStart=%d\nbetas=%d\nreports=%d\n", updates, updateAtStart, betas ? 1 : 0, reports ? 1 : 0);
+    appendf(f, "lastfm=%d\nlastfmScrobble=%d\nlastfmNow=%d\nopeningSound=%d\nopening=%d\n", lastfm ? 1 : 0, lastfmScrobble ? 1 : 0, lastfmNow ? 1 : 0, openingSound ? 1 : 0,
+            opening ? 1 : 0);
+    appendf(f, "handoffFrom=%s\nairplayReceive=%d\n", handoffFrom.c_str(), airplayReceive ? 1 : 0);
+    appendf(f, "togetherOutput=%d\ntogetherDelay0=%d\ntogetherDelay1=%d\ntogetherDelay2=%d\n", togetherOutput, togetherDelay[0], togetherDelay[1], togetherDelay[2]);
+    appendf(f, "connections=%d\nconnectAim=%s\nsyncKinds=%u\nsyncHand=%d\nsyncResults=%d\nsyncFiles=%d\nsyncDeletes=%d\nsyncDeleteFrom=%llu\n", connections ? 1 : 0, connectAim.c_str(), syncKinds, syncAuto ? 0 : 1, syncResults ? 1 : 0, syncFiles ? 1 : 0, syncDeletes ? 1 : 0, (unsigned long long)syncDeleteFrom);
     if (!updateToasted.empty()) appendf(f, "updateToasted=%s\n", updateToasted.c_str());
     writer().put(path("settings.txt"), std::move(f), true);
 

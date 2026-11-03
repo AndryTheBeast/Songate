@@ -22,6 +22,8 @@ file(GLOB APP_SOURCES CONFIGURE_DEPENDS source/*.cpp)
 set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreaded)   # the C library inside the program: no redistributable to install
 add_executable(Songate
   ${APP_SOURCES}
+  source/qrcodegen.c
+  source/monocypher.c
   platform/windows/platform_windows.cpp
   platform/windows/winfiles.cpp
   platform/windows/winshell.cpp
@@ -33,9 +35,9 @@ set_source_files_properties(platform/windows/songate.rc PROPERTIES OBJECT_DEPEND
 target_compile_features(Songate PRIVATE cxx_std_20)
 target_compile_options(Songate PRIVATE
   -O2 -Wno-deprecated-declarations
-  "SHELL:-include ${CMAKE_SOURCE_DIR}/platform/windows/winshim.h")
+  "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include ${CMAKE_SOURCE_DIR}/platform/windows/winshim.h>")
 target_compile_definitions(Songate PRIVATE
-  GF_WINDOWED GF_FFMPEG GF_CURL GF_TURBOJPEG "GF_VERSION=\"${APP_VERSION}\""
+  GF_WINDOWED GF_FFMPEG GF_CURL GF_TURBOJPEG GF_AIRPLAY "GF_VERSION=\"${APP_VERSION}\""
   _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS NOMINMAX UNICODE _UNICODE
   __PRFCHWINTRIN_H CURL_STATICLIB FLAC__NO_DLL)
 if(GF_DEV)
@@ -48,6 +50,6 @@ target_link_directories(Songate PRIVATE ${SDLLIB} ${DEPS}/lib ${DEPS}/bin)
 target_link_libraries(Songate PRIVATE
   SDL2 SDL2main SDL2_ttf SDL2_image SDL2_mixer
   avformat avcodec swresample avutil
-  FLAC mpg123 opusfile opus vorbisidec ogg turbojpeg-static libcurl z
-  ws2_32 winmm shell32 ole32 uuid powrprof comctl32 dwmapi shcore runtimeobject crypt32 secur32 bcrypt iphlpapi shlwapi version)
+  FLAC mpg123 opusfile opus vorbisidec ogg turbojpeg-static libcurl z mbedcrypto
+  ws2_32 winmm shell32 ole32 uuid powrprof comctl32 dwmapi shcore runtimeobject crypt32 secur32 bcrypt iphlpapi shlwapi version dnsapi)
 target_link_options(Songate PRIVATE "LINKER:/subsystem:$<IF:$<BOOL:${GF_DEV}>,console,windows>")

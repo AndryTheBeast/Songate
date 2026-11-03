@@ -107,6 +107,7 @@ void App::scanStorage() {
         measure(dir + "/mood.tsv", u[2]);
         measure(dir + "/gains.bin", u[2]);
         measure(dir + "/tags.tsv", u[3]);
+        measure(dir + "/identity.tsv", u[3]);
         for (const auto& n : entries(backups))   // only Gatefold's own backups, whatever else that folder holds
             if (struct stat st; stat(joinP(joinP(backups, n), "gatefold-backup.txt").c_str(), &st) == 0) measure(joinP(backups, n), u[4]);
         measure(dir + "/updates", u[5], isDownload);
@@ -181,6 +182,7 @@ void App::clearStorage(int which) {
                     writeGains();
                     break;
                 case 3:
+                    identity.forget();
                     meta.stop();
                     meta.clearDiskCache();
                     rescan();

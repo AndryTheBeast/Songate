@@ -47,7 +47,7 @@ namespace {
 
     /** musicRoot from Gatefold's settings, without the "sdmc:" and with a trailing slash; empty when unset. */
     std::string gatefoldMusicRoot() {
-        FILE *f = fopen("/config/gatefold-nx/settings.txt", "r");
+        FILE *f = fopen(gfCfgFile("settings.txt").c_str(), "r");
         if (!f) return {};
         char line[FS_MAX_PATH + 16];
         std::string root;

@@ -399,11 +399,13 @@ void App::lyricDots(float x, float cy, float d, const Rgb& c, float alpha, bool 
 }
 
 /** .eq: three bars bouncing while something plays. */
-void App::eqGlyph(float x, float cy, const Rgb& c) {
+void App::eqGlyph(float x, float cy, const Rgb& c) { eqGlyph(x, cy, c, isPlaying()); }
+
+void App::eqGlyph(float x, float cy, const Rgb& c, bool moving) {
     const float base[3] = { 0.6f, 1.f, 0.4f }, delay[3] = { -0.2f, -0.5f, -0.8f };
     for (int i = 0; i < 3; i++) {
         float s = base[i];
-        if (isPlaying()) {
+        if (moving) {
             float ph = std::fmod(float(time - delay[i]) / 0.9f, 2.f);
             ph = ph < 1 ? ph : 2 - ph;
             s = 0.25f + 0.75f * (0.5f - 0.5f * std::cos(ph * 3.14159f));

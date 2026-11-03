@@ -3,7 +3,7 @@
  * Covers that never fail on a file the app can play (the user, 2026-10-30: "FLAC are having issues in the switch app:
  * covers are not loading", while playback and lyrics worked): a FLAC's picture read by our own reader (libFLAC only as a
  * fallback), and an image decoded by SDL_image, else by stb_image (baseline and progressive JPEG, PNG). Dev builds keep
- * config/gatefold-nx/cover-trace.txt: each cover that was not found or did not decode, and which way it failed.
+ * config/songate-nx/cover-trace.txt: each cover that was not found or did not decode, and which way it failed.
  */
 #pragma once
 #include <cstddef>

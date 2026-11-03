@@ -22,6 +22,8 @@ struct Track {
     double duration = 0;
     int albumIdx = -1;
     bool tagged = false;
+    // No tag gave it, so it is still the file's or folder's: 1 the title, 2 the artist, 4 the album (Last.fm sends only tags)
+    unsigned char fromName = 0;
 };
 
 struct Album {

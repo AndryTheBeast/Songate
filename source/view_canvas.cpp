@@ -140,7 +140,7 @@ void App::drawCanvasLyrics(float x, float y, float w, float h, int size, int lay
 
 void App::drawCanvas() {
     ui.region(Region::Overlay);
-    const bool has = now.track >= 0;
+    const bool has = now.track >= 0 || extOn;   // (an outside source: AirPlay)
     const double t = store.motion ? time : 0;
 
     // The layout shown: the user's, except that a track without lyrics gets Minimal (the user's choice is kept and
@@ -301,7 +301,7 @@ void App::drawCanvas() {
     g.roundStroke(ax, fy, art, art, rad, 1, { 1, 1, 1 }, 0.06f);
 
     // ---- .cv-meta (+ lyrics): each layout's own, faded by its weight and drifting in by a few pixels
-    const std::string kick = !has ? "NOTHING PLAYING" : isPlaying() ? "PLAYING" : "PAUSED";
+    const std::string kick = extOn ? "PLAYING OVER AIRPLAY" : !has ? "NOTHING PLAYING" : isPlaying() ? "PLAYING" : "PAUSED";
     auto albumOf = [&](const TrackInfo& in) {
         std::string al = in.album;
         if (has && in.date.size() >= 4) al += (al.empty() ? "" : " · ") + in.date.substr(0, 4);
@@ -418,7 +418,7 @@ void App::drawCanvas() {
     pageWipe_.on = false;   // (the controls: not wiped)
 
     // ---- .cv-chrome: hairline progress, transport, tools; fades out when idle
-    const bool idle = canvasIdle > store.canvasIdleAfter && isPlaying();
+    const bool idle = canvasIdle > store.canvasIdleAfter && (isPlaying() || extOn);
     // Coming back from idle, the spectrum folds back first: the controls only return in its last moments,
     // so they never sit on top of the bars (going idle, they leave first and the bars rise after).
     canvasCtl += ((idle || canvasViz > 0.12f ? 0.f : 1.f) - canvasCtl) * (1 - std::exp(-dt / 0.12f));
@@ -432,8 +432,8 @@ void App::drawCanvas() {
     const double dur = now.info.duration;
     const float pw = css::W - padX * 2;
     const Id pid = uid("cv.progress");
-    float frac = dur > 0 ? float(clampf(float(player.position() / dur), 0, 1)) : 0;
-    if (live) {
+    float frac = dur > 0 ? float(clampf(float(shownPosition() / dur), 0, 1)) : 0;
+    if (live && !controlsOff()) {   // (an outside source is seeked where it plays; a session's starter may decide alone)
         ui.item(pid, { padX, progCy - 12, pw, 24 }, 6, Slider);
         if (const int st = ui.sliderStep(pid)) seekBy(st * 5);
         const float d = ui.sliderDrag(pid);
@@ -484,7 +484,7 @@ void App::drawCanvas() {
     // in a Simple join the outgoing song's times (where it is, its length) until the swipe passes them: one swipe from the
     // left one to the right one, on the join's clock (the user, 2026-10-29: the next song's length showed at once)
     auto times = [&](bool old) {
-        const double pos = old ? mixOld.posAt + (time - mixOld.at) : player.position();
+        const double pos = old ? mixOld.posAt + (time - mixOld.at) : shownPosition();
         g.textC(fmtTime(pos), timeF, padX, timeCy, pal.text2, ctlA);
         g.textC(fmtTime(old ? mixOld.info.duration : dur), timeF, css::W - padX, timeCy, pal.text2, ctlA, Align::Right);
     };
@@ -502,23 +502,26 @@ void App::drawCanvas() {
         if (live && !disabled) hit = ui.item(id, { cx - size / 2, cy - size / 2, size, size }, size / 2, uint8_t((big ? DefaultFocus : 0) | flags));
         const bool hot = !disabled && (ui.pressed(id) || (ui.focused(id) && ui.showFocusRing()));
         const float s = ui.pressed(id) ? 0.94f : 1.f;
-        if (big) g.circle(cx, cy, size / 2 * s, pal.accent, ctlA);
+        if (big) g.circle(cx, cy, size / 2 * s, pal.accent, ctlA * (disabled ? 0.35f : 1.f));
         else g.circle(cx, cy, size / 2 * s, pal.text, (hot ? 0.16f : 0.08f) * ctlA);
         g.icon(icon, cx, cy, big ? 26 : 18, big ? pal.onAccent : on && !disabled ? pal.accentInk : pal.text, ctlA * (disabled ? 0.35f : 1.f));
         return hit;
     };
     const float mid = css::W / 2.f, tc = transCy + slide;
     hint(uid("cv.prev"), "Previous");
-    hint(uid("cv.play"), isPlaying() ? "Pause" : "Play");
+    hint(uid("cv.play"), extOn ? "Pause on " + extFrom : isPlaying() ? "Pause" : "Play");
     hint(uid("cv.next"), "Next");
     hint(uid("cv.mute"), volumeShown <= 0.001f ? "Unmute" : "Mute");
     hint(uid("cv.sleep"), "Sleep timer");
     hint(uid("cv.lyrics"), store.canvasLyrics ? "Hide the lyrics" : "Show the lyrics");
     hint(uid("cv.eq"), "Equalizer (hold for its settings)");
     hint(uid("cv.close"), "Close the Canvas");
-    if (cvBtn(uid("cv.prev"), ICON_PREV, mid - 30 - 14 - 21, tc, 42, false)) prev();
-    if (cvBtn(uid("cv.play"), isPlaying() ? ICON_PAUSE : ICON_PLAY, mid, tc, 60, true)) togglePlay();
-    if (cvBtn(uid("cv.next"), ICON_NEXT, mid + 30 + 14 + 21, tc, 42, false)) next(false);
+    // an outside source (AirPlay): the iPhone's to control, greyed here (no DACP control yet); a session's starter's, when it alone
+    // changes what plays
+    const bool ctlOff = controlsOff();
+    if (cvBtn(uid("cv.prev"), ICON_PREV, mid - 30 - 14 - 21, tc, 42, false, false, ctlOff)) prev();
+    if (cvBtn(uid("cv.play"), isPlaying() || extOn ? ICON_PAUSE : ICON_PLAY, mid, tc, 60, true, false, ctlOff)) togglePlay();
+    if (cvBtn(uid("cv.next"), ICON_NEXT, mid + 30 + 14 + 21, tc, 42, false, false, ctlOff)) next(false);
 
     // .cv-tools: layout segment, volume, lyrics, close
     const Font segF{ 13, Weight::SemiBold };
@@ -595,7 +598,7 @@ void App::drawCanvas() {
         x += syncW + 8;
     }
     // The lyrics switch, greyed while the track has none (nothing it could show or hide)
-    const bool noLyrics = now.track >= 0 && !now.loading && now.lyrics.empty();
+    const bool noLyrics = (now.track >= 0 || extOn) && !now.loading && now.lyrics.empty();
     if (cvBtn(uid("cv.lyrics"), ICON_QUOTE, x + 21, cy, 42, false, store.canvasLyrics, noLyrics)) { store.canvasLyrics = !store.canvasLyrics; store.save(); }
     x += 42 + 8;
     // The equalizer, as the player bar's: lit while on; a press turns it on or off, a long press opens its settings

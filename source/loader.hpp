@@ -24,6 +24,7 @@ public:
         unsigned gen = 0;
         std::string path, folder;
         std::string myCover;    // your cover for it (Store::covers), else empty
+        std::vector<uint8_t> image;   // a picture in memory instead (AirPlay's cover): no file is read, no tags
         bool readInfo = true;   // false: only the cover again (one set or forgotten in the track menu)
         PaletteOpts opts;
     };

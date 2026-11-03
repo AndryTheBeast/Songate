@@ -30,6 +30,10 @@ cp "$SRC/libogg-1.3.5/COPYING" "$L/Ogg.txt"
 cp "$SRC/tremor-master/COPYING" "$L/Tremor.txt"
 cp "$SRC/libjpeg-turbo-3.0.4/LICENSE.md" "$L/libjpeg-turbo.md"
 cp "$HERE/licence-SDL.txt" "$L/SDL.txt"
+cp "$SRC/mbedtls-2.28.10/LICENSE" "$L/MbedTLS-Apache-2.0.txt"   # AirPlay's RSA and AES
+cp "$HERE/licence-Monocypher.txt" "$L/Monocypher.txt"            # in Songate.exe: the encryption between devices
+cp "$HERE/licence-qrcodegen.txt" "$L/QR-Code-generator.txt"      # in Songate.exe: the Last.fm sign-in code
+cp "$HERE/licence-stb_image.txt" "$L/stb_image.txt"              # in Songate.exe: covers
 {
   echo "Songate for Windows includes FFmpeg 7.1 and mpg123 1.32.10 under the LGPL, as separate DLLs you may replace."
   echo "Their sources: https://ffmpeg.org/releases/ffmpeg-7.1.tar.xz and https://mpg123.org/download/mpg123-1.32.10.tar.bz2"

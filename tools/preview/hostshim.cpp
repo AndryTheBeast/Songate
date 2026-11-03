@@ -10,6 +10,7 @@
  *                hold <button> <frames>   tap <x> <y>   shot <file.bmp>   quit
  *                touch <x> <y> … release <x> <y>   (a finger held down: a long touch); move <x> <y> drags it
  *                wheel <x> <y> <notches>   (a mouse moved there, its wheel turned: + away from you, scrolls up)
+ *                mouse <x> <y>   (the mouse moved there, nothing pressed)   click <x> <y>   (moved there, its left button pressed and let go)
  *                audit <label>   (the D-pad audit of that frame, appended to dpad-audit.txt: App, Ui::audit)
  *                stick <x> <y> <frames>   (the left stick, −1..1, y up)
  *   GF_JOBS    show the three background jobs (app covers, overlay covers, levelling) as running (shell.cpp)
@@ -39,6 +40,8 @@
 
 #include "include/dirent.h"
 #include "include/switch.h"
+
+void hostFilmEnd();   // film mode (below): the file finished at quit
 
 // streamshim.cpp: the live test environment
 bool streamStart();
@@ -213,6 +216,22 @@ void padUpdate(PadState* p) {
             pushFinger(SDL_FINGERMOTION, float(atof(s.args[0].c_str())), float(atof(s.args[1].c_str())));
         } else if (s.action == "release" && s.args.size() >= 2) {
             pushFinger(SDL_FINGERUP, float(atof(s.args[0].c_str())), float(atof(s.args[1].c_str())));
+        } else if ((s.action == "mouse" || s.action == "click") && s.args.size() >= 2) {   // the PC's mouse: moved, or a left click there
+            SDL_Event e{};
+            e.type = SDL_MOUSEMOTION;
+            e.motion.x = atoi(s.args[0].c_str());
+            e.motion.y = atoi(s.args[1].c_str());
+            SDL_PushEvent(&e);
+            if (s.action == "click") {
+                for (Uint32 t : { Uint32(SDL_MOUSEBUTTONDOWN), Uint32(SDL_MOUSEBUTTONUP) }) {
+                    SDL_Event b{};
+                    b.type = t;
+                    b.button.button = SDL_BUTTON_LEFT;
+                    b.button.x = e.motion.x;
+                    b.button.y = e.motion.y;
+                    SDL_PushEvent(&b);
+                }
+            }
         } else if (s.action == "wheel" && s.args.size() >= 3) {   // a mouse there, its wheel turned n notches (+ away from you)
             SDL_Event e{};
             e.type = SDL_MOUSEMOTION;
@@ -230,6 +249,7 @@ void padUpdate(PadState* p) {
             stickUntil = frame + atol(s.args[2].c_str());
         } else if (s.action == "quit") {
             quitting = true;
+            hostFilmEnd();   // (the film's last frame is in: ffmpeg finishes the file)
         }
     }
     for (auto& s : later) script.emplace(frame + 2, s);
@@ -272,9 +292,66 @@ Result swkbdShow(SwkbdConfig* c, char* out, size_t size) {
     return 0;
 }
 
+// ---------------------------------------------------------------- film mode
+// GF_FILM=<out>: the README's film, rendered offline (session 11; the user: "Really smooth animations and no stutters"). The app's
+// clock steps exactly 1/60 s a frame however long a frame takes (App::frame), SDL's own audio device is paused, and each frame here
+// pulls 1/60 s of sound through Songate's own music hook and post-mix into <out>.s16 (48 kHz stereo), and pipes the frame's pixels
+// to ffmpeg (on the PATH, with libx264) as <out>.mp4. Picture and sound cannot drift: both are counted in frames.
+namespace {
+void (*appHook)(void*, Uint8*, int) = nullptr;
+void* appHookArg = nullptr;
+void (*appPostMix)(void*, Uint8*, int) = nullptr;
+void* appPostArg = nullptr;
+FILE* filmVideo = nullptr;
+FILE* filmAudio = nullptr;
+bool filmTried = false;
+std::vector<uint8_t> filmPixels;
+
+const char* filmOut() { const char* f = getenv("GF_FILM"); return f && *f ? f : nullptr; }
+
+void filmOpen(int w, int h) {
+    filmTried = true;
+    const std::string out = filmOut();
+    char cmd[1024];
+    snprintf(cmd, sizeof cmd, "ffmpeg -loglevel error -y -f rawvideo -pix_fmt bgra -s %dx%d -framerate 60 -i - -c:v libx264 -preset slow "
+                              "-crf 10 -pix_fmt yuv420p \"%s.mp4\"", w, h, out.c_str());
+    filmVideo = _popen(cmd, "wb");
+    filmAudio = ::fopen((out + ".s16").c_str(), "wb");
+    printf("[film] %dx%d at 60 frames a second into %s.mp4 and %s.s16\n", w, h, out.c_str(), out.c_str());
+    fflush(stdout);
+}
+
+/** One frame's sound: 800 frames at 48 kHz, as SDL_mixer's callback makes it (the music hook, then the post-mix). */
+void filmSound() {
+    static int16_t buf[800 * 2];
+    memset(buf, 0, sizeof buf);
+    SDL_LockAudio();
+    if (appHook) appHook(appHookArg, reinterpret_cast<Uint8*>(buf), int(sizeof buf));
+    if (appPostMix) appPostMix(appPostArg, reinterpret_cast<Uint8*>(buf), int(sizeof buf));
+    SDL_UnlockAudio();
+    if (filmAudio) fwrite(buf, 1, sizeof buf, filmAudio);
+}
+
+void filmFrame(SDL_Renderer* r) {
+    int w = 0, h = 0;
+    SDL_GetRendererOutputSize(r, &w, &h);
+    if (!filmTried) filmOpen(w, h);
+    filmSound();
+    if (!filmVideo) return;
+    filmPixels.resize(size_t(w) * size_t(h) * 4);
+    if (SDL_RenderReadPixels(r, nullptr, SDL_PIXELFORMAT_ARGB8888, filmPixels.data(), w * 4) == 0) fwrite(filmPixels.data(), 1, filmPixels.size(), filmVideo);
+}
+}  // namespace
+
+void hostFilmEnd() {
+    if (filmVideo) { _pclose(filmVideo); filmVideo = nullptr; }
+    if (filmAudio) { fclose(filmAudio); filmAudio = nullptr; }
+}
+
 // ---------------------------------------------------------------- frames
 
 void hostPresent(SDL_Renderer* r) {
+    if (filmOut()) filmFrame(r);
     auto range = script.equal_range(frame);
     for (auto it = range.first; it != range.second; ++it) {
         if (it->second.action != "shot" || it->second.args.empty()) continue;
@@ -292,8 +369,6 @@ void hostPresent(SDL_Renderer* r) {
 
 // ---- sound: the app's post-mix, then a copy of the final mix for the stream (the PC itself stays silent then)
 namespace {
-void (*appPostMix)(void*, Uint8*, int) = nullptr;
-void* appPostArg = nullptr;
 void postMixTap(void*, Uint8* s, int len) {
     if (appPostMix) appPostMix(appPostArg, s, len);
     if (streamStart()) {
@@ -307,7 +382,16 @@ void hostSetPostMix(void (*f)(void*, Uint8*, int), void* arg) {
     appPostMix = f;
     appPostArg = arg;
     SDL_UnlockAudio();
-    Mix_SetPostMix(postMixTap, nullptr);
+    if (!filmOut()) Mix_SetPostMix(postMixTap, nullptr);   // (in film mode only the film pulls it: filmSound)
+}
+void hostHookMusic(void (*f)(void*, Uint8*, int), void* arg) {
+    SDL_LockAudio();
+    appHook = f;
+    appHookArg = arg;
+    SDL_UnlockAudio();
+    // In film mode SDL_mixer never has it: its own thread pulled the music too, and the film's sound ran 2.3 times fast (its first
+    // proof, session 11); the film pulls it a frame at a time (filmSound)
+    if (!filmOut()) Mix_HookMusic(f, arg);
 }
 
 // ---- battery, dock, sleep and backlight (switch.h)

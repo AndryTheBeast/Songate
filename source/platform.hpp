@@ -79,6 +79,8 @@ void mediaInfo(const std::string& title, const std::string& artist, const std::s
 void mediaState(bool hasTrack, bool playing);
 /** A file name, or a path ending in one, is a release's installer. */
 bool isInstaller(const std::string& name);
+/** Opens a web address in the default browser. */
+void openUrl(const std::string& url);
 /** The usual place for music, offered at the first launch. */
 std::string musicFolder();
 #endif
@@ -103,6 +105,17 @@ long long bootStamp();
 void placeThread(int core, int priority);
 /** The network library's start and end. */
 bool netStart();
+/** A network this device is on: its address and that network's broadcast address, each as sockets want them. */
+struct Net { uint32_t address, broadcast; };
+std::vector<Net> networks();
+/** What this device is called, for other devices to show. */
+std::string deviceName();
+/** Free bytes where this path is, -1 if unknown. */
+int64_t freeBytes(const std::string& path);
+/** Started from an applet (the album): little memory, so nothing long-running. */
+bool appletMode();
+/** Random bytes fit for keys; false if the system gave none. */
+bool randomBytes(uint8_t* out, size_t n);
 void netStop();
 
 // ---- the background player
@@ -122,6 +135,9 @@ std::vector<FontData> systemFonts();
 const char* configParent();   // the folder holding configDir
 const char* configDir();
 const char* backupDir();      // where backups go unless the user chose
+/** The Switch's folder as cfgmove::atLaunch settled it (songate-nx, or gatefold-nx not moved yet), before anything reads it:
+ *  configDir() and backupDir() hand out the same buffers, so Store::Dir follows. The PC's never changes. */
+void useConfigDir(const char* dir, const char* backups);
 const char* root();           // what browsers start from: the top of everything the app can see
 const char* rootName();       // the same in words
 bool isRoot(const std::string& path);

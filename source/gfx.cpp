@@ -4,9 +4,7 @@
 #include "gfx.hpp"
 #include "coverio.hpp"
 #include "wordmark.inc"
-#ifdef GF_WINDOWED
 #include "wordmark4.inc"
-#endif
 
 #include <SDL2/SDL_image.h>
 #include "platform.hpp"
@@ -84,12 +82,29 @@ bool Gfx::init(SDL_Renderer* r) {
         }
         return t;
     };
+    wordBigTex_ = mask(kWord4, kWordW * 4, kWordH * 4);
+    SDL_SetTextureScaleMode(wordBigTex_, SDL_ScaleModeLinear);
 #ifdef GF_WINDOWED
-    wordTex_ = mask(kWord4, kWordW * 4, kWordH * 4);
-    SDL_SetTextureScaleMode(wordTex_, SDL_ScaleModeLinear);
+    wordTex_ = wordBigTex_;
 #else
     wordTex_ = mask(kWord, kWordW, kWordH);
 #endif
+    {   // the star: |x|^0.55 + |y|^0.55, four thin points
+        constexpr int S = 64;
+        std::vector<Uint32> st(size_t(S) * S);
+        for (int y = 0; y < S; y++)
+            for (int x = 0; x < S; x++) {
+                const float dx = std::fabs((x + 0.5f) / (S / 2.f) - 1), dy = std::fabs((y + 0.5f) / (S / 2.f) - 1);
+                const float m = std::pow(std::clamp(1 - (std::pow(dx, 0.55f) + std::pow(dy, 0.55f)), 0.f, 1.f), 1.2f) * 2.2f;
+                st[size_t(y) * S + x] = (Uint32(std::clamp(m, 0.f, 1.f) * 255) << 24) | 0xffffff;
+            }
+        starTex_ = SDL_CreateTexture(r_, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STATIC, S, S);
+        if (starTex_) {
+            SDL_UpdateTexture(starTex_, nullptr, st.data(), S * 4);
+            SDL_SetTextureBlendMode(starTex_, SDL_BLENDMODE_BLEND);
+            SDL_SetTextureScaleMode(starTex_, SDL_ScaleModeLinear);
+        }
+    }
     wordGlowTex_ = mask(kWordGlow, kWordW + 2 * kWordGlowPad, kWordH + 2 * kWordGlowPad);
 
     // Band: across, a Gaussian falling to nothing at both sides (band())
@@ -113,6 +128,12 @@ void Gfx::shutdown() {
     iconCache_.clear();
     for (auto& [k, f] : fonts_) if (f) TTF_CloseFont(f);
     fonts_.clear();
+#ifndef GF_WINDOWED
+    if (wordBigTex_) SDL_DestroyTexture(wordBigTex_);   // (the PC's is wordTex_)
+#endif
+    wordBigTex_ = nullptr;
+    if (starTex_) SDL_DestroyTexture(starTex_);
+    starTex_ = nullptr;
     for (SDL_Texture* t : { glowTex_, veilTex_, vignetteTex_, bandTex_, wordTex_, wordGlowTex_ }) if (t) SDL_DestroyTexture(t);
     glowTex_ = veilTex_ = vignetteTex_ = bandTex_ = wordTex_ = wordGlowTex_ = nullptr;
     TTF_Quit();
@@ -318,6 +339,43 @@ void Gfx::polyline(const std::vector<SDL_FPoint>& pts, float thick, const Rgb& c
             const int a = i * 4 + k, b = a + 1, c2 = a + 4, d = b + 4;
             idx_.insert(idx_.end(), { a, b, c2, b, d, c2 });
         }
+    SDL_RenderGeometry(r_, nullptr, verts_.data(), int(verts_.size()), idx_.data(), int(idx_.size()));
+}
+
+void Gfx::triangle(SDL_FPoint a, SDL_FPoint b, SDL_FPoint c, const Rgb& col, float alpha) {
+    if (ghost_) return;
+    const SDL_Color s = sdl(col, alpha);
+    SDL_Color z = s;
+    z.a = 0;
+    // the solid triangle pulled in by half a pixel, then a feather a pixel wide round it: each corner's two vertices moved
+    // out along its own bisector, so the band is the same width on every edge
+    const float feather = 1.f / scale_;
+    const SDL_FPoint p[3] = { a, b, c };
+    const float ox = (a.x + b.x + c.x) / 3, oy = (a.y + b.y + c.y) / 3;
+    verts_.clear();
+    idx_.clear();
+    for (int i = 0; i < 3; i++) {
+        const SDL_FPoint q = p[i], u = p[(i + 2) % 3], v = p[(i + 1) % 3];
+        float ax = q.x - u.x, ay = q.y - u.y, bx = v.x - q.x, by = v.y - q.y;
+        const float al = std::sqrt(ax * ax + ay * ay), bl = std::sqrt(bx * bx + by * by);
+        if (al < 1e-4f || bl < 1e-4f) return;
+        ax /= al; ay /= al; bx /= bl; by /= bl;
+        // the two edges' normals, pointing away from the middle
+        float n1x = -ay, n1y = ax, n2x = -by, n2y = bx;
+        if (n1x * (q.x - ox) + n1y * (q.y - oy) < 0) { n1x = -n1x; n1y = -n1y; }
+        if (n2x * (q.x - ox) + n2y * (q.y - oy) < 0) { n2x = -n2x; n2y = -n2y; }
+        float mx = n1x + n2x, my = n1y + n2y;
+        const float ml = std::sqrt(mx * mx + my * my);
+        mx /= ml; my /= ml;
+        const float k = std::min(3.f, 1 / std::max(0.33f, mx * n1x + my * n1y));   // keeps the band's width at sharp corners
+        verts_.push_back({ { q.x - mx * k * feather * 0.5f, q.y - my * k * feather * 0.5f }, s, { 0, 0 } });
+        verts_.push_back({ { q.x + mx * k * feather * 0.5f, q.y + my * k * feather * 0.5f }, z, { 0, 0 } });
+    }
+    idx_ = { 0, 2, 4 };
+    for (int i = 0; i < 3; i++) {
+        const int j = (i + 1) % 3, si = i * 2, oi = si + 1, sj = j * 2, oj = sj + 1;
+        idx_.insert(idx_.end(), { si, oi, sj, oi, oj, sj });
+    }
     SDL_RenderGeometry(r_, nullptr, verts_.data(), int(verts_.size()), idx_.data(), int(idx_.size()));
 }
 
@@ -966,18 +1024,29 @@ int Gfx::wordmarkW() { return kWordW; }
 int Gfx::wordmarkH() { return kWordH; }
 float Gfx::wordmarkMid() { return kWordMid; }
 
-void Gfx::wordmark(float x, float cy, const Rgb& a, const Rgb& b, const Rgb& c, const Rgb& glowC, float glowA, float shine, float alpha) {
-    if (ghost_ || shapesOnly_ || alpha <= 0 || !wordTex_) return;
-    const float left = snap(x - shiftX_) + shiftX_, top = snap(cy - kWordMid - shiftY_) + shiftY_;
+void Gfx::sparkle(float cx, float cy, float size, const Rgb& c, float alpha) {
+    if (ghost_ || shapesOnly_ || alpha <= 0 || size < 1 || !starTex_) return;
+    const SDL_Color s = sdl(c, alpha);
+    SDL_SetTextureColorMod(starTex_, s.r, s.g, s.b);
+    SDL_SetTextureAlphaMod(starTex_, s.a);
+    const SDL_FRect dst{ cx - size / 2, cy - size / 2, size, size };
+    SDL_RenderCopyF(r_, starTex_, nullptr, &dst);
+}
+
+void Gfx::wordmark(float x, float cy, const Rgb& a, const Rgb& b, const Rgb& c, const Rgb& glowC, float glowA, float shine, float alpha, float big, float reveal) {
+    SDL_Texture* const letters = big > 1 ? wordBigTex_ : wordTex_;
+    if (ghost_ || shapesOnly_ || alpha <= 0 || !letters) return;
+    const float wordW = kWordW * big, wordH = kWordH * big, glowPad = kWordGlowPad * big;
+    const float left = snap(x - shiftX_) + shiftX_, top = snap(cy - kWordMid * big - shiftY_) + shiftY_;
     if (wordGlowTex_ && glowA > 0) {
         const SDL_Color s = sdl(glowC, glowA * alpha);
         SDL_SetTextureColorMod(wordGlowTex_, s.r, s.g, s.b);
         SDL_SetTextureAlphaMod(wordGlowTex_, s.a);
-        const SDL_FRect dst{ left - kWordGlowPad, top - kWordGlowPad, float(kWordW + 2 * kWordGlowPad), float(kWordH + 2 * kWordGlowPad) };
+        const SDL_FRect dst{ left - glowPad, top - glowPad, wordW + 2 * glowPad, wordH + 2 * glowPad };
         SDL_RenderCopyF(r_, wordGlowTex_, nullptr, &dst);
     }
-    SDL_SetTextureColorMod(wordTex_, 255, 255, 255);
-    SDL_SetTextureAlphaMod(wordTex_, 255);
+    SDL_SetTextureColorMod(letters, 255, 255, 255);
+    SDL_SetTextureAlphaMod(letters, 255);
     // the letters in columns, each edge's colour on the gradient (its middle stop a little left of centre: the name's
     // "Song" in the accents, "gate" turning light); then the shimmer over them, its columns' alpha the band's
     auto columns = [&](int n, auto colour) {
@@ -985,22 +1054,27 @@ void Gfx::wordmark(float x, float cy, const Rgb& a, const Rgb& b, const Rgb& c, 
         idx_.clear();
         for (int k = 0; k <= n; k++) {
             const float t = float(k) / n;
-            verts_.push_back({ { left + kWordW * t, top }, colour(t), { t, 0 } });
-            verts_.push_back({ { left + kWordW * t, top + kWordH }, colour(t), { t, 1 } });
+            verts_.push_back({ { left + wordW * t, top }, colour(t), { t, 0 } });
+            verts_.push_back({ { left + wordW * t, top + wordH }, colour(t), { t, 1 } });
             if (k > 0) {
                 const int v = (k - 1) * 2;
                 for (int i : { v, v + 1, v + 2, v + 1, v + 3, v + 2 }) idx_.push_back(i);
             }
         }
-        SDL_RenderGeometry(r_, wordTex_, verts_.data(), int(verts_.size()), idx_.data(), int(idx_.size()));
+        SDL_RenderGeometry(r_, letters, verts_.data(), int(verts_.size()), idx_.data(), int(idx_.size()));
     };
     auto lerp = [](const Rgb& p, const Rgb& q, float t) { return Rgb{ p.r + (q.r - p.r) * t, p.g + (q.g - p.g) * t, p.b + (q.b - p.b) * t }; };
-    columns(10, [&](float t) { return sdl(t < 0.45f ? lerp(a, b, t / 0.45f) : lerp(b, c, (t - 0.45f) / 0.55f), alpha); });
+    // reveal 0..1: unfurled from the left by a soft edge (the opening); above 1, all of it
+    auto shown = [&](float t) {
+        const float e = std::clamp((reveal * 1.3f - 0.15f - t) / 0.15f, 0.f, 1.f);
+        return e * e * (3 - 2 * e);
+    };
+    columns(reveal > 1 ? 10 : 60, [&](float t) { return sdl(t < 0.45f ? lerp(a, b, t / 0.45f) : lerp(b, c, (t - 0.45f) / 0.55f), alpha * shown(t)); });
     if (shine > -0.5f && shine < 1.5f) {
         constexpr float half = 0.16f;   // the band's half width, of the word's
         columns(24, [&](float t) {
             const float d = (t - shine) / half;
-            return sdl({ 1, 1, 1 }, std::fabs(d) >= 1 ? 0.f : alpha * 0.85f * std::exp(-4.5f * d * d) * (1 - d * d));
+            return sdl({ 1, 1, 1 }, std::fabs(d) >= 1 ? 0.f : alpha * shown(t) * 0.85f * std::exp(-4.5f * d * d) * (1 - d * d));
         });
     }
 }

@@ -39,6 +39,13 @@ public:
     /** While the background player plays, its bg-plays.txt is taken in every few seconds. */
     void setBackground(bool on);
     void forget(const std::string& path);
+    /** Played here, without what other devices played (sync-plays.tsv): Connections. plays above is the two added up. */
+    PlayStat mine(const std::string& path) const;
+    int others(const std::string& path) const;
+    /** From Connections: its plays on other devices, the last played and date added everywhere. */
+    void adopt(const std::string& path, int others, int64_t last, int64_t added);
+    /** sync-plays.tsv as it should be now. */
+    std::string serialiseOthers() const;
 
     /** Main thread, every frame: merges the worker's results. True when anything changed. */
     bool poll();
@@ -52,11 +59,13 @@ private:
     struct Found {
         bool loaded = false;
         std::unordered_map<std::string, PlayStat> file;            // stats.tsv as read at launch
+        std::unordered_map<std::string, int> others;               // sync-plays.tsv
         std::vector<std::pair<std::string, int64_t>> dates, plays;  // path → file date / time played
     };
     void run();
 
     std::unordered_map<std::string, PlayStat> map_;
+    std::unordered_map<std::string, int> others_;   // already added into map_'s plays; stats.tsv never holds them
     unsigned gen_ = 0;
     bool dirty_ = false, loaded_ = false;
     std::string dir_;

@@ -72,7 +72,41 @@ void App::supportScan() {
     });
 }
 
+Identity::Want App::identityWant(const Track& t) const {
+    Identity::Want w;
+    w.path = t.path;
+    if (!(t.fromName & 2)) w.artist = t.artist;   // tags only: a file's name identifies nothing
+    w.albumArtist = t.albumArtist;
+    if (!(t.fromName & 4)) w.album = t.album;
+    if (!(t.fromName & 1)) w.title = t.title;
+    w.duration = t.duration;
+    w.edited = store.edits.count(t.path) != 0;
+    return w;
+}
+
+void App::identityMeasure() {
+    std::vector<Identity::Want> all;
+    all.reserve(lib.tracks.size());
+    for (const Track& t : lib.tracks) all.push_back(identityWant(t));
+    identity.want(std::move(all));
+#ifdef GF_DEV
+    identityAsked = true;
+#endif
+}
+
 void App::supportTick() {
+#ifdef GF_DEV
+    if (identityAsked) {
+        const Identity::Progress p = identity.progress();
+        if (!p.running) {
+            identityAsked = false;
+            char b[120];
+            snprintf(b, sizeof b, "Identity: %d tracks, %d read, %d failed, %.2f ms each, %.1f s in all", p.total, p.hashed, p.failed,
+                     p.hashed ? p.hashSeconds * 1000 / p.hashed : 0.0, p.seconds);
+            logLine(b);
+        }
+    }
+#endif
     if (supportThread_.joinable() && supportReady_) supportThread_.join();
     if (reportThread_.joinable() && reportDone_) {
         reportThread_.join();
@@ -85,13 +119,16 @@ void App::supportTick() {
         }
     }
     // the app's log, saved now and then by the writer thread (store.writeFile), never from here
-    if (logDirty_ && time - logSavedAt_ > 30) {
-        std::string t;
-        for (const auto& l : logLines_) { t += l; t += '\n'; }
-        store.writeFile("log.txt", std::move(t));
-        logDirty_ = false;
-        logSavedAt_ = time;
-    }
+    if (logDirty_ && time - logSavedAt_ > 30) saveLog();
+}
+
+void App::saveLog() {
+    if (!logDirty_) return;
+    std::string t;
+    for (const auto& l : logLines_) { t += l; t += '\n'; }
+    store.writeFile("log.txt", std::move(t));
+    logDirty_ = false;
+    logSavedAt_ = time;
 }
 
 std::string App::reportBody() const {

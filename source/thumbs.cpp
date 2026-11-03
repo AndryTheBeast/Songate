@@ -135,7 +135,7 @@ if (plat::legacyData()) {
     else clear(old);
 }
     // Every folder on the way: on a fresh card this starts (with the background player) before anything made
-    // config/gatefold-nx, and a lone mkdir of thumbs/ failed, so the first run's covers were made and never written.
+    // config/songate-nx, and a lone mkdir of thumbs/ failed, so the first run's covers were made and never written.
     for (size_t i = dir_.find('/', dir_.find(":/") + 2); i != std::string::npos; i = dir_.find('/', i + 1))
         mkdir(dir_.substr(0, i).c_str(), 0777);
     mkdir(dir_.c_str(), 0777);
