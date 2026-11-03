@@ -11,7 +11,9 @@ By <a href="https://github.com/AndryTheBeast"><b>AndryTheBeast</b></a> · versio
 <a href="../../releases"><b>⬇️ Download</b></a> · <a href="https://github.com/AndryTheBeast/songate-automix"><b>🎚️ The Automix models</b></a></p>
 
 <!-- The tour video: on GitHub, replace the next line by dragging docs/tour.mp4 here (the inline player; under 10 MB) -->
-https://github.com/user-attachments/assets/ae117ba4-6bb8-43b2-8334-0b8ebb37557d
+https://github.com/user-attachments/assets/0967688c-ff78-46da-9c9b-58ee0dcf439e
+
+
 
 
 
