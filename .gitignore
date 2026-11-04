@@ -34,3 +34,12 @@ source/report_key.inc
 
 # the AirPort key: test only, never committed
 tools/clicktest/airport_key.inc
+
+# Android: downloaded sources, built libraries, Gradle and its output, the signing keys
+tools/android/deps/
+android/.gradle/
+android/local.properties
+android/app/.cxx/
+android/build/
+*.keystore
+*.jks

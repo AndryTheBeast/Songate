@@ -124,6 +124,12 @@ bool isDir(const std::string& p) { struct stat st; return stat(p.c_str(), &st) =
 
 std::vector<FileEntry> listFolder(const std::string& path, bool hidden) {
     std::vector<FileEntry> out;
+#ifdef GF_ANDROID
+    if (plat::isRoot(path)) {
+        for (const std::string& v : plat::rootFolders()) out.push_back({ v, true, 0, 0 });
+        return out;
+    }
+#endif
     DIR* d = opendir(path.c_str());
     if (!d) return out;
     while (dirent* e = readdir(d)) {
@@ -596,7 +602,7 @@ void App::drawFiles(float x, float y, float w, float h) {
     float cy = oy + 18 + 8;
     kicker("Files", x + 28, cy, pal.text3);
     cy += 10;
-    g.text(root ? GF_CARD_NAME : baseName(path), { css::Xxl, Weight::Bold }, x + 28, cy, pal.text, 1, Align::Left, int(w - 56));
+    g.text(root ? GF_CARD_NAME : shownName(path), { css::Xxl, Weight::Bold }, x + 28, cy, pal.text, 1, Align::Left, int(w - 56));
     cy += 38;
     std::string sub = (path == "/" ? std::string(GF_CARD_NAME) : path) + "  ·  " + std::to_string(nDirs) + (nDirs == 1 ? " folder" : " folders") + "  ·  " + std::to_string(nFiles) +
                       (nFiles == 1 ? " file" : " files");
@@ -606,6 +612,11 @@ void App::drawFiles(float x, float y, float w, float h) {
 
     float bx = x + 28;
     bool clicked = false;
+    // a button that does not fit on the line starts the next (a phone upright: Select's five ran off the side)
+    auto room = [&](const char* icon, const std::string& label) {
+        const float bw = 16 + (icon ? 24 : 0) + g.measure(label, { css::Sm, Weight::SemiBold }) + 16;
+        if (bx > x + 28 && bx + bw > x + w - 28) { bx = x + 28; cy += 42; }
+    };
     if (files.selectIn != path) { files.selecting = false; files.selected.clear(); files.selectIn = path; }   // a selection stays in its folder
     if (files.selecting) {
         // Select: Select all / none, then what to do with them all
@@ -623,24 +634,40 @@ void App::drawFiles(float x, float y, float w, float h) {
             files.selected.clear();
             toast(std::string("Go to a folder and press ") + (move ? "Move here" : "Paste here"));
         };
+        room(ICON_DOWNLOAD, "Copy");
         bx += button(uid("fl.selcopy"), ICON_DOWNLOAD, "Copy", bx, cy, false, &clicked) + 8;
         if (clicked) { if (any) take(false); else toast("Select something first"); }
+        room(ICON_FOLDER, "Move");
         bx += button(uid("fl.selmove"), ICON_FOLDER, "Move", bx, cy, false, &clicked) + 8;
         if (clicked) { if (any) take(true); else toast("Select something first"); }
+        room(nullptr, "Cancel");
         bx += button(uid("fl.selno"), nullptr, "Cancel", bx, cy, false, &clicked) + 8;
         if (clicked) { files.selecting = false; files.selected.clear(); }
+        room(ICON_X, "Delete");
         bx += button(uid("fl.seldel"), ICON_X, "Delete", bx, cy, false, &clicked, false, true) + 8;   // Delete always last
         if (clicked) { if (any) fileDeleteMany(files.selected); else toast("Select something first"); }
         const size_t n = files.selected.size();
-        g.textC(n == 0 ? std::string("A ticks what to take") : std::to_string(n) + " selected", { css::Sm }, x + w - 28, cy + 17,
-                n ? pal.accentInk : pal.text3, 1, Align::Right, int(std::max(80.f, x + w - 28 - bx - 16)));
+#ifdef GF_WINDOWED
+        const std::string howTo = GF_CAP_TAP " to tick what to take";
+#else
+        const std::string howTo = "A ticks what to take";
+#endif
+        const std::string said = n == 0 ? howTo : std::to_string(n) + " selected";
+        if (x + w - 28 - bx - 16 < g.measure(said, { css::Sm })) {   // no room by the buttons: a line of its own under them
+            cy += 42;
+            g.textC(said, { css::Sm }, x + 28, cy + 17, n ? pal.accentInk : pal.text3, 1, Align::Left, int(w - 56));
+        } else {
+            g.textC(said, { css::Sm }, x + w - 28, cy + 17, n ? pal.accentInk : pal.text3, 1, Align::Right, int(x + w - 28 - bx - 16));
+        }
     } else if (!files.clip.empty()) {
         bx += button(uid("fl.paste"), files.clipMove ? ICON_FOLDER : ICON_DOWNLOAD, files.clipMove ? "Move here" : "Paste here", bx, cy, true, &clicked) + 8;
         if (clicked) filePaste();
+        room(ICON_X, "Cancel");
         bx += button(uid("fl.unclip"), ICON_X, "Cancel", bx, cy, false, &clicked) + 8;
         if (clicked) { files.clip.clear(); toast(files.clipMove ? "Not moving it" : "Not copying it"); }
     }
     if (!root && !files.selecting) {
+        room(ICON_BACK, "Up");
         bx += button(uid("fl.up"), ICON_BACK, "Up", bx, cy, false, &clicked, false, false, es.empty() ? DefaultFocus : 0) + 8;
         if (clicked) {
             files.focusAfter = path;
@@ -648,9 +675,11 @@ void App::drawFiles(float x, float y, float w, float h) {
         }
     }
     if (!files.selecting) {
+        room(ICON_PLUS, "New folder");
         bx += button(uid("fl.mkdir"), ICON_PLUS, "New folder", bx, cy, false, &clicked, false, false, root && es.empty() ? DefaultFocus : 0) + 8;
         if (clicked) fileNewFolder(path);
         if (!es.empty()) {
+            room(ICON_CHECK, "Select");
             bx += button(uid("fl.select"), ICON_CHECK, "Select", bx, cy, false, &clicked) + 8;
             if (clicked) { files.selecting = true; files.selected.clear(); }
         }
@@ -660,6 +689,7 @@ void App::drawFiles(float x, float y, float w, float h) {
         g.textC((files.clipMove ? "Moving: " : "Copying: ") + (files.clip.size() == 1 ? baseName(files.clip[0]) : std::to_string(files.clip.size()) + " items"),
                 { css::Sm }, x + w - 28, cy + 17, pal.text3, 1, Align::Right, int(std::max(80.f, x + w - 28 - bx - 16)));
     cy += 34 + 16;
+    sa.content = (cy - oy) + es.size() * rowH + 24;   // (the toolbar may have taken more lines)
 
     g.clip(x, y, w, h);
     files.hover.clear();
@@ -695,7 +725,7 @@ void App::drawFiles(float x, float y, float w, float h) {
         std::string info = e.dir ? (e.mtime > 315619200 ? fmtDate(e.mtime) : std::string()) : fmtSize(e.size) + (e.mtime > 0 ? "  ·  " + fmtDate(e.mtime) : "");
         if (clipped) info = (files.clipMove ? "Moving" : "Copying") + std::string("  ·  ") + info;
         const int iw = g.measure(info, { css::Sm });
-        g.textC(e.name, { css::Base, Weight::SemiBold }, rx + 16 + 36 + 14, mid, hidden ? pal.text3 : pal.text, 1, Align::Left,
+        g.textC(isRoot(path) ? shownName(full) : e.name, { css::Base, Weight::SemiBold }, rx + 16 + 36 + 14, mid, hidden ? pal.text3 : pal.text, 1, Align::Left,
                 int(rw - 16 - 36 - 14 - iw - 70));
         g.textC(info, { css::Sm }, rx + rw - 44, mid, clipped ? pal.accentInk : pal.text3, 1, Align::Right);
         if (files.selecting && picked) g.circle(rx + rw - 24, mid, 9, pal.accent);
@@ -752,7 +782,7 @@ void App::fileSheetHeader(const char*& icon, std::string& kick, std::string& tit
     const Kind k = kindOf(baseName(p), dir);
     icon = kindIcon(k);
     kick = sheet.page == Sheet::FileLink ? "Lyrics for a track" : sheet.page == Sheet::FileInfo ? "Details" : kindName(k, baseName(p));
-    title = isRoot(p) ? GF_CARD_NAME : baseName(p);
+    title = isRoot(p) ? GF_CARD_NAME : shownName(p);
     if (sheet.page == Sheet::FileLink) { sub = sheet.arg.empty() ? "Every track" : "Tracks matching “" + sheet.arg + "”"; return; }
     sub = dir ? parentOf(p) : sheet.memo["sub"];
 }

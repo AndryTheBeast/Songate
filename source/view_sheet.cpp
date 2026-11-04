@@ -272,7 +272,7 @@ void App::drawSheet() {
 
     // backdrop and card
     g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, 0.55f);
-    const float w = 600, x = (css::W - w) / 2;
+    const float w = cardW(600), x = (css::W - w) / 2;
     const bool footer = page == Sheet::Tags || page == Sheet::Delete;
     const float headH = 24 + 64 + 18, footH = footer ? 64 : 0, maxBody = css::H - 60 - headH - footH - 16;
 
@@ -512,7 +512,7 @@ void App::drawSheet() {
     if (page == Sheet::Delete) bodyH = 110;
     if (page == Sheet::Tags) bodyH += 34;
     bodyH = std::min(bodyH + 8, maxBody);
-    const float h = headH + bodyH + footH + 16, y = (css::H - h) / 2;
+    const float h = headH + bodyH + footH + 16, y = cardY(h);
     g.glow(x + w / 2, y + h / 2 + 30, w * 0.75f, { 0, 0, 0 }, 0.5f);
     g.roundRect(x, y, w, h, 20, pal.surface2);
     g.roundRect(x, y, w, h, 20, pal.text, 0.03f);

@@ -239,15 +239,18 @@ void App::drawLibrary(float x, float y, float w, float h) {
         const int n = root >= 0 ? int(lib.folders[root].children.size()) : 0;
         sub = std::to_string(n) + (n == 1 ? " folder · " : " folders · ") + std::to_string(lib.tracks.size()) + " tracks";
     }
-    // .view-head with the tab switch at its right (Albums | Tracks | Folders)
+    // .view-head with the tab switch at its right (Albums | Tracks | Folders); narrow (a phone upright), no switch: its Library
+    // page has the three as rows
+    const bool narrow = w < kNarrowList;
+    const int room = int(w - 56 - (narrow ? 0 : 330));
     float cy = y + 18 + 8;
     kicker("Library", x + 28, cy, pal.text3);
     cy += 10;
-    g.text(tabs[tab], { css::Xxl, Weight::Bold }, x + 28, cy, pal.text, 1, Align::Left, int(w - 56 - 330));
+    g.text(tabs[tab], { css::Xxl, Weight::Bold }, x + 28, cy, pal.text, 1, Align::Left, room);
     cy += 38;
-    g.text(sub, { css::Sm }, x + 28, cy + 4, pal.text3, 1, Align::Left, int(w - 56 - 330));
+    g.text(sub, { css::Sm }, x + 28, cy + 4, pal.text3, 1, Align::Left, room);
     int picked = -1;
-    segmented(uid("lib.tab"), x + w - 28, y + 52, { "Albums", "Tracks", "Folders" }, tab, &picked);
+    if (!narrow) segmented(uid("lib.tab"), x + w - 28, y + 52, { "Albums", "Tracks", "Folders" }, tab, &picked);
     if (picked >= 0 && picked != tab) { store.libTab = picked; persistSoon(0.5f); }
     const float top = cy + 22 + 14;
 
@@ -266,43 +269,49 @@ void App::drawTracksTab(float x, float y, float w, float h, float top) {
     if (clicked && !list.empty()) playTracks(list, 0, "Library");
     bx += button(uid("trk.shuffle"), ICON_SHUFFLE, "Shuffle", bx, by, false, &clicked) + 8;
     if (clicked && !list.empty()) playTracks(list, 0, "Library", true);
+    // narrow (a phone upright): the filter, sort and direction on a line of their own under Play and Shuffle, no view buttons
+    const bool narrow = w < kNarrowList;
+    const float ty = narrow ? by + 34 + 10 : by;
+    const float fx0 = narrow ? x + 28 : bx;
     float rx = x + w - 28;
-    int mode = store.viewTracks;
-    rx -= viewSwitch("trk.view", rx, by + 17, mode) + 8;
-    store.viewTracks = mode;
+    if (!narrow) {
+        int mode = store.viewTracks;
+        rx -= viewSwitch("trk.view", rx, by + 17, mode) + 8;
+        store.viewTracks = mode;
+    }
     // direction
     const Id did = uid("trk.dir");
-    if (ui.item(did, { rx - 36, by, 36, 34 }, 9)) { store.tracksDesc = !store.tracksDesc; persistSoon(0.5f); }
-    g.roundRect(rx - 36, by, 36, 34, 9, pal.text, ui.focused(did) && ui.showFocusRing() ? 0.11f : 0.065f);
-    g.icon(store.tracksDesc ? ICON_SORT_UP : ICON_SORT_DOWN, rx - 18, by + 17, 17, pal.text2);
+    if (ui.item(did, { rx - 36, ty, 36, 34 }, 9)) { store.tracksDesc = !store.tracksDesc; persistSoon(0.5f); }
+    g.roundRect(rx - 36, ty, 36, 34, 9, pal.text, ui.focused(did) && ui.showFocusRing() ? 0.11f : 0.065f);
+    g.icon(store.tracksDesc ? ICON_SORT_UP : ICON_SORT_DOWN, rx - 18, ty + 17, 17, pal.text2);
     rx -= 36 + 8;
     // sort: a select that cycles, as the album grid's
     const Font sf{ css::Sm };
     const float sw = g.measure(SortNames[store.tracksSort], sf) + 20 + 26;
     const Id sid = uid("trk.sort");
-    if (ui.item(sid, { rx - sw, by, sw, 34 }, 8)) { store.tracksSort = (store.tracksSort + 1) % 6; persistSoon(0.5f); }
-    g.roundRect(rx - sw, by, sw, 34, 8, pal.text, ui.focused(sid) && ui.showFocusRing() ? 0.11f : 0.065f);
-    g.roundStroke(rx - sw, by, sw, 34, 8, 1, pal.text, 0.15f);
-    g.textC(SortNames[store.tracksSort], sf, rx - sw + 10, by + 17, pal.text);
-    g.icon(ICON_CHEV, rx - 16, by + 17, 14, pal.text3);
+    if (ui.item(sid, { rx - sw, ty, sw, 34 }, 8)) { store.tracksSort = (store.tracksSort + 1) % 6; persistSoon(0.5f); }
+    g.roundRect(rx - sw, ty, sw, 34, 8, pal.text, ui.focused(sid) && ui.showFocusRing() ? 0.11f : 0.065f);
+    g.roundStroke(rx - sw, ty, sw, 34, 8, 1, pal.text, 0.15f);
+    g.textC(SortNames[store.tracksSort], sf, rx - sw + 10, ty + 17, pal.text);
+    g.icon(ICON_CHEV, rx - 16, ty + 17, 14, pal.text3);
     rx -= sw + 8;
     // filter: the console keyboard (Gatefold filters as you type; here, as you finish)
     static const char* const FilterBy[] = { "Filter artists…", "Filter titles…", "Filter albums…", "Filter years…", "Filter genres…", "Filter titles…" };
     const std::string ft = tracksFilter.empty() ? FilterBy[std::clamp(store.tracksSort, 0, 5)] : tracksFilter;
-    const float fw = std::min(220.f, std::max(120.f, rx - bx - 8));
+    const float fw = narrow ? std::max(80.f, rx - fx0 - 8) : std::min(220.f, std::max(120.f, rx - fx0 - 8));
     const Id fid = uid("trk.filter");
-    if (ui.item(fid, { rx - fw, by, fw, 34 }, 8)) {
+    if (ui.item(fid, { rx - fw, ty, fw, 34 }, 8)) {
         std::string q = tracksFilter;
         static const char* const Header[] = { "Filter by artist", "Filter by title", "Filter by album", "Filter by year", "Filter by genre", "Filter by title" };
         if (keyboard(Header[std::clamp(store.tracksSort, 0, 5)], tracksFilter, q)) tracksFilter = q;
     }
-    g.roundRect(rx - fw, by, fw, 34, 8, pal.text, ui.focused(fid) && ui.showFocusRing() ? 0.11f : 0.065f);
-    g.roundStroke(rx - fw, by, fw, 34, 8, 1, pal.text, 0.15f);
-    g.icon(ICON_SEARCH, rx - fw + 16, by + 17, 14, pal.text3);
-    g.textC(ft, sf, rx - fw + 30, by + 17, tracksFilter.empty() ? pal.text3 : pal.text, 1, Align::Left, int(fw - 40));
+    g.roundRect(rx - fw, ty, fw, 34, 8, pal.text, ui.focused(fid) && ui.showFocusRing() ? 0.11f : 0.065f);
+    g.roundStroke(rx - fw, ty, fw, 34, 8, 1, pal.text, 0.15f);
+    g.icon(ICON_SEARCH, rx - fw + 16, ty + 17, 14, pal.text3);
+    g.textC(ft, sf, rx - fw + 30, ty + 17, tracksFilter.empty() ? pal.text3 : pal.text, 1, Align::Left, int(fw - 40));
 
     // the list, with the letter index down the right edge when the sort has letters
-    const float lt = by + 34 + 14;
+    const float lt = ty + 34 + 14;
     const bool index = !tracksView.letters.empty() && store.viewTracks != int(ListMode::Grid);
     const float lw = w - (index ? 26 : 0);
     ScrollArea& sa = area("lib.tracks");
@@ -352,9 +361,20 @@ void App::drawFoldersTab(float x, float y, float w, float h, float top) {
     bx += button(uid("lfo.shuffle"), ICON_SHUFFLE, "Shuffle", bx, top, false, &clicked) + 8;
     if (clicked && !all.empty()) playTracks(all, 0, "Music", true);
     // the music folder itself as one playlist, as on its Folders page
+    const bool narrow = w < kNarrowList;
+    auto more = [&](const char* key, const char* icon, const std::string& label, float at, bool on = false) {
+        if (!narrow) { bool c = false; bx += button(uid(key), icon, label, bx, at, false, &c, on) + 8; return c; }
+        const Id id = uid(key);
+        hint(id, label);
+        const bool c = ui.item(id, { bx, at, 34, 34 }, 17);
+        g.roundRect(bx, at, 34, 34, 17, on ? pal.accent : pal.text, on ? 0.18f : ui.pressed(id) || (ui.focused(id) && ui.showFocusRing()) ? 0.11f : 0.065f);
+        g.roundStroke(bx, at, 34, 34, 17, 1, on ? pal.accent : pal.text, on ? 0.5f : 0.15f);
+        g.icon(icon, bx + 17, at + 17, 16, on ? pal.accentInk : pal.text);
+        bx += 34 + 8;
+        return c;
+    };
     const int pl = store.playlistByPath(node.path);
-    bx += button(uid("lfo.addpl"), pl >= 0 ? ICON_LIST : ICON_PLUS, pl >= 0 ? "In playlists" : "Add as playlist", bx, top, false, &clicked, pl >= 0) + 8;
-    if (clicked) {
+    if (more("lfo.addpl", pl >= 0 ? ICON_LIST : ICON_PLUS, pl >= 0 ? "In playlists" : "Add as playlist", top, pl >= 0)) {
         if (pl >= 0) {
             confirmRemoveFolderPlaylist(pl, node.last - node.first);
         } else {
@@ -364,10 +384,7 @@ void App::drawFoldersTab(float x, float y, float w, float h, float top) {
             store.save();
         }
     }
-    if (!node.children.empty()) {
-        bx += button(uid("lfo.addall"), ICON_PLUS, "Add all as playlists", bx, top, false, &clicked) + 8;
-        if (clicked) addSubfoldersAsPlaylists(root);
-    }
+    if (!node.children.empty() && more("lfo.addall", ICON_PLUS, "Add all as playlists", top)) addSubfoldersAsPlaylists(root);
     // the views, as Folders' for a folder of sub-folders (by album would repeat the tiles); the same saved choice
     int m = store.viewFolders == 0 ? 2 : store.viewFolders;
     viewSwitch("lfo.view", x + w - 28, top + 17, m, 1u);

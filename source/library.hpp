@@ -62,6 +62,8 @@ struct Library {
 std::vector<uint8_t> findFolderCover(const std::string& folder);
 
 std::string baseName(const std::string& path);
+/** A folder's name as shown: baseName, but a volume's name for people on Android ("SD card", plat::volumeLabel). */
+std::string shownName(const std::string& path);
 
 /** Sub-folders of a directory (hidden ones skipped), sorted by name; for the folder picker. */
 std::vector<std::string> listDirs(const std::string& path);

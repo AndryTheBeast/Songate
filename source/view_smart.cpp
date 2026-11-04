@@ -488,9 +488,9 @@ void App::drawColourSheet() {
 
     // ---- the card, as the track menu's
     g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, 0.55f);
-    const float w = 620, x = (css::W - w) / 2;
+    const float w = cardW(620), x = (css::W - w) / 2;
     const float headH = 24 + 64 + 18, bodyH = 16 + 220 + 14 + 20 + 16, footH = 64, h = headH + bodyH + footH + 16;
-    const float y = (css::H - h) / 2;
+    const float y = cardY(h);
     g.glow(x + w / 2, y + h / 2 + 30, w * 0.75f, { 0, 0, 0 }, 0.5f);
     g.roundRect(x, y, w, h, 20, pal.surface2);
     g.roundRect(x, y, w, h, 20, pal.text, 0.03f);
@@ -640,6 +640,12 @@ void App::openEqPresets() {
     ui.focusDefault();
 }
 
+#ifdef GF_WINDOWED
+#define WORDS_PICK_ICON "Its icon in the sidebar: " GF_TAP " one"   // (the PC and Android had the console's "A picks one")
+#else
+#define WORDS_PICK_ICON "Its icon in the sidebar: A picks one"
+#endif
+
 void App::drawSmartSheet() {
     if (sheet.page == Sheet::Colour) { drawColourSheet(); return; }
     ui.region(Region::Modal);
@@ -657,8 +663,9 @@ void App::drawSmartSheet() {
         closeSheet();   // the playlist went (or moved) while the sheet was open
         return;
     }
-    constexpr int IconCols = 8;
     constexpr float IconTile = 58, IconRowH = 68;
+    // eight across, fewer where the sheet is narrower (a phone upright: at a fixed eight the tiles overlapped)
+    const int IconCols = std::clamp(int((cardW(600) - 48 + 8) / (IconTile + 8)), 4, 8);
     const bool filePage = page == Sheet::FileMenu || page == Sheet::FileInfo || page == Sheet::FileLink;
     const bool relPage = page == Sheet::Release || page == Sheet::Model;
     if (filePage) {
@@ -909,7 +916,12 @@ void App::drawSmartSheet() {
                 rows.push_back({ Row::Action, ICON_QUEUE, "Handoff", "This queue moves there and plays on from here", "", [this, id = p.id, name = p.name] { closeSheet(); handoffTo(id, name); } });
                 rows.back().h = 58;
             }
-            if (devicesLinked.empty()) {
+            if (devicesLinked.empty() && cardW(600) < 520) {   // a narrow sheet (a phone upright): the same words on two lines
+                rows.push_back({ Row::Group, nullptr, "No device linked:" });
+                rows.back().h = 34;
+                rows.push_back({ Row::Group, nullptr, "it has to be open, on this network" });
+                rows.back().h = 22;
+            } else if (devicesLinked.empty()) {
                 rows.push_back({ Row::Group, nullptr, "No device linked: it has to be open, on this network" });
                 rows.back().h = 34;
             }
@@ -940,7 +952,7 @@ void App::drawSmartSheet() {
 #endif
         rows.push_back({ Row::Group, nullptr, "" });
         rows.back().h = 10;
-        rows.push_back({ Row::Action, ICON_GEAR, "Device settings", "Pairing, sync, AirPlay and listening together's timing", "", [this] { closeSheet(); settingsCat = SetDevices; navigate(View::Settings); } });
+        rows.push_back({ Row::Action, ICON_GEAR, "Device settings", "Pairing, sync, AirPlay and listening together's timing", "", [this] { closeSheet(); settingsCat = SetDevices; settingsPhoneOpen_ = settingsPhoneDirect_ = true; navigate(View::Settings); } });
         rows.back().h = 58;
     } else if (page == Sheet::Sleep) {
         const bool on = sleepLeft() > 0;
@@ -1004,30 +1016,9 @@ void App::drawSmartSheet() {
 
     // ---- the card, as the track menu's (drawSheet)
     g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, 0.55f);
-    const float w = 600, x = (css::W - w) / 2;
+    const float w = cardW(600), x = (css::W - w) / 2;
     const bool ask = page == Sheet::Confirm;
     const bool footer = page == Sheet::SmartForm || page == Sheet::Report || ask;
-    const float headH = 24 + 64 + 18, footH = footer ? 64 : 0, maxBody = css::H - 60 - headH - footH - 16;
-    float bodyH = 8;
-    for (const auto& r : rows) bodyH += r.h;
-    // the question and its lines, as the track menu's Delete
-    const std::vector<std::string> askLines = ask ? g.wrap(sheet.askText, { css::Sm }, int(w - 56), 14) : std::vector<std::string>();
-    std::string warn = sheet.askWarn;
-    for (char& c : warn) c = char(toupper((unsigned char)c));
-    const std::vector<std::string> warnLines = ask && !warn.empty() ? g.wrap(warn, { css::Sm, Weight::Bold }, int(w - 56), 4) : std::vector<std::string>();
-    const float askH = 40 + askLines.size() * 19 + 14 + (warnLines.empty() ? 0 : 12 + warnLines.size() * 19);
-    if (ask) bodyH = askH;
-    bodyH = std::min(bodyH + 8, maxBody);
-    const float h = headH + bodyH + footH + 16, y = (css::H - h) / 2;
-    g.glow(x + w / 2, y + h / 2 + 30, w * 0.75f, { 0, 0, 0 }, 0.5f);
-    g.roundRect(x, y, w, h, 20, pal.surface2);
-    g.roundRect(x, y, w, h, 20, pal.text, 0.03f);
-    g.roundStroke(x, y, w, h, 20, 1, pal.text, 0.12f);
-
-    // ---- header: the icon tile (.sp-ic), kicker, title, a line under it, close
-    const float hx = x + 24, hy = y + 24;
-    g.roundRect(hx, hy, 64, 64, 14, pal.accent, 0.16f);
-    g.roundStroke(hx, hy, 64, 64, 14, 1, pal.accent, 0.3f);
     const bool sleep = page == Sheet::Sleep, job = page == Sheet::Job, devs = page == Sheet::Devices;
     const bool jobs = page == Sheet::Jobs;
     int running = 0;
@@ -1061,11 +1052,6 @@ void App::drawSmartSheet() {
         fileSub = "Atmosphère's, newest first";
     }
     const bool ownHead = filePage || relPage || facPage || supPage;   // pages that say their own header
-    if (filePage && sheet.preview) g.image(sheet.preview, hx, hy, 64, 64, 14);   // an image shows itself
-    else if (ownHead) g.icon(fileIcon, hx + 32, hy + 32, 28, pal.accentInk);
-    else
-    g.icon(plp ? playlistIcon(sheet.recipe) : ask && sheet.askIcon ? sheet.askIcon : eqp ? ICON_EQ : actl || lacts ? ICON_GAME : rc ? rc->icon : plFile ? ICON_LIST : devs ? ICON_LINK : sleep ? ICON_MOON : jobs ? ICON_REFRESH : job ? (jb.stop == Stoppable::Levels ? ICON_WAVE : ICON_IMAGE) : page == Sheet::Smart ? PLI_SMART : ICON_LIST,
-           hx + 32, hy + 32, 28, pal.accentInk);
     const std::string kick = ownHead ? fileKick : plp ? playlistKind(sheet.recipe) : ask ? sheet.askKicker : eqp ? "Equalizer" : actl ? "Background player" : lacts ? "Games" : rc ? kGroups[rc->group] : plFile ? "Playlist file" : devs ? "Devices" : sleep ? "Sleep timer" : job || jobs ? "In the background" : page == Sheet::Smart ? "New playlist" : "Playlists";
     const std::string title = ownHead ? fileTitle : plp ? plp->name : ask ? sheet.askTitle
                             : eqp ? "Preset"
@@ -1078,7 +1064,7 @@ void App::drawSmartSheet() {
                             : job ? jb.label
                             : jobs ? "Running now"
                             : page == Sheet::Smart ? "Smart playlist" : "New playlist";
-    const std::string sub = ownHead ? fileSub : page == Sheet::PlIcon ? "Its icon in the sidebar: A picks one" : plp ? "More for this playlist" : ask ? sheet.askSub
+    const std::string sub = ownHead ? fileSub : page == Sheet::PlIcon ? WORDS_PICK_ICON : plp ? "More for this playlist" : ask ? sheet.askSub
                           : eqp ? "Yours keep the whole sound; Songate's set the ten bands only"
                           : actl ? "The playlist it plays, faded in"
                           : lacts ? "The game events that play it; off, they do what they usually do"
@@ -1090,12 +1076,89 @@ void App::drawSmartSheet() {
                           : job ? std::to_string(jb.done) + " of " + std::to_string(jb.total) + " done"
                           : jobs ? std::to_string(running) + " jobs at once: pick one to stop it or see its setting"
                           : page == Sheet::Smart ? "Pick a recipe: it keeps itself up to date as you listen" : "Your own list, or one that fills itself";
-    kicker(kick, hx + 64 + 16, hy + 8, pal.accentInk);
+    // the header's words, measured before the card is sized: a narrow card (a phone upright) wraps its title to two lines and the
+    // line under it to three, where a wide one fits them on one
+    const bool narrowCard = w < 520;
     const int textW = int(w - 64 - 16 - 24 - 24 - 40);
-    g.text(title, { css::Lg, Weight::Bold }, hx + 64 + 16, hy + 18, pal.text, 1, Align::Left, textW);
+    const std::vector<std::string> titleLines = narrowCard ? g.wrap(title, { css::Lg, Weight::Bold }, textW, 2) : std::vector<std::string>{ title };
+    const std::vector<std::string> subLines = narrowCard && !job && !jobs ? g.wrap(sub, { css::Sm }, textW + 40, 3) : std::vector<std::string>{ sub };
+    const float headExtra = (std::max<size_t>(titleLines.size(), 1) - 1) * 26.f + (std::max<size_t>(subLines.size(), 1) - 1) * 18.f;
+    // a question's buttons, right to left (the main one, its other choices, Cancel): where they do not fit on one line (a phone
+    // upright: the first start's three), a second line above; the main one stays at the foot on the right
+    std::vector<float> askWs;
+    if (ask) {
+        const Font bf{ css::Sm, Weight::SemiBold };
+        askWs.push_back(g.measure(sheet.askButton, bf) + 32 + 24);
+        if (!sheet.askAlt.empty()) askWs.push_back(g.measure(sheet.askAlt, bf) + 32);
+        if (!sheet.askAlt2.empty()) askWs.push_back(g.measure(sheet.askAlt2, bf) + 32);
+        if (!sheet.askNoCancel) askWs.push_back(g.measure("Cancel", bf) + 32);
+    }
+    int footRows = 1;
+    {
+        float left = x + w - 24;
+        for (float bw : askWs) {
+            if (left - bw < x + 24 && left < x + w - 24) { footRows++; left = x + w - 24; }
+            left -= bw + 8;
+        }
+    }
+    const float headH = 24 + 64 + 18 + headExtra, footH = footer ? 64 + (footRows - 1) * 44.f : 0, maxBody = css::H - 60 - headH - footH - 16;
+    // a narrow card's rows: a line under the name that does not fit takes a second line (on a wide one it fits)
+    std::vector<std::vector<std::string>> rowSubs(rows.size());
+    std::vector<char> rowStacked(rows.size(), 0);   // a setting whose choices do not fit beside its name: the name above them
+    if (narrowCard && page != Sheet::Jobs)
+        for (size_t i = 0; i < rows.size(); i++) {
+            Row& r = rows[i];
+            if (r.kind == Row::Setting) {
+                float segW = 6;
+                if (r.pick) for (const auto& o : r.opts) segW += g.measure(o, { css::Sm, Weight::SemiBold }) + 26;
+                else if (rc) for (const auto& o : rc->opts) segW += g.measure(o.second, { css::Sm, Weight::SemiBold }) + 26;
+                if (g.measure(r.label, { css::Base, Weight::SemiBold }) + 16 + segW > w - 48) { rowStacked[i] = 1; r.h += 34; }
+                continue;
+            }
+            if (r.kind != Row::Action || r.sub.empty()) continue;
+            const int dw = r.detail.empty() ? 0 : std::min(120, g.measure(r.detail, { css::Sm }));
+            const int tw = int(w - 24 - 24 - 32 - dw - 16);
+            if (g.measure(r.sub, { css::Sm }) <= tw) continue;
+            rowSubs[i] = g.wrap(r.sub, { css::Sm }, tw, 2);
+            if (rowSubs[i].size() > 1) r.h += 17;
+            else rowSubs[i].clear();
+        }
+    float bodyH = 8;
+    for (const auto& r : rows) bodyH += r.h;
+    // the question and its lines, as the track menu's Delete
+    const std::vector<std::string> askLines = ask ? g.wrap(sheet.askText, { css::Sm }, int(w - 56), 14) : std::vector<std::string>();
+    std::string warn = sheet.askWarn;
+    for (char& c : warn) c = char(toupper((unsigned char)c));
+    const std::vector<std::string> warnLines = ask && !warn.empty() ? g.wrap(warn, { css::Sm, Weight::Bold }, int(w - 56), 4) : std::vector<std::string>();
+    // the question itself: two lines on a narrow card (a phone upright cut "Read your music from /storage/000…")
+    const std::vector<std::string> askQ = ask ? (narrowCard ? g.wrap(sheet.askQuestion, { css::Lg, Weight::Bold }, int(w - 48), 2)
+                                                            : std::vector<std::string>{ sheet.askQuestion }) : std::vector<std::string>();
+    const float askQExtra = (std::max<size_t>(askQ.size(), 1) - 1) * 26.f;
+    const float askH = 40 + askQExtra + askLines.size() * 19 + 14 + (warnLines.empty() ? 0 : 12 + warnLines.size() * 19);
+    if (ask) bodyH = askH;
+    bodyH = std::min(bodyH + 8, maxBody);
+    const float h = headH + bodyH + footH + 16, y = cardY(h);
+    g.glow(x + w / 2, y + h / 2 + 30, w * 0.75f, { 0, 0, 0 }, 0.5f);
+    g.roundRect(x, y, w, h, 20, pal.surface2);
+    g.roundRect(x, y, w, h, 20, pal.text, 0.03f);
+    g.roundStroke(x, y, w, h, 20, 1, pal.text, 0.12f);
+
+    // ---- header: the icon tile (.sp-ic), kicker, title, a line under it, close
+    const float hx = x + 24, hy = y + 24;
+    g.roundRect(hx, hy, 64, 64, 14, pal.accent, 0.16f);
+    g.roundStroke(hx, hy, 64, 64, 14, 1, pal.accent, 0.3f);
+    if (filePage && sheet.preview) g.image(sheet.preview, hx, hy, 64, 64, 14);   // an image shows itself
+    else if (ownHead) g.icon(fileIcon, hx + 32, hy + 32, 28, pal.accentInk);
+    else
+    g.icon(plp ? playlistIcon(sheet.recipe) : ask && sheet.askIcon ? sheet.askIcon : eqp ? ICON_EQ : actl || lacts ? ICON_GAME : rc ? rc->icon : plFile ? ICON_LIST : devs ? ICON_LINK : sleep ? ICON_MOON : jobs ? ICON_REFRESH : job ? (jb.stop == Stoppable::Levels ? ICON_WAVE : ICON_IMAGE) : page == Sheet::Smart ? PLI_SMART : ICON_LIST,
+           hx + 32, hy + 32, 28, pal.accentInk);
+    kicker(kick, hx + 64 + 16, hy + 8, pal.accentInk);
+    float ty = hy + 18;
+    for (const auto& l : titleLines) { g.text(l, { css::Lg, Weight::Bold }, hx + 64 + 16, ty, pal.text, 1, Align::Left, textW); ty += 26; }
+    ty = hy + 44 + (titleLines.size() - 1) * 26.f;
     // A job's count rises while the card is open: fixed-width digits, as the progress cards draw it, so nothing shifts
-    if (job || jobs) g.textNum(sub, { css::Sm }, hx + 64 + 16, hy + 44, pal.text3);
-    else g.text(sub, { css::Sm }, hx + 64 + 16, hy + 44, pal.text3, 1, Align::Left, textW);
+    if (job || jobs) g.textNum(sub, { css::Sm }, hx + 64 + 16, ty, pal.text3);
+    else for (const auto& l : subLines) { g.text(l, { css::Sm }, hx + 64 + 16, ty, pal.text3, 1, Align::Left, narrowCard ? textW + 40 : textW); ty += 18; }
     hint(uid("sp.close"), "Close");
     if (iconButton(uid("sp.close"), ICON_X, x + w - 24 - 14, hy + 14)) { closeSheet(); return; }
     g.rect(x + 24, y + headH - 1, w - 48, 1, pal.text, 0.09f);
@@ -1108,8 +1171,8 @@ void App::drawSmartSheet() {
     g.clip(x, by, w, bodyH);
     float ry = by + 8 - sa.y;
     if (ask) {
-        g.text(sheet.askQuestion, { css::Lg, Weight::Bold }, x + 24, ry + 8, pal.text, 1, Align::Left, int(w - 48));
-        float ty = ry + 40;
+        for (size_t k = 0; k < askQ.size(); k++) g.text(askQ[k], { css::Lg, Weight::Bold }, x + 24, ry + 8 + k * 26, pal.text, 1, Align::Left, int(w - 48));
+        float ty = ry + 40 + askQExtra;
         for (const auto& l : askLines) {
             g.text(l, { css::Sm }, x + 24, ty, pal.text3);
             ty += 19;
@@ -1180,10 +1243,12 @@ void App::drawSmartSheet() {
             break;
         }
         case Row::Setting: {
-            g.textC(r.label, { css::Base, Weight::SemiBold }, x + 24, ry + r.h / 2, pal.text2);
+            const bool stacked = rowStacked[i];
+            const float segY = stacked ? ry + r.h - 26 : ry + r.h / 2, segMax = stacked ? w - 48 : 0;
+            g.textC(r.label, { css::Base, Weight::SemiBold }, x + 24, stacked ? ry + 20 : ry + r.h / 2, pal.text2);
             if (r.pick) {   // its own options (Support's form)
                 int pick = -1;
-                segmented(uid("sp.seg", int(i)), x + w - 24, ry + r.h / 2, r.opts, r.cur, &pick);
+                segmented(uid("sp.seg", int(i)), x + w - 24, segY, r.opts, r.cur, &pick, 0, segMax);
                 if (pick >= 0) r.pick(pick);
                 break;
             }
@@ -1194,7 +1259,7 @@ void App::drawSmartSheet() {
                 if (std::to_string(rc->opts[k].first) == sheet.arg) cur = int(k);
             }
             int pick = -1;
-            segmented(uid("sp.seg"), x + w - 24, ry + r.h / 2, labels, cur, &pick);
+            segmented(uid("sp.seg"), x + w - 24, segY, labels, cur, &pick, 0, segMax);
             if (pick >= 0) {
                 sheet.arg = std::to_string(rc->opts[size_t(pick)].first);
                 if (!sheet.nameTouched) sheet.name = defaultName(*rc, sheet.arg);
@@ -1272,6 +1337,10 @@ void App::drawSmartSheet() {
                 const Rgb labelInk = danger && !r.act ? pal.text3 : ink;   // nothing ticked yet: greyed
                 if (r.sub.empty()) {   // one line: centred
                     g.textC(r.label, { css::Base, Weight::SemiBold }, lx, ry + r.h / 2, labelInk, 1, Align::Left, tw);
+                } else if (!rowSubs[i].empty()) {   // its line on two (a narrow card)
+                    g.text(r.label, { css::Base, Weight::SemiBold }, lx, ry + r.h / 2 - 27.5f, labelInk, 1, Align::Left, tw);
+                    g.text(rowSubs[i][0], { css::Sm }, lx, ry + r.h / 2 - 6.5f, pal.text3, 1, Align::Left, tw);
+                    g.text(rowSubs[i][1], { css::Sm }, lx, ry + r.h / 2 + 10.5f, pal.text3, 1, Align::Left, tw);
                 } else {
                     g.text(r.label, { css::Base, Weight::SemiBold }, lx, ry + r.h / 2 - 19, labelInk, 1, Align::Left, tw);
                     if (page == Sheet::Jobs) g.textNum(r.sub, { css::Sm }, lx, ry + r.h / 2 + 2, pal.text3);   // counts that rise
@@ -1293,15 +1362,25 @@ void App::drawSmartSheet() {
     ui.popArea();
     if (sheet.page != page || !footer) return;
 
-    const float fy = y + h - 16 - 48;
+    const float fy = y + h - 16 - 48 - (footRows - 1) * 44.f;
     g.rect(x + 24, fy - 8, w - 48, 1, pal.text, 0.09f);
     bool c = false;
     const Font bf{ css::Sm, Weight::SemiBold };
+    // (the buttons' places: right to left on the bottom line, then the line above: footRows)
+    float footLeft = x + w - 24, footY = fy + 7 + (footRows - 1) * 44.f;
+    auto footAt = [&](float bw) {
+        if (footLeft - bw < x + 24 && footLeft < x + w - 24) { footLeft = x + w - 24; footY -= 44; }
+        footLeft -= bw;
+        const float at = footLeft;
+        footLeft -= 8;
+        return at;
+    };
     if (ask) {
         // ---- footer: Cancel, then the red button. Cancel is where focus lands: a stray A press must not delete anything
         // A safe question (askSafe: installing, allowing) has its button in the accent; a second choice may sit beside it.
         const float dw = g.measure(sheet.askButton, bf) + 32 + 24, kw = g.measure("Cancel", bf) + 32;
-        button(uid("sp.yes"), sheet.askYesIcon ? sheet.askYesIcon : ICON_X, sheet.askButton, x + w - 24 - dw, fy + 7, sheet.askSafe, &c, false,
+        const float yesX = footAt(dw), yesY = footY;
+        button(uid("sp.yes"), sheet.askYesIcon ? sheet.askYesIcon : ICON_X, sheet.askButton, yesX, yesY, sheet.askSafe, &c, false,
                !sheet.askSafe, sheet.askNoCancel ? DefaultFocus : 0);
         if (c) {
             std::function<void()> yes = std::move(sheet.askYes);
@@ -1309,31 +1388,31 @@ void App::drawSmartSheet() {
             if (yes) yes();
             return;
         }
-        float left = x + w - 24 - dw - 8;
         if (!sheet.askAlt.empty()) {
             const float aw = g.measure(sheet.askAlt, bf) + 32;
-            button(uid("sp.alt"), nullptr, sheet.askAlt, left - aw, fy + 7, false, &c);
+            const float ax2 = footAt(aw);
+            button(uid("sp.alt"), nullptr, sheet.askAlt, ax2, footY, false, &c);
             if (c) {
                 std::function<void()> alt = std::move(sheet.askAltYes);
                 closeSheet();
                 if (alt) alt();
                 return;
             }
-            left -= aw + 8;
         }
         if (!sheet.askAlt2.empty()) {
             const float aw = g.measure(sheet.askAlt2, bf) + 32;
-            button(uid("sp.alt2"), nullptr, sheet.askAlt2, left - aw, fy + 7, false, &c);
+            const float ax2 = footAt(aw);
+            button(uid("sp.alt2"), nullptr, sheet.askAlt2, ax2, footY, false, &c);
             if (c) {
                 std::function<void()> alt = std::move(sheet.askAlt2Yes);
                 closeSheet();
                 if (alt) alt();
                 return;
             }
-            left -= aw + 8;
         }
         if (sheet.askNoCancel) return;
-        button(uid("sp.no"), nullptr, "Cancel", left - kw, fy + 7, false, &c, false, false, DefaultFocus);
+        const float noX = footAt(kw);
+        button(uid("sp.no"), nullptr, "Cancel", noX, footY, false, &c, false, false, DefaultFocus);
         if (c) closeSheet();
         return;
     }

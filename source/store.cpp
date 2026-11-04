@@ -204,6 +204,7 @@ void Store::load() {
         else if (k == "modelToasted") modelToasted = v;
         else if (k == "heldOrder") heldOrder = std::clamp(atoi(v.c_str()), -1, 3);
         else if (k == "keepAwake") keepAwake = v == "1";
+        else if (k == "swipeKeep") swipeKeep = v == "1";
         else if (k == "levelMode") levelMode = std::clamp(atoi(v.c_str()), 0, 3);
         else if (k == "levelTarget") levelTarget = std::clamp(atoi(v.c_str()), -23, -6);
         else if (k == "batteryPercent") batteryPercent = v == "1";
@@ -255,6 +256,10 @@ void Store::load() {
         else if (k == "lastfm") lastfm = v == "1";
         else if (k == "openingSound") openingSound = v == "1";
         else if (k == "opening") opening = v == "1";
+        else if (k == "edgeMode") edgeMode = std::clamp(atoi(v.c_str()), 0, 3);
+        else if (k == "edgeExtra") edgeExtra = std::clamp(float(atof(v.c_str())), 0.f, 1.f);
+        else if (k == "edgeCorners") edgeCorners = v == "1";
+        else if (k == "uiSize") uiSize = std::clamp(atoi(v.c_str()), 0, 2);
         else if (k == "lastfmScrobble") lastfmScrobble = v == "1";
         else if (k == "lastfmNow") lastfmNow = v == "1";
         else if (k == "connections") connections = v == "1";
@@ -450,7 +455,7 @@ void Store::save() const {
     appendf(f, "viewPlaylist=%d\nviewFolders=%d\nviewTracks=%d\nlibTab=%d\ntracksSort=%d\ntracksDesc=%d\n", viewPlaylist, viewFolders, viewTracks, libTab,
             tracksSort, tracksDesc);
     appendf(f, "pointerSpeed=%.2f\npointerAccel=%d\nframeTimes=%d\nviewGenre=%d\n", double(pointerSpeed), pointerAccel, frameTimes, viewGenre);
-    appendf(f, "keepAwake=%d\ndimAfter=%d\nsleepConsole=%d\n", keepAwake, dimAfter, sleepConsole);
+    appendf(f, "keepAwake=%d\ndimAfter=%d\nsleepConsole=%d\nswipeKeep=%d\n", keepAwake, dimAfter, sleepConsole, swipeKeep);
     if (!automixModel.empty()) appendf(f, "automixModel=%s\n", automixModel.c_str());
     if (!modelToasted.empty()) appendf(f, "modelToasted=%s\n", modelToasted.c_str());
     if (heldOrder >= 0) appendf(f, "heldOrder=%d\n", heldOrder);
@@ -482,6 +487,7 @@ void Store::save() const {
     appendf(f, "updates=%d\nupdateAtStart=%d\nbetas=%d\nreports=%d\n", updates, updateAtStart, betas ? 1 : 0, reports ? 1 : 0);
     appendf(f, "lastfm=%d\nlastfmScrobble=%d\nlastfmNow=%d\nopeningSound=%d\nopening=%d\n", lastfm ? 1 : 0, lastfmScrobble ? 1 : 0, lastfmNow ? 1 : 0, openingSound ? 1 : 0,
             opening ? 1 : 0);
+    appendf(f, "edgeMode=%d\nedgeExtra=%.3f\nedgeCorners=%d\nuiSize=%d\n", edgeMode, edgeExtra, edgeCorners ? 1 : 0, uiSize);
     appendf(f, "handoffFrom=%s\nairplayReceive=%d\n", handoffFrom.c_str(), airplayReceive ? 1 : 0);
     appendf(f, "togetherOutput=%d\ntogetherDelay0=%d\ntogetherDelay1=%d\ntogetherDelay2=%d\n", togetherOutput, togetherDelay[0], togetherDelay[1], togetherDelay[2]);
     appendf(f, "connections=%d\nconnectAim=%s\nsyncKinds=%u\nsyncHand=%d\nsyncResults=%d\nsyncFiles=%d\nsyncDeletes=%d\nsyncDeleteFrom=%llu\n", connections ? 1 : 0, connectAim.c_str(), syncKinds, syncAuto ? 0 : 1, syncResults ? 1 : 0, syncFiles ? 1 : 0, syncDeletes ? 1 : 0, (unsigned long long)syncDeleteFrom);

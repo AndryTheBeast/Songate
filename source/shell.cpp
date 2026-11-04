@@ -26,7 +26,138 @@ float ease(float t) {
 
 }  // namespace
 
+// ------------------------------------------------------------------ screen edges (Android)
+
+/** Settings › Appearance › Screen edges: Android's cutout boxes (any shape, any edge) and the rounded corners, made into how far each
+ *  piece of the frame keeps from them. Step aside moves only a piece a box overlaps; Keep the side clear and Black strip keep every
+ *  piece on a box's side clear of it (Black strip also paints the band, drawEdges); Use the whole screen moves nothing. The corners
+ *  move pieces as Step aside does whatever the mode. Eased as the phone turns; Motion off, at once. */
+void App::updateEdges() {
+#ifdef GF_ANDROID
+    static std::vector<plat::EdgeBox> raw;
+    static float radius = 0;
+    std::vector<plat::EdgeBox> got;
+    float r = 0;
+    const unsigned gen = plat::screenEdges(got, r);
+    const bool fresh = edgeGen_ == ~0u;
+    if (gen != edgeGen_) {
+        raw = std::move(got);
+        radius = r;
+        edgeGen_ = gen;
+#ifdef GF_DEV
+        // tests: edge-test.txt in the settings folder stands in for Android's boxes ("x y w h" a line, window pixels), for shapes no
+        // device here has (a notch, two, a tablet's camera on a long edge); read once, as the app starts
+        static const std::vector<plat::EdgeBox> fake = [this] {
+            std::vector<plat::EdgeBox> v;
+            if (FILE* f = fopen(store.path("edge-test.txt").c_str(), "r")) {
+                plat::EdgeBox b{};
+                while (fscanf(f, "%f %f %f %f", &b.x, &b.y, &b.w, &b.h) == 4) v.push_back(b);
+                fclose(f);
+            }
+            return v;
+        }();
+        if (!fake.empty()) raw = fake;
+        // for tests: what Android said, in window pixels (the screenshot cannot show a cutout)
+        std::string l = "Screen edges: radius " + std::to_string(int(radius)) + ", boxes";
+        for (const plat::EdgeBox& b : raw) l += " " + std::to_string(int(b.x)) + "," + std::to_string(int(b.y)) + " " + std::to_string(int(b.w)) + "x" + std::to_string(int(b.h));
+        logLine(l);
+#endif
+    }
+    const float W = float(css::W), H = float(css::H), s = scale_ > 0 ? scale_ : 1, extra = store.edgeExtra * 24;
+    // the boxes in app pixels, with the extra room around each
+    std::vector<SDL_FRect> cuts, corners;
+    for (const plat::EdgeBox& b : raw) {
+        const float x0 = std::max(0.f, b.x / s - extra), y0 = std::max(0.f, b.y / s - extra);
+        const float x1 = std::min(W, (b.x + b.w) / s + extra), y1 = std::min(H, (b.y + b.h) / s + extra);
+        if (x1 > x0 && y1 > y0) cuts.push_back({ x0, y0, x1 - x0, y1 - y0 });
+    }
+    if (store.edgeCorners && radius > 0) {   // a square inside each corner's curve: past it, a piece is clear of the rounding
+        const float c = radius / s * 0.3f;
+        for (const SDL_FRect& k : { SDL_FRect{ 0, 0, c, c }, SDL_FRect{ W - c, 0, c, c }, SDL_FRect{ 0, H - c, c, c }, SDL_FRect{ W - c, H - c, c, c } })
+            corners.push_back(k);
+    }
+    edgeBoxes_ = cuts;
+    edgeBoxes_.insert(edgeBoxes_.end(), corners.begin(), corners.end());
+
+    Edges w;
+    // where each piece's content is: the sidebar's last row (Settings) and the page end 12 px above the player bar
+    const float bandTop = css::TbH, bandBottom = H - css::BarH, contentBottom = bandBottom - 12;
+    auto overlapsY = [](const SDL_FRect& b, float a, float z) { return b.y < z && b.y + b.h > a; };
+    // Step aside, for one box: each piece it overlaps, just past it (the pieces' own margins: 10 and 18 px)
+    auto step = [&](const SDL_FRect& b) {
+        const bool left = b.x < W / 3, right = b.x + b.w > W * 2 / 3;
+        if (overlapsY(b, 0, bandTop)) {
+            if (left) w.tbL = std::max(w.tbL, b.x + b.w - 6);
+            else if (right) w.tbR = std::max(w.tbR, W - b.x - 14);
+            else if (b.x + b.w / 2 < W / 2) w.searchL = std::max(w.searchL, b.x + b.w + 8);   // a hole in the middle of a long edge
+            else w.searchR = w.searchR > 0 ? std::min(w.searchR, b.x - 8) : b.x - 8;
+        }
+        if (overlapsY(b, bandTop, contentBottom)) {
+            if (b.x < sideW) w.side = std::max(w.side, b.x + b.w - 6);
+            if (b.x + b.w > W - 60) w.mainR = std::max(w.mainR, W - b.x);
+        }
+        if (overlapsY(b, bandBottom, H)) {
+            if (left) w.barL = std::max(w.barL, b.x + b.w - 14);
+            else if (right) w.barR = std::max(w.barR, W - b.x - 14);
+        }
+    };
+    if (store.edgeMode == 0) for (const SDL_FRect& b : cuts) step(b);
+    else if (store.edgeMode == 1 || store.edgeMode == 2) {
+        // the side a box is on, whole: from the edge to its far side
+        float L = 0, R = 0;
+        for (const SDL_FRect& b : cuts) {
+            if (b.x + b.w / 2 < W / 2 && b.x < W / 4) L = std::max(L, b.x + b.w);
+            else if (b.x + b.w / 2 >= W / 2 && b.x + b.w > W * 3 / 4) R = std::max(R, W - b.x);
+            else step(b);   // on a long edge, away from the sides: as Step aside
+        }
+        w.tbL = std::max(w.tbL, L);
+        w.side = std::max(w.side, L);
+        w.barL = std::max(w.barL, L);
+        w.tbR = std::max(w.tbR, R);
+        w.mainR = std::max(w.mainR, R);
+        w.barR = std::max(w.barR, R);
+        if (store.edgeMode == 2) { w.stripL = L; w.stripR = R; }
+    }
+    if (store.edgeMode != 3) for (const SDL_FRect& b : corners) step(b);
+    edgeWant_ = w;
+
+    // eased towards it (a turn moves the pieces across), at once with Motion off or at the first frame
+    const float k = fresh || !store.motion ? 1.f : 1.f - std::exp(-dt / 0.07f);
+    auto go = [&](float& v, float want) { v += (want - v) * k; if (std::fabs(want - v) < 0.05f) v = want; };
+    go(edge_.tbL, w.tbL);
+    go(edge_.tbR, w.tbR);
+    go(edge_.side, w.side);
+    go(edge_.barL, w.barL);
+    go(edge_.barR, w.barR);
+    go(edge_.mainR, w.mainR);
+    go(edge_.stripL, w.stripL);
+    go(edge_.stripR, w.stripR);
+    edge_.searchL = w.searchL;   // places, not distances: they jump
+    edge_.searchR = w.searchR;
+#endif
+}
+
+/** Black strip's bands over everything, and Show where it is: the boxes outlined for a few seconds. */
+void App::drawEdges() {
+    if (edge_.stripL > 0.5f) g.rect(0, 0, edge_.stripL, css::H, { 0, 0, 0 });
+    if (edge_.stripR > 0.5f) g.rect(css::W - edge_.stripR, 0, edge_.stripR, css::H, { 0, 0, 0 });
+    if (time >= edgeShowUntil_) return;
+    const float a = std::clamp(float(edgeShowUntil_ - time) / 0.5f, 0.f, 1.f);   // the last half second fades
+    for (const SDL_FRect& b : edgeBoxes_) {
+        g.roundRect(b.x, b.y, b.w, b.h, 6, pal.accent, 0.28f * a);
+        g.roundStroke(b.x, b.y, b.w, b.h, 6, 2, pal.accent, 0.9f * a);
+    }
+}
+
 void App::draw() {
+    updateEdges();
+#if defined(GF_ANDROID) && defined(GF_DEV)
+    if (portraitMock_ >= 0 && css::H > css::W) {   // a portrait mock-up instead of the app (view_portrait.cpp)
+        drawBackground();
+        drawPortraitMock(portraitMock_);
+        return;
+    }
+#endif
     hoverTrackShown = hoverTrack;
     hoverTrack = -1;
     hoverQueueShown = hoverQueue;
@@ -36,9 +167,12 @@ void App::draw() {
     plHoverShown = route.view == View::Playlists ? plHover : -2;
     ui.setModal(sheet.page != Sheet::Closed || ((coverNotice == 1 || appCoverNotice == 1) && !canvas) || sleepPromptAt > 0 || tourStep >= 0 || je.open || ap.open);
     if (canvas) {
-        g.holdCache(automixFocus(store.mixAnimCanvas == 0 ? 0 : 2).ui < 1);   // its text stays cached while an Automix join hides it (as Now playing's)
+        g.holdCache(automixFocus(mixCanvasMode() == 0 ? 0 : 2).ui < 1);   // its text stays cached while an Automix join hides it (as Now playing's)
         drawCanvas();
         profMark(2);
+#if defined(GF_WINDOWED) && defined(GF_DEV)
+        g.saidLayer = 1;   // (tests: the overlays from here)
+#endif
         drawSheet();
         drawTour();
         drawSleepPrompt();
@@ -46,6 +180,7 @@ void App::draw() {
         if (veilA > 0.005f) g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, veilA);
         drawFocusRing();
         drawHint();
+        drawEdges();
         drawPointer();
         drawFrameTimes();
         profMark(5);
@@ -53,6 +188,33 @@ void App::draw() {
     }
     drawBackground();
     profMark(1);
+#ifdef GF_ANDROID
+    if (phonePortrait()) {   // a phone held upright: its own layout (view_phone.cpp), the same overlays over it
+        ui.region(Region::Main);
+        drawPhone();
+        profMark(4);
+#if defined(GF_WINDOWED) && defined(GF_DEV)
+        g.saidLayer = 1;   // (tests: the overlays from here)
+#endif
+        drawCoverNotice();
+        drawJoinEditor();
+        drawAutomixPicker();
+        drawSheet();
+        drawTour();
+        drawSleepPrompt();
+        drawToast();
+        if (veilA > 0.005f) g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, veilA);
+        drawFocusRing();
+        drawHint();
+        drawEdges();
+        drawPointer();
+        drawFrameTimes();
+        profMark(5);
+        warmCanvas();
+        profMark(6);
+        return;
+    }
+#endif
     // Automix joining on Now playing (automixFocus): how much of the interface shows. Fully faded, it is not drawn at all:
     // drawn at nothing it cost a whole frame's layout on the console, and the join's animation dropped frames (the user's
     // video, 2026-10-28: the light held for two or three frames, then jumped). Focus stays where it was meanwhile
@@ -61,7 +223,7 @@ void App::draw() {
     const bool hidden = shown <= 0.001f;
     g.holdCache(shown < 1);   // what it shows stays cached meanwhile, so its return is not a stutter
 
-    const float mx = std::round(sideW), my = css::TbH, mw = css::W - mx, mh = css::H - css::TbH - css::BarH;
+    const float mx = std::round(sideW + edge_.side), my = css::TbH, mw = css::W - mx - std::round(edge_.mainR), mh = css::H - css::TbH - css::BarH;
     ui.region(Region::Main);
     g.clip(mx, my, mw, mh);
     switch (route.view) {
@@ -107,6 +269,9 @@ void App::draw() {
         glideOn_ = false;
     }
     profMark(4);
+#if defined(GF_WINDOWED) && defined(GF_DEV)
+    g.saidLayer = 1;   // (tests: the overlays from here)
+#endif
     drawCoverNotice();
     drawJoinEditor();   // a playlist's join (view_join.cpp)
     drawAutomixPicker();   // a new Automix playlist's songs (view_automix.cpp)
@@ -122,6 +287,7 @@ void App::draw() {
     }
     if (!hidden) drawHint();
     else hints_.clear();
+    drawEdges();
 #ifdef GF_WINDOWED
     drawWindowLights();
 #endif
@@ -197,6 +363,10 @@ float App::lightsShown() const { return lightsP_ * lightsP_ * (3 - 2 * lightsP_)
  *  edge the app gets no mouse events, so it is asked where it is). They wait a moment for it to travel to them, and for as long
  *  as it stays near them. */
 void App::updateLights() {
+#ifdef GF_ANDROID
+    lightsP_ = 0;   // no window to close, minimise or make full screen: the app is the screen
+    return;
+#endif
     SDL_ShowCursor(canvas && canvasIdle > 3 ? SDL_DISABLE : SDL_ENABLE);   // the arrow leaves the Canvas with its controls
     int gx = 0, gy = 0, wx = 0, wy = 0, ww = 0, wh = 0;
     SDL_GetGlobalMouseState(&gx, &gy);
@@ -206,6 +376,12 @@ void App::updateLights() {
     const bool inside = py >= 0 && py < wh && px < ww;
     constexpr int kWall = 3;
     const bool atWall = inside && px >= 0 && px < kWall && py / scale_ < css::TbH;   // the top left corner: the bar's height of the wall
+    // An invisible area round them: the mouse near them a moment brings them out (the user, 2026-11-04: "difficult to invoke ...
+    // when the mouse gets close it appears"; option 3 of three shown). The wait lets a quick click reach the sidebar button.
+    const float ax = px / scale_, ay = py / scale_;
+    const bool near = inside && px >= 0 && ay < css::TbH && ax < kLightsW + 8;
+    lightsNear_ = near ? lightsNear_ + dt : 0;
+    if (lightsNear_ > 0.35f) lightsHold_ = std::max(lightsHold_, 0.6f);
     if (atWall && cameFromInside_) lightsHold_ = 2.5f;
     else if (lightsHold_ > 0 && inside && px >= 0 && px / scale_ < kLightsW + 44 && py / scale_ < css::TbH) lightsHold_ = std::max(lightsHold_, 0.6f);
     lightsHold_ = std::max(0.f, lightsHold_ - dt);
@@ -309,7 +485,7 @@ void App::drawBackground() {
 void App::drawTitlebar() {
     const float cy = css::TbH / 2;
 #ifdef GF_WINDOWED
-    float x = 10 + (kLightsW - 10) * lightsShown();   // it steps aside for the window's three lights (drawWindowLights)
+    float x = 10 + (kLightsW - 10) * lightsShown() + edge_.tbL;   // it steps aside for the window's three lights (drawWindowLights), and a camera
 #else
     float x = 10;
 #endif
@@ -385,7 +561,9 @@ void App::drawTitlebar() {
 
     // .search: centred in what is left of the bar; opens the console keyboard
 #ifdef GF_WINDOWED
-    const float left = std::max(sideW + 12, 10 + 40 + 120.f), right = css::W - 150;   // where it is with the lights away: it does not move with them
+    // where it is with the lights away: it does not move with them; clear of a camera at either end or in the middle (Screen edges)
+    float left = std::max({ sideW + edge_.side + 12, 10 + edge_.tbL + 40 + 120.f, edge_.searchL }), right = css::W - 150 - edge_.tbR;
+    if (edge_.searchR > 0) right = std::min(right, edge_.searchR);
 #else
     const float left = std::max(sideW + 12, x + 120), right = css::W - 150;
 #endif
@@ -432,7 +610,7 @@ void App::drawTitlebar() {
     std::strftime(clock, sizeof clock, "%H:%M", lt);
     unsigned pct = 0;
     const bool haveBattery = plat::batteryLevel(pct);
-    float rx = css::W - 18;
+    float rx = css::W - 18 - edge_.tbR;
     if (haveBattery) {
         const float bw = 24, bh = 12, bx = rx - bw - 3, by = cy - bh / 2;
         g.roundStroke(bx, by, bw, bh, 3, 1.5f, pal.text2);
@@ -458,7 +636,7 @@ void App::drawTitlebar() {
 // ------------------------------------------------------------------ #sidebar
 
 void App::drawSidebar() {
-    const float x0 = 10, w = sideW - 20;
+    const float x0 = 10 + edge_.side, w = sideW - 20;   // the column steps aside for a camera (Screen edges): the page starts later too
     const bool collapsed = sideW < 120;
     // how far open (App::sideOpen): the labels come in over its second half, settling 8 px towards the icons
     const float open = sideOpen(), lab = std::clamp((open - 0.4f) / 0.6f, 0.f, 1.f), labA = lab * lab * (3 - 2 * lab);
@@ -524,6 +702,16 @@ void App::drawSidebar() {
         shownTabs.push_back(tab);
     }
     while (!shownTabs.empty() && Store::isLine(shownTabs.back())) shownTabs.pop_back();
+    // A short window (a phone sideways at a large Size): the tabs come closer, 38 down to 30, as far as the playlists under
+    // them need to keep three rows (the user, 2026-11-04: "some things start running out of space like playlists")
+    float tabH = 38;
+    {
+        int nTabs = 0, nLines = 0;
+        for (int tab : shownTabs) (Store::isLine(tab) ? nLines : nTabs)++;
+        const float footH = 2 + 8 + 1 + 11 + 38 + jobsHeight(collapsed);
+        const float room = css::H - css::BarH - 12 - footH - y - (15 + 28) - nLines * 11.f - 3 * 34.f;
+        if (nTabs > 0) tabH = std::clamp(std::floor(room / nTabs), 30.f, 38.f);
+    }
     for (int tab : shownTabs) {
         if (Store::isLine(tab)) {
             // every line in the sidebar the same: 6 px clear to the highlight above (the row's own 2 px gap + 4) and 6 below
@@ -534,30 +722,30 @@ void App::drawSidebar() {
         }
         switch (tab) {
         case Store::TabNow:
-            if (navItem("nav.now", ICON_DISC, "Now playing", v == View::Now, "", 38, navFont)) navigate(View::Now);
+            if (navItem("nav.now", ICON_DISC, "Now playing", v == View::Now, "", tabH, navFont)) navigate(View::Now);
             break;
         case Store::TabQueue:
-            if (navItem("nav.queue", ICON_LIST, "Playlist", v == View::Queue, q.tracks.empty() ? "" : std::to_string(q.tracks.size()), 38, navFont))
+            if (navItem("nav.queue", ICON_LIST, "Playlist", v == View::Queue, q.tracks.empty() ? "" : std::to_string(q.tracks.size()), tabH, navFont))
                 navigate(View::Queue);
             break;
         case Store::TabAlbums:
             if (navItem("nav.albums", ICON_V_GRID, "Albums", v == View::Albums || (v == View::Album && libFrom == View::Albums),
-                        std::to_string(lib.albums.size()), 38, navFont)) {
+                        std::to_string(lib.albums.size()), tabH, navFont)) {
                 libFrom = View::Albums;
                 navigate(View::Albums);
             }
             break;
         case Store::TabArtists:
-            if (navItem("nav.artists", ICON_MIC, "Artists", v == View::Artists || v == View::Artist, std::to_string(artists.size()), 38, navFont))
+            if (navItem("nav.artists", ICON_MIC, "Artists", v == View::Artists || v == View::Artist, std::to_string(artists.size()), tabH, navFont))
                 navigate(View::Artists);
             break;
         case Store::TabGenres:
-            if (navItem("nav.genres", ICON_TAG, "Genres", v == View::Genres || v == View::Genre, std::to_string(genres.size()), 38, navFont))
+            if (navItem("nav.genres", ICON_TAG, "Genres", v == View::Genres || v == View::Genre, std::to_string(genres.size()), tabH, navFont))
                 navigate(View::Genres);
             break;
         case Store::TabFolders:
             if (navItem("nav.folders", ICON_FOLDER, "Folders", v == View::Folders && !folderInLibrary,
-                        std::to_string(std::max(0, int(lib.folders.size()) - int(lib.rootFolders.size()))), 38, navFont)) {
+                        std::to_string(std::max(0, int(lib.folders.size()) - int(lib.rootFolders.size()))), tabH, navFont)) {
                 navigate(View::Folders, lib.rootFolders.empty() ? -1 : lib.rootFolders[0]);
                 folderFrom = View::Folders;   // the tab itself, even when clicked from Library
             }
@@ -565,13 +753,13 @@ void App::drawSidebar() {
         case Store::TabLibrary:
             if (navItem("nav.library", ICON_GRID, "Library", v == View::Library || (v == View::Album && libFrom == View::Library) || folderInLibrary ||
                                                         artistInLibrary || genreInLibrary,
-                        std::to_string(lib.tracks.size()), 38, navFont)) {
+                        std::to_string(lib.tracks.size()), tabH, navFont)) {
                 libFrom = View::Library;
                 navigate(View::Library);
             }
             break;
         case Store::TabFiles:
-            if (navItem("nav.files", PLI_SDCARD, "Files", v == View::Files, "", 38, navFont)) openFiles(filesStart());
+            if (navItem("nav.files", PLI_SDCARD, "Files", v == View::Files, "", tabH, navFont)) openFiles(filesStart());
             break;
         }
     }
@@ -604,10 +792,10 @@ void App::drawSidebar() {
     const float listTop = y, listH = css::H - css::BarH - 12 - footH - listTop;
     ScrollArea& sa = area("side.playlists");
     const int n = 1 + int(store.playlists.size());
-    sa.view = { 0, listTop, sideW, listH };
+    sa.view = { 0, listTop, sideW + edge_.side, listH };
     sa.content = n * 34.f;
     ui.pushArea(&sa);
-    g.clip(0, listTop, sideW, listH);
+    g.clip(0, listTop, sideW + edge_.side, listH);
     y = listTop - sa.y;
     const Font plFont{ css::Sm };
     const bool likedPlaying = q.name == "Liked" && isPlaying();
@@ -683,7 +871,9 @@ void App::drawSeek(float x, float y, float w, float h, Id id) {
         // as every section's (App::wipeEdge), across the waveform and the song's length beside it (one swipe: wipeGroup_)
         float soft;
         const float edgeX = wipeGroup_.on ? wipeEdge(wipeGroup_.x0, wipeGroup_.x1, mp, soft) : wipeEdge(x, x + w, mp, soft);
-        const int bars = int(w / 3);
+        const Gfx::Pitch pt = g.barPitch(2, 3);   // 2 px bars every 3, in whole real pixels
+        const float x0 = g.onPixel(x);
+        const int bars = int(w / pt.step);
         const float px = shown * w, cur = frac * w;
         auto barOf = [&](const std::vector<float>& q, int i) {
             const size_t a = size_t(i) * q.size() / bars, b = std::max(a + 1, size_t(i + 1) * q.size() / bars);
@@ -694,19 +884,19 @@ void App::drawSeek(float x, float y, float w, float h, Id id) {
         for (int i = 0; i < bars; i++) {
             float v = barOf(pk, i);
             if (mp < 1) {   // left of the edge the next song's bar, right of it the outgoing one's, blended across it
-                const float old = barOf(mixOld.wave, i), wf = waveNow ? std::clamp((edgeX - (x + i * 3)) / soft + 0.5f, 0.f, 1.f) : 0.f;
+                const float old = barOf(mixOld.wave, i), wf = waveNow ? std::clamp((edgeX - (x0 + i * pt.step)) / soft + 0.5f, 0.f, 1.f) : 0.f;
                 v = old + (v - old) * wf;
             }
-            const float bh = std::max(1.5f, v * h * 0.9f), bx = x + i * 3;
+            const float bh = std::max(1.5f, v * h * 0.9f), bx = x0 + i * pt.step;
             const float t = float(i) / bars;
-            if (i * 3 < px) {
+            if (i * pt.step < px) {
                 const Rgb c{ pal.accent2.r + (pal.accent.r - pal.accent2.r) * t, pal.accent2.g + (pal.accent.g - pal.accent2.g) * t,
                              pal.accent2.b + (pal.accent.b - pal.accent2.b) * t };
-                g.rect(bx, cy - bh / 2, 2, bh, c);
-            } else if (drag >= 0 && i * 3 < cur) {
-                g.rect(bx, cy - bh / 2, 2, bh, pal.text3);
+                g.rect(bx, cy - bh / 2, pt.bar, bh, c);
+            } else if (drag >= 0 && i * pt.step < cur) {
+                g.rect(bx, cy - bh / 2, pt.bar, bh, pal.text3);
             } else {
-                g.rect(bx, cy - bh / 2, 2, bh, pal.text, 0.13f);
+                g.rect(bx, cy - bh / 2, pt.bar, bh, pal.text, 0.13f);
             }
         }
         if (ui.engaged(id)) {   // picked up with A: a knob where ←/→ move it
@@ -761,9 +951,10 @@ void App::drawPlayerbar() {
     g.rect(0, y0, css::W, css::BarH, pal.bg, 0.8f);   // --panel-strong
     g.rect(0, y0, css::W, 1, pal.text, 0.09f);
 
-    const float pad = 18, gap = 20, total = css::W - pad * 2 - gap * 2;
+    // its ends step aside for a camera (Screen edges)
+    const float padL = 18 + edge_.barL, padR = 18 + edge_.barR, gap = 20, total = css::W - padL - padR - gap * 2;
     const float leftW = total / 4, centerW = total / 2;
-    const float lx = pad, cx0 = pad + leftW + gap, rx = cx0 + centerW + gap;
+    const float lx = padL, cx0 = padL + leftW + gap, rx = cx0 + centerW + gap;
     const bool hasTrack = now.track >= 0 || extOn;   // (an outside source: AirPlay)
 
     // .pb-track
@@ -1011,6 +1202,7 @@ void App::showSetting(const Job& j) {
     if (j.settingsCat < 0) { openFiles(fileWork.dest); return; }   // Files' work: the folder it ends in
     settingsCat = j.settingsCat;
     settingsQuery.clear();
+    settingsPhoneOpen_ = settingsPhoneDirect_ = true;   // upright: its page, and back returns from where it came
     navigate(View::Settings);
     settingsJump = j.row ? j.row : "";
     settingsJumpAt = time;
@@ -1090,7 +1282,7 @@ void App::drawCoverNotice() {
     ui.region(Region::Modal);
     g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, 0.45f * a);
     const Font tf{ css::Lg, Weight::Bold }, sf{ css::Base };
-    const float w = 520, pad = 24, x = (css::W - w) / 2;
+    const float w = cardW(520), pad = 24, x = (css::W - w) / 2;
     char sub[240];
     if (app)
         snprintf(sub, sizeof sub, "%d of %d tracks have no small cover yet, so lists make each one as you scroll to it. Made now, "
@@ -1142,7 +1334,7 @@ void App::drawSleepPrompt() {
     ui.region(Region::Modal);
     g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, 0.45f * a);
     const Font tf{ css::Lg, Weight::Bold }, sf{ css::Base };
-    const float w = 520, pad = 24, x = (css::W - w) / 2;
+    const float w = cardW(520), pad = 24, x = (css::W - w) / 2;
     const std::vector<std::string> lines =
         g.wrap("The sleep timer has paused the music. " GF_CAP_THE_CONSOLE " goes to sleep by itself unless you stay awake.", sf, int(w - pad * 2 - 52), 3);
     const float h = pad + 26 + 8 + lines.size() * 21.f + 20 + 34 + pad;
@@ -1184,12 +1376,18 @@ void App::drawToast() {
     if (toastT <= 0) return;
     const float a = std::min(1.f, toastT / 0.25f) * std::min(1.f, (3.2f - toastT) / 0.2f + 0.01f);
     const Font f{ css::Sm, Weight::SemiBold };
-    const float w = g.measure(toastText, f) + 36, h = 40;
-    const float x = (css::W - w) / 2, y = css::H - css::BarH - 20 - h + (1 - a) * 8;
+    const float w = std::min(float(g.measure(toastText, f) + 36), css::W - 24.f), h = 40;   // (never wider than the screen)
+    float bottom = css::H - css::BarH - 20;
+#ifdef GF_ANDROID
+    // upright: over the bar of five and, off Now playing, the mini player (it sat on the mini player's title)
+    // (Now playing: in the gap above its seek bar, clear of the cover, the transport and the badges)
+    if (phonePortrait()) bottom = route.view == View::Now && phoneToastBottom_ > 0 ? phoneToastBottom_ : css::H - 68 - (64 + 16 + 12);
+#endif
+    const float x = (css::W - w) / 2, y = bottom - h + (1 - a) * 8;
     g.roundRect(x, y + 6, w, h, 12, { 0, 0, 0 }, 0.25f * a);
     g.roundRect(x, y, w, h, 12, pal.surface2, a);
     g.roundStroke(x, y, w, h, 12, 1, pal.text, 0.09f * a);
-    g.textC(toastText, f, x + 18, y + h / 2, pal.text, a);
+    g.textC(toastText, f, x + 18, y + h / 2, pal.text, a, Align::Left, int(w - 36));
 }
 
 void App::drawFocusRing() {

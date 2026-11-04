@@ -65,7 +65,10 @@ void App::drawTrackList(float x, float y, float w, float h) {
     }
 
     ScrollArea& sa = area(v == View::Search ? "search" : "list", int(v) * 1000 + route.ref);
-    const float headH = 18 + 120 + 14;
+    // narrow (a phone upright): a smaller cover, the actions on a line of their own under it, round, and no view buttons
+    const bool narrow = w < kNarrowList;
+    const float cs = narrow ? 96.f : 120.f;
+    const float headH = narrow ? 18 + cs + 14 + 34 + 16 : 18 + 120 + 14;
     sa.view = { x, y, w, h };
     ui.pushArea(&sa);
     const float oy = y - sa.y;
@@ -82,18 +85,18 @@ void App::drawTrackList(float x, float y, float w, float h) {
     // .pl-head: cover, kicker, title, sub, actions
     const float cx = x + 28, cyTop = oy + 18;
     if (!tracks.empty()) {
-        coverQuad(tracks, cx, cyTop, 120, 12);   // .pl-cover.quad (no halo, as on the other pages)
+        coverQuad(tracks, cx, cyTop, cs, 12);   // .pl-cover.quad (no halo, as on the other pages)
     } else {
-        g.roundRect(cx, cyTop, 120, 120, 12, pal.surface2);
-        g.icon(placeholder, cx + 60, cyTop + 60, 40, pal.text3, 0.7f);
+        g.roundRect(cx, cyTop, cs, cs, 12, pal.surface2);
+        g.icon(placeholder, cx + cs / 2, cyTop + cs / 2, 40, pal.text3, 0.7f);
     }
-    const float tx = cx + 120 + 22, tw = w - (tx - x) - 28;
+    const float tx = cx + cs + (narrow ? 16 : 22), tw = w - (tx - x) - 28;
     if (kick == "Automix playlist") automixKicker(kick, tx, cyTop + 8);   // with a little magic (widgets.cpp)
     else kicker(kick, tx, cyTop + 8, pal.text3);
     g.text(title, { css::Xxl, Weight::Bold }, tx, cyTop + 16, pal.text, 1, Align::Left, int(tw));
     g.text(sub, { css::Sm }, tx, cyTop + 58, pal.text3, 1, Align::Left, int(tw));
-    float bx = tx;
-    const float by = cyTop + 120 - 34;
+    float bx = narrow ? cx : tx;
+    const float by = narrow ? cyTop + cs + 14 : cyTop + 120 - 34;
     bool clicked = false;
     // The page's playlist, as it was when the frame began: Export and Open folder go to another page part way through
     // (route.ref is then the picker's −1 or a folder's index), and the buttons after them read the playlist again
@@ -116,7 +119,7 @@ void App::drawTrackList(float x, float y, float w, float h) {
         if (v == View::List && bgShown()) need += bw("Games");
         if (v != View::Search) need += bw("Export");
         if (ownPage) need += 34 + 8;
-        compact = tx + need > x + w - 28 - (6 + 38 * 4) - 16;
+        compact = narrow || tx + need > x + w - 28 - (6 + 38 * 4) - 16;
     }
     // A secondary action: labelled, or (compact) round with its icon only
     auto action = [&](const char* key, const char* icon, const char* label, bool toggled = false, bool danger = false) {
@@ -214,7 +217,7 @@ void App::drawTrackList(float x, float y, float w, float h) {
     }
 
     // the four views, right of the actions (.pl-modes)
-    {
+    if (!narrow) {
         int m = int(mode);
         viewSwitch("pl.view", x + w - 28, by + 17, m, mixable ? 1u << int(ListMode::Grid) : 0u);
         if (m != int(mode)) store.viewPlaylist = m;
@@ -296,6 +299,38 @@ void App::welcomeCard(const std::string& found) {
     sheet.askAlt2Yes = [] {};   // the picker is already under the card (the tour is offered once a folder is chosen: tourAsk)
 }
 
+#ifdef GF_ANDROID
+/** Android lets Songate see the music only once allowed, on a page of its own (Android 10: a dialog): the card that asks, as a
+ *  first start's first step or when access was taken away. Not now leaves the music folder page, its Allow access there. */
+void App::accessCard() {
+    const bool first = store.musicRoot.empty();
+    confirm(ICON_FOLDER, first ? "Welcome to Songate" : "Your music", "Let Songate see your music",
+            first ? "Android asks once" : "Android no longer lets Songate see " + store.musicRoot,
+            "Allow Songate to read your files?",
+            "Android shows a page of its own: turn on Songate there, then come back. Songate reads your music with its lyrics and covers, "
+            "and changes a file only when you edit its tags or delete it.",
+            "Allow access", [] { plat::askStorage(); });
+    sheet.askSafe = true;
+    sheet.askYesIcon = ICON_FOLDER;
+    sheet.askNoCancel = true;
+    sheet.askAlt = "Not now";
+    sheet.askAltYes = [] {};
+}
+
+/** Access given (seen once a second, Songate back from Android's page): the music offered as on any first start, or read again. */
+void App::storageGiven() {
+    storageOk_ = true;
+    pickerGen++;   // the folder page lists the volumes again
+    if (sheet.page == Sheet::Confirm && sheet.askButton == "Allow access") closeSheet();
+    if (store.musicRoot.empty()) {
+        const std::string found = plat::musicFolder();
+        if (!found.empty()) welcomeCard(found);
+    } else {
+        rescan();
+    }
+}
+#endif
+
 void App::confirmRemoveFolderPlaylist(int ref, int count) {
     if (ref < 0 || ref >= int(store.playlists.size())) return;
     const FolderPlaylist& p = store.playlists[ref];
@@ -314,7 +349,14 @@ void App::drawAlbum(float x, float y, float w, float h) {
     const Album& al = lib.albums[a];
 
     ScrollArea& sa = area("album", a);
-    const float heroH = 26 + 220 + 22;
+    // narrow (a phone upright): the cover on top, the title, its line and the actions under it (Play and Shuffle named, the rest
+    // round with their icons)
+    const bool narrow = w < kNarrowList;
+    const float ncs = std::min(w - 60, 240.f);
+    const Font h1{ narrow ? css::Xxl : 46, narrow ? Weight::Bold : Weight::ExtraBold };
+    const float lineH = narrow ? 38.f : 48.f;
+    const std::vector<std::string> lines = g.wrap(al.title, h1, int(narrow ? w - 60 : w - (x + 30 + 220 + 28 - x) - 30), 2);
+    const float heroH = narrow ? 22 + ncs + 18 + 24 + lines.size() * lineH + 8 + 22 + 16 + 34 + 18 : 26 + 220 + 22;
     sa.view = { x, y, w, h };
     sa.content = heroH + 30 + 8 + al.tracks.size() * RowH + 24;
     ui.pushArea(&sa);
@@ -322,17 +364,15 @@ void App::drawAlbum(float x, float y, float w, float h) {
 
     // .album-hero::before (the album's accent, fading down) and the cover's halo are left out: on the console the
     // tint covered only the content area and clashed with the sidebar and player bar. The app's background stays.
-    const float cx = x + 30, cyTop = oy + 26;
-    coverBox(al.tracks[0], cx, cyTop, 220, 12);
+    const float cx = narrow ? x + (w - ncs) / 2 : x + 30, cyTop = oy + (narrow ? 22 : 26);
+    coverBox(al.tracks[0], cx, cyTop, narrow ? ncs : 220, 12);
 
-    // h1 + .album-meta + .album-actions, bottom-aligned with the cover
-    const float tx = cx + 220 + 28, tw = w - (tx - x) - 30;
-    const Font h1{ 46, Weight::ExtraBold };
-    const std::vector<std::string> lines = g.wrap(al.title, h1, int(tw), 2);
-    float ty = cyTop + 220 - 34 - 16 - 22 - 8 - lines.size() * 48 - 6 - 18;
+    // h1 + .album-meta + .album-actions, bottom-aligned with the cover (narrow: under it)
+    const float tx = narrow ? x + 30 : cx + 220 + 28, tw = w - (tx - x) - 30;
+    float ty = narrow ? cyTop + ncs + 18 : cyTop + 220 - 34 - 16 - 22 - 8 - lines.size() * 48 - 6 - 18;
     kicker("Album", tx, ty + 8, pal.text3);
     ty += 18 + 6;
-    for (const auto& l : lines) { g.text(l, h1, tx - 2, ty - 4, pal.text, 1, Align::Left, int(tw)); ty += 48; }
+    for (const auto& l : lines) { g.text(l, h1, tx - 2, ty - 4, pal.text, 1, Align::Left, int(tw)); ty += lineH; }
     ty += 8;
     float mx = tx;
     if (!al.artist.empty()) mx += g.text(al.artist, { css::Base, Weight::SemiBold }, mx, ty, pal.text);
@@ -347,17 +387,24 @@ void App::drawAlbum(float x, float y, float w, float h) {
     if (clicked) playTracks(al.tracks, 0, name);
     bx += button(uid("al.shuffle"), ICON_SHUFFLE, "Shuffle", bx, ty, false, &clicked) + 8;
     if (clicked) playTracks(al.tracks, 0, name, true);
-    bx += button(uid("al.artist"), ICON_MIC, "Artist", bx, ty, false, &clicked) + 8;
-    if (clicked) openArtist(al.artist);
-    bx += button(uid("al.folder"), ICON_FOLDER, "Folder", bx, ty, false, &clicked) + 8;
-    if (clicked) navigate(View::Folders, lib.folderByPath(lib.tracks[al.tracks[0]].folder));
+    // the rest: named, or (narrow) round with the icon only, their names as hints
+    auto more = [&](const char* key, const char* icon, const std::string& label) {
+        if (!narrow) { bool c = false; bx += button(uid(key), icon, label, bx, ty, false, &c) + 8; return c; }
+        const Id id = uid(key);
+        hint(id, label);
+        const bool c = ui.item(id, { bx, ty, 34, 34 }, 17);
+        g.roundRect(bx, ty, 34, 34, 17, pal.text, ui.pressed(id) || (ui.focused(id) && ui.showFocusRing()) ? 0.11f : 0.065f);
+        g.roundStroke(bx, ty, 34, 34, 17, 1, pal.text, 0.15f);
+        g.icon(icon, bx + 17, ty + 17, 16, pal.text);
+        bx += 34 + 8;
+        return c;
+    };
+    if (more("al.artist", ICON_MIC, "Artist")) openArtist(al.artist);
+    if (more("al.folder", ICON_FOLDER, "Folder")) navigate(View::Folders, lib.folderByPath(lib.tracks[al.tracks[0]].folder));
     {
         const std::string& gs = lib.tracks[al.tracks[0]].genre;
         const std::string g1 = gs.substr(0, gs.find(';'));
-        if (!g1.empty()) {
-            bx += button(uid("al.genre"), ICON_TAG, g1, bx, ty, false, &clicked) + 8;
-            if (clicked) openGenre(g1);
-        }
+        if (!g1.empty() && more("al.genre", ICON_TAG, g1)) openGenre(g1);
     }
 
     const float ly = oy + heroH;
@@ -414,9 +461,20 @@ void App::drawFolders(float x, float y, float w, float h) {
     if (clicked && !all.empty()) playTracks(all, 0, name);
     bx += button(uid("fo.shuffle"), ICON_SHUFFLE, "Shuffle", bx, cy, false, &clicked) + 8;
     if (clicked && !all.empty()) playTracks(all, 0, name, true);
+    const bool narrow = w < kNarrowList;
+    // narrow (a phone upright): named buttons as everywhere else, a line further down where they do not fit (two round "+"
+    // looked the same and said nothing: the user's test, 2026-11-04)
+    auto more = [&](const char* key, const char* icon, const std::string& label, float& at, bool on = false) {
+        if (narrow) {
+            const float bw = 16 + 24 + g.measure(label, { css::Sm, Weight::SemiBold }) + 16;
+            if (bx + bw > x + w - 28) { bx = x + 28; at += 42; }
+        }
+        bool c = false;
+        bx += button(uid(key), icon, label, bx, at, false, &c, on) + 8;
+        return c;
+    };
     const int pl = store.playlistByPath(node.path);
-    bx += button(uid("fo.addpl"), pl >= 0 ? ICON_LIST : ICON_PLUS, pl >= 0 ? "In playlists" : "Add as playlist", bx, cy, false, &clicked, pl >= 0) + 8;
-    if (clicked) {
+    if (more("fo.addpl", pl >= 0 ? ICON_LIST : ICON_PLUS, pl >= 0 ? "In playlists" : "Add as playlist", cy, pl >= 0)) {
         if (pl >= 0) {
             confirmRemoveFolderPlaylist(pl, total);   // asks first, as on the playlist's own page
         } else {
@@ -427,15 +485,9 @@ void App::drawFolders(float x, float y, float w, float h) {
             store.save();
         }
     }
-    if (!node.children.empty()) {
-        bx += button(uid("fo.addall"), ICON_PLUS, "Add all as playlists", bx, cy, false, &clicked) + 8;
-        if (clicked) addSubfoldersAsPlaylists(f);
-    }
-    if (!isRoot) {
-        bx += button(uid("fo.up"), ICON_BACK, "Up", bx, cy, false, &clicked) + 8;
-        if (clicked) { navigate(View::Folders, node.parent, {}, false); ui.focus(uid("fo.dir", f)); }
-    }
-    {
+    if (!node.children.empty() && more("fo.addall", ICON_PLUS, narrow ? "Add all" : "Add all as playlists", cy)) addSubfoldersAsPlaylists(f);
+    if (!isRoot && more("fo.up", ICON_BACK, "Up", cy)) { navigate(View::Folders, node.parent, {}, false); ui.focus(uid("fo.dir", f)); }
+    if (!narrow) {
         int m = shownMode;
         viewSwitch("fo.view", x + w - 28, cy + 17, m, ownTracks ? 0u : 1u);
         if (m != shownMode) store.viewFolders = m;   // a folder without tracks leaves a chosen "by album" as it is
@@ -565,6 +617,9 @@ void App::drawPicker(float x, float y, float w, float h) {
     if (listedPath != path || listedFiles != files || listedGen != pickerGen) {
         listedGen = pickerGen;
         dirs = listDirs(path);
+#ifdef GF_ANDROID
+        if (!storageOk_) dirs.clear();   // the volumes are known, nothing in them can be seen yet: nothing to choose
+#endif
         lists = files ? listPlaylistFiles(path) : std::vector<std::string>();
         listedPath = path;
         listedFiles = files;
@@ -583,13 +638,17 @@ void App::drawPicker(float x, float y, float w, float h) {
     const bool choosing = !files && folderFor >= 0;   // Settings → Storage and reset: a browser's start folder
     kicker(exporting ? "Export “" + exportName + "” to" : files ? "Import a playlist file" : choosing ? folderPickName() : "Music folder", x + 28, cy, pal.text3);
     cy += 10;
-    g.text(isRoot ? GF_CARD_NAME : baseName(path), { css::Xxl, Weight::Bold }, x + 28, cy, pal.text, 1, Align::Left, int(w - 56));
+    g.text(isRoot ? GF_CARD_NAME : shownName(path), { css::Xxl, Weight::Bold }, x + 28, cy, pal.text, 1, Align::Left, int(w - 56));
     cy += 38;
     std::string sub = (path == "/" ? std::string(GF_CARD_NAME) : path) + "  ·  " + std::to_string(dirs.size()) + (dirs.size() == 1 ? " folder" : " folders");
     if (files) sub += lists.empty() ? std::string("  ·  no playlist files")
                                     : "  ·  " + std::to_string(lists.size()) + (lists.size() == 1 ? " playlist file" : " playlist files");
     else if (choosing) sub += folderPickField().empty() ? std::string("  ·  now its own default") : "  ·  now " + folderPickField();
     else if (!store.musicRoot.empty()) sub += "  ·  now reading " + store.musicRoot;
+#ifdef GF_ANDROID
+    const bool noAccess = !storageOk_ && !files && !choosing;   // Android has not let Songate see the files yet (accessCard)
+    if (noAccess) sub = "Songate cannot see your files yet: Android asks you to allow it once, on a page of its own";
+#endif
     g.text(sub, { css::Sm }, x + 28, cy + 4, pal.text3, 1, Align::Left, int(w - 56));
     cy += 22 + 16;
 
@@ -613,7 +672,14 @@ void App::drawPicker(float x, float y, float w, float h) {
             toast(what + ": " + (isRoot ? std::string(plat::rootName()) : path));
             return;
         }
-    } else if (!files) {
+    }
+#ifdef GF_ANDROID
+    else if (noAccess) {
+        bx += button(uid("pk.access"), ICON_FOLDER, "Allow access", bx, cy, true, &clicked, false, false, DefaultFocus) + 8;
+        if (clicked) plat::askStorage();
+    }
+#endif
+    else if (!files) {
         bx += button(uid("pk.use"), ICON_FOLDER, "Use this folder", bx, cy, true, &clicked, false, false, isRoot ? 0 : DefaultFocus) + 8;
         if (clicked) { ui.popArea(); useMusicFolder(path); return; }
     }
@@ -689,7 +755,7 @@ void App::drawPicker(float x, float y, float w, float h) {
             const bool current = !files && strcasecmp(child.c_str(), (choosing ? folderPickField() : store.musicRoot).c_str()) == 0;
             g.roundRect(rx + 16, mid - 18, 36, 36, 8, current ? pal.accent : pal.surface2, current ? 0.25f : 1.f);
             g.icon(ICON_FOLDER, rx + 34, mid, 18, current ? pal.accentInk : pal.text2);
-            g.textC(name, { css::Base, Weight::SemiBold }, rx + 16 + 36 + 14, mid, current ? pal.accentInk : pal.text, 1, Align::Left, int(rw - 160));
+            g.textC(isRoot ? shownName(join(path, name)) : name, { css::Base, Weight::SemiBold }, rx + 16 + 36 + 14, mid, current ? pal.accentInk : pal.text, 1, Align::Left, int(rw - 160));
             if (current) g.textC(choosing ? "chosen now" : "current music folder", { css::Sm }, rx + rw - 44, mid, pal.text3, 1, Align::Right);
         }
         if (pickable) g.icon(ICON_CHEV, rx + rw - 24, mid, 18, pal.text3);

@@ -3,6 +3,7 @@
  */
 #include "library.hpp"
 #include "metadata.hpp"
+#include "platform.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -91,6 +92,18 @@ bool pathLess(const std::string& a, const std::string& b) { return strcasecmp(a.
 
 }  // namespace
 
+std::string shownName(const std::string& path) {
+#ifdef GF_ANDROID
+    const std::string v = plat::volumeLabel(path);
+    if (!v.empty()) return v;
+#endif
+    // a drive on the PC is "C:/": its last part is empty, so its name is what comes before the slash
+    std::string p = path;
+    while (p.size() > 1 && p.back() == '/') p.pop_back();
+    const std::string b = baseName(p);
+    return b.empty() ? p : b;
+}
+
 std::string baseName(const std::string& path) {
     const size_t s = path.find_last_of('/');
     return s == std::string::npos ? path : path.substr(s + 1);
@@ -168,6 +181,9 @@ void Library::build(const std::vector<std::string>& rootList, const std::vector<
 }
 
 std::vector<std::string> listDirs(const std::string& path) {
+#ifdef GF_ANDROID
+    if (plat::isRoot(path)) return plat::rootFolders();
+#endif
     std::vector<std::string> out;
     DIR* d = opendir(path.c_str());
     if (!d) return out;

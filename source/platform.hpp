@@ -67,7 +67,7 @@ std::string capName(const std::string& button);
 bool padWasLast();
 /** The window as the system sees it: the tray's icon, the taskbar's buttons, the media overlay. */
 void windowReady(SDL_Window* window);
-enum class Cmd { None, PlayPause, Play, Pause, Next, Previous, Show, Quit };
+enum class Cmd { None, PlayPause, Play, Pause, Next, Previous, Show, Quit, Like, CycleOrder, Seek };
 /** What the system's controls asked for, oldest first; once a frame until None. */
 Cmd nextCommand();
 void trayIcon(bool on);
@@ -77,6 +77,15 @@ void titleColours(uint32_t background, uint32_t text);
 void mediaInfo(const std::string& title, const std::string& artist, const std::string& album, const uint8_t* rgba, int w, int h,
                const std::vector<uint8_t>& jpeg);
 void mediaState(bool hasTrack, bool playing);
+/** Settings › Playback: swiped away while music plays, it keeps playing (on) or ends with it (off). */
+void keepOnSwipe(bool on);
+#ifdef GF_ANDROID
+/** Where the song is and what the controls' two buttons of Songate's own show (Like, the order: Order's 0..3), for Android's music
+ *  controls; sent when something changed or the position jumped. */
+void mediaProgress(double position, double duration, bool liked, int order);
+/** Cmd::Seek's place, in seconds. */
+double commandSeek();
+#endif
 /** A file name, or a path ending in one, is a release's installer. */
 bool isInstaller(const std::string& name);
 /** Opens a web address in the default browser. */
@@ -150,6 +159,20 @@ size_t rootLen(const std::string& path);
 std::string fromRoot(const std::string& path);
 /** Folders the system needs (Files asks more firmly before touching them). */
 const std::vector<const char*>& systemFolders();
+#ifdef GF_ANDROID
+/** What is at root(): Android does not let an app list /storage, so its volumes (the phone's own, each card), as join() takes them. */
+std::vector<std::string> rootFolders();
+/** A volume's name for people ("SD card"), when path is one of the volumes; empty for any other folder. */
+std::string volumeLabel(const std::string& path);
+/** Songate may read the shared volumes: All files access (Android 11 and later), the storage permission (Android 10). */
+bool storageAllowed();
+/** Android's own page (or dialog) for it; the answer is seen with storageAllowed when Songate is back in front. */
+void askStorage();
+/** The screen's edges in window pixels: each camera cutout as a box (a hole in a corner or the middle, a notch, two of them) and
+ *  the rounded corners' radius. The number changes whenever Android says they did (a turn, a fold). */
+struct EdgeBox { float x, y, w, h; };
+unsigned screenEdges(std::vector<EdgeBox>& boxes, float& cornerRadius);
+#endif
 /** Files and bytes below a folder, the system's own fast way. False: use stat(). */
 bool measureFiles(const std::string& path, int& files, uint64_t& bytes, int cap);
 /** … the same for Storage, only names keep accepts at its top. */

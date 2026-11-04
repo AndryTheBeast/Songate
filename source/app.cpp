@@ -78,7 +78,12 @@ bool App::init() {
                 if (SDL_GetDisplayBounds(d, &b) == 0 && SDL_IntersectRect(&at, &b, &o)) kept = true;
             }
         }
+#ifdef GF_ANDROID
+        const Uint32 flags = SDL_WINDOW_FULLSCREEN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;   // the whole screen, turning with the phone
+        kept = false;
+#else
         const Uint32 flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_BORDERLESS | SDL_WINDOW_ALLOW_HIGHDPI | (store.winMax ? SDL_WINDOW_MAXIMIZED : 0);
+#endif
         window_ = kept ? SDL_CreateWindow("Songate", store.winX, store.winY, store.winW, store.winH, flags)
                        : SDL_CreateWindow("Songate", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, int(1280 * k), int(720 * k), flags);
         if (window_) SDL_SetWindowMinimumSize(window_, 640, 360);
@@ -103,7 +108,11 @@ bool App::init() {
     fitWindow();
     textCardOwner();
     plat::windowReady(window_);
+#ifndef GF_ANDROID
+    // (not on Android: there SDL announces a resize, a turn, from Android's own thread, and this would draw from it with no GL
+    // context; the frame's own event loop lays it out, input())
     SDL_AddEventWatch(&App::resizeWatch, this);
+#endif
     SDL_SetWindowHitTest(window_, &App::hitTest, this);
 #endif
     // Text in a scroll area follows its scroll sub-pixel, so a glide does not end in one-pixel steps.
@@ -192,7 +201,10 @@ bool App::init() {
     // First start: always ask (the user, 2026-10-27). The folder picker at the card's top, and over it, when the card has
     // a Music folder at its top, a welcome card offering it; Choose another, B or × leave the picker to choose with.
     std::string found;
-#ifdef GF_WINDOWED
+#ifdef GF_ANDROID
+    storageOk_ = plat::storageAllowed();   // a Music folder is seen without access, but nothing in it: offered once it is given
+    if (store.musicRoot.empty() && storageOk_) found = plat::musicFolder();
+#elif defined(GF_WINDOWED)
     if (store.musicRoot.empty()) found = plat::musicFolder();
 #else
     if (store.musicRoot.empty())
@@ -208,8 +220,36 @@ bool App::init() {
     }
     else if (player.remote() && bgAdoptQueue()) {}   // the background player's queue, playing or not, wins
     else if (store.resume) restoreSession();
+#ifdef GF_ANDROID
+    // Android's access to the music (storageOk_, above): asked for first, by a card (the user, 2026-11-03: "Card first"), on a first
+    // start or when it was taken away since
+    if (!storageOk_) accessCard();
+#ifdef GF_DEV
+    if (FILE* f = fopen(store.path("options.txt").c_str(), "r")) {   // dev views (app.hpp optShowTouch_)
+        char word[32];
+        while (fscanf(f, "%31s", word) == 1) {
+            const std::string w = word;
+            if (w == "touch") optShowTouch_ = 1;
+        }
+        fclose(f);
+    }
+    if (FILE* f = fopen(store.path("portrait-mock.txt").c_str(), "r")) {   // portrait mock-ups (view_portrait.cpp)
+        if (fscanf(f, "%d", &portraitMock_) != 1) portraitMock_ = -1;
+        // then, if given, a word of a song's file name to play (one with lyrics, for the lyrics page)
+        char want[128] = {};
+        if (fscanf(f, " %127[^\n]", want) == 1)
+            for (int t = 0; t < int(lib.tracks.size()); t++)
+                if (lib.tracks[t].path.find(want) != std::string::npos) { playTracks({ t }, 0, "Mock", false); break; }
+        fclose(f);
+        if (portraitMock_ >= 0 && now.track >= 0 && !isPlaying()) togglePlay();   // the music on, for what moves with it
+    }
+#endif
+#endif
     startMark("queue");
     ui.focusDefault();
+#ifdef GF_ANDROID
+    ui.setPadMode(false);   // a touch screen: no focus ring (nor its hint) until a pad or a keyboard is used
+#endif
     ready_ = true;
     return true;
 }
@@ -475,6 +515,9 @@ void App::onLeave(bool exiting, void* self) {
     app->persistNow();
     app->saveLog();   // closed from the HOME menu, Songate never reaches its own end: the log is saved as it leaves (session 11's
                       // AirPlay tests lost all but their first 50 s)
+#ifdef GF_ANDROID
+    app->meta.saveTags();   // Android ends a backgrounded app without its own end: every tag would be read again at the next start
+#endif
     if (exiting) Store::flush();
 }
 
@@ -570,8 +613,21 @@ void App::fitWindow() {
     const int on = SDL_GetWindowDisplayIndex(window_);
     if (on >= 0) SDL_GetDisplayBounds(on, &screen);
     constexpr float kMinW = 1000, kMinH = 600;
+#ifdef GF_ANDROID
+    // Settings › Appearance › Layout › Size: a phone is held close, its screen small; the short side holds 720, 660 or 600 app
+    // pixels (600: the least the layout is made for, kMinH)
+    static const float kTall[3] = { 720, 660, 600 };
+    const float tall = kTall[std::clamp(store.uiSize, 0, 2)];
+    const float full = std::min(screen.w / (1280.f * tall / 720), screen.h / tall);
+#else
     const float full = std::min(screen.w / 1280.f, screen.h / 720.f);
-    const float s = std::max(0.25f, std::floor(std::min({ full, pw / kMinW, ph / kMinH }) * 20) / 20);
+#endif
+    float s = std::max(0.25f, std::floor(std::min({ full, pw / kMinW, ph / kMinH }) * 20) / 20);
+#ifdef GF_ANDROID
+    // portrait: a phone held upright, about 400 across as its own apps are (the user, 2026-11-04: "everything is so tiny... It's a
+    // phone"); always 440, Standard: Size is sideways' only (the user, 2026-11-04)
+    if (pw < ph) s = std::max(0.25f, std::floor(pw / 440.f * 20) / 20);
+#endif
     css::W = int(std::ceil(pw / s - 0.01f));
     css::H = int(std::ceil(ph / s - 0.01f));
     SDL_RenderSetScale(renderer_, s, s);
@@ -613,6 +669,9 @@ int App::resizeWatch(void* self, SDL_Event* e) {
 /** Between frames: going full screen resizes everything. The Canvas is always full screen; F11 and Alt+Enter, the whole app. */
 void App::applyFullscreen() {
     fullCanvas_ = canvas;
+#ifdef GF_ANDROID
+    return;   // always the whole screen
+#endif
     const bool want = fullApp_ || fullCanvas_;
     if (want == fullNow_) return;
     if (want) keepWindowPlace();
@@ -675,6 +734,12 @@ void App::keepWindowPlace() {
 
 void App::systemCommands() {
     if (closePending_) { closePending_ = false; closeWindow(); }
+#ifdef GF_ANDROID
+    {   // Settings › Playback › Keep playing when swiped away, to Android's side: at launch and whenever it changes
+        static int told = -1;
+        if (told != int(store.swipeKeep)) { told = int(store.swipeKeep); plat::keepOnSwipe(store.swipeKeep); }
+    }
+#endif
 #ifdef GF_DEV
     if (static const char* cmd = getenv("GF_ITEMS"); cmd) {   // tests: a toast shown, for the log
         static std::string seen;
@@ -689,6 +754,19 @@ void App::systemCommands() {
         case plat::Cmd::Previous: prev(); break;
         case plat::Cmd::Show: showWindow(); break;
         case plat::Cmd::Quit: running = false; break;
+        // Android's music controls: the player bar's heart and order button, and the seek bar
+        case plat::Cmd::Like:
+            if (now.track >= 0 && !extOn) {
+                const bool liked = store.isLiked(lib.tracks[now.track].path);
+                store.toggleLiked(lib.tracks[now.track].path);
+                store.save();
+                toast(liked ? "Removed from Liked" : "Added to Liked");
+            }
+            break;
+        case plat::Cmd::CycleOrder: if (!controlsOff()) cycleOrder(); break;
+#ifdef GF_ANDROID
+        case plat::Cmd::Seek: if (!controlsOff()) seekBy(plat::commandSeek() - player.position()); break;
+#endif
         default: break;
     }
     // The title bar follows the interface's colours as they fade from cover to cover, a few steps a second
@@ -708,10 +786,41 @@ void App::systemCommands() {
         mediaPlaying_ = playing;
         plat::mediaState(has, playing);
     }
+#ifdef GF_ANDROID
+    // The controls' seek bar, heart and order: told when one changed or the position jumped (Android runs the bar on by itself)
+    {
+        const double pos = has ? shownPosition() : 0, dur = has ? now.info.duration : 0;
+        const bool liked = has && !extOn && store.isLiked(lib.tracks[now.track].path);
+        const int order = int(shownOrder());
+        const double expected = mediaPos_ + (mediaPlaying_ ? time - mediaPosAt_ : 0);
+        if (liked != mediaLiked_ || order != mediaOrder_ || dur != mediaDur_ || std::fabs(pos - expected) > 1.5 || mediaPushed_ != mediaPlaying_) {
+            mediaLiked_ = liked;
+            mediaOrder_ = order;
+            mediaDur_ = dur;
+            mediaPushed_ = mediaPlaying_;
+            plat::mediaProgress(pos, dur, liked, order);
+        }
+        mediaPos_ = pos;
+        mediaPosAt_ = time;
+    }
+#endif
 }
 #endif
 
 void App::frame() {
+#ifdef GF_ANDROID
+    {   // a turn: SDL's resize event can come before the surface has its new size; the size itself, each frame, is what counts
+        int pw = 0, ph = 0;
+        SDL_GetRendererOutputSize(renderer_, &pw, &ph);
+        if (pw > 0 && ph > 0 && (pw != framePw_ || ph != framePh_)) {
+            if (framePw_ > 0 && (pw > ph) != (framePw_ > framePh_)) {   // upright ⇄ sideways: the new layout fades in
+                turnAt_ = time;
+                if (canvas && pw < ph) openCanvas(false);   // turned upright: the Canvas closes (it is sideways' only)
+            }
+            fitWindow();
+        }
+    }
+#endif
 #ifdef GF_WINDOWED
     if (!resizing_) {
         pumping_ = true;
@@ -746,7 +855,11 @@ void App::frame() {
         // Minimised or in the tray: the music goes on, nothing is drawn
         if (SDL_GetWindowFlags(window_) & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN)) {
             ui.endFrame();
+#ifdef GF_ANDROID
+            SDL_Delay(isPlaying() ? 16 : 100);   // out of sight and paused: the controls' presses ten times a second, the battery spared
+#else
             SDL_Delay(16);
+#endif
             return;
         }
         SDL_SetRenderTarget(renderer_, frameTex_[frameCur_]);
@@ -754,6 +867,18 @@ void App::frame() {
 #endif
         draw();
         drawOpening();
+#ifdef GF_ANDROID
+        // a turn: Android's own animation, then the new layout comes out of the background's colour, as Songate's pages change
+        // (0.35 s, eased); Motion off: at once (the user, 2026-11-04, after trying the cover's glide: "go back to the old animation")
+        if (store.motion && time - turnAt_ < 0.35) {
+            const float t = float(time - turnAt_) / 0.35f, a = 1 - t * t * (3 - 2 * t);
+            g.rect(0, 0, float(css::W), float(css::H), pal.bg, a);
+        }
+#endif
+#ifdef GF_DEV
+        if (optShowTouch_)   // (dev: every touch area outlined)
+            ui.eachItem([&](const SDL_FRect& r) { g.roundStroke(r.x, r.y, r.w, r.h, 4, 1.5f, { 1, 0.3f, 0.35f }, 0.9f); });
+#endif
         ui.endFrame();
 #if defined(GF_WINDOWED) && defined(GF_DEV)
         // Tests press controls by name: every few frames, what is on screen and where
@@ -764,7 +889,8 @@ void App::frame() {
                 snprintf(label, sizeof label, "scale %.3f size %d %d pos %.2f playing %d vol %.3f track %s", double(scale_), css::W, css::H, player.loaded() ? player.position() : -1.0,
                          int(isPlaying()), double(store.volume), now.track >= 0 ? lib.tracks[now.track].title.c_str() : "-");
                 ui.audit(label, out);
-                for (const auto& t : g.said) fprintf(out, "TEXT %.0f %.0f %.0f %.0f|%s\n", double(t.x), double(t.y), double(t.w), double(t.h), t.text.c_str());
+                for (const auto& t : g.said)   // TOP: over the page (a sheet, a card, a toast)
+                    fprintf(out, "%s %.0f %.0f %.0f %.0f %d|%s\n", t.layer ? "TOP" : "TEXT", double(t.x), double(t.y), double(t.w), double(t.h), int(t.cut), t.text.c_str());
                 fclose(out);
                 rename(tmp.c_str(), items);
             }
@@ -812,6 +938,7 @@ void App::frame() {
         if (firstFrame_) { firstFrame_ = false; launchAt("frame1"); }
 #if defined(GF_WINDOWED) && defined(GF_DEV)
         g.said.clear();
+        g.saidLayer = 0;
 #endif
 #if defined(GF_WINDOWED) && defined(GF_DEV)
         statFrames_++;
@@ -916,7 +1043,7 @@ void App::input() {
             continue;
         }
 #endif
-        if (e.type == SDL_FINGERDOWN) ui.touchDown(x, y);
+        if (e.type == SDL_FINGERDOWN) ui.touchDown(x, y, true);
         else if (e.type == SDL_FINGERMOTION) ui.touchMove(x, y);
         else if (e.type == SDL_FINGERUP) ui.touchUp(x, y);
     }
@@ -1064,7 +1191,7 @@ void App::input() {
     auto intoSettingsPane = [&] {
         if (route.view != View::Settings || modal) return false;
         const SDL_FRect f = ui.rectOf(ui.focusedId());
-        if (f.w <= 0 || f.x < sideW || f.x >= settingsPaneX || f.y < css::TbH || f.y + f.h > css::H - css::BarH) return false;
+        if (f.w <= 0 || f.x < sideW + edge_.side || f.x >= settingsPaneX || f.y < css::TbH || f.y + f.h > css::H - css::BarH) return false;
         const Id first = ui.firstIn(&area("settings.pane"));
         if (!first) return false;
         ui.focus(first);
@@ -1105,7 +1232,32 @@ void App::update() {
     updSlowMs_ = 0;
     updSlow_ = "";
 #endif
-    if (coverWaiting_) { coverWaiting_ = false; applyCover(coverWait_); coverWait_ = TrackLoader::Result{}; UPD_MARK("applyCover"); }
+#ifdef GF_ANDROID
+    // Waiting for Android's access to the music (accessCard, the music folder page): once a second, from Android's page and back
+    if (!storageOk_ && time >= storageCheckAt_) {
+        storageCheckAt_ = time + 1;
+        if (plat::storageAllowed()) storageGiven();
+    }
+    // Hidden, Android has taken the GPU's surface away: a new song's cover waits to be uploaded until Songate is seen again, and only
+    // the system's music controls get it now (from memory)
+    if (coverWaiting_ && hiddenNow() && coverWait_.gen == loadGen) {   // (an older song's is dropped below as ever: a newer one comes)
+        if (!coverToldHidden_) {
+            coverToldHidden_ = true;
+            plat::mediaInfo(now.info.title, now.info.artist, now.info.album,
+                            coverWait_.mediaCover ? static_cast<const uint8_t*>(coverWait_.mediaCover->pixels) : nullptr,
+                            coverWait_.mediaCover ? coverWait_.mediaCover->w : 0, coverWait_.mediaCover ? coverWait_.mediaCover->h : 0, coverWait_.mediaJpeg);
+        }
+    } else
+#endif
+    if (coverWaiting_) {
+        coverWaiting_ = false;
+#ifdef GF_ANDROID
+        coverToldHidden_ = false;
+#endif
+        applyCover(coverWait_);
+        coverWait_ = TrackLoader::Result{};
+        UPD_MARK("applyCover");
+    }
     else if (TrackLoader::Result r; loader.take(r)) { applyLoaded(r); UPD_MARK("applyLoaded"); }
     bgUpdate();
     updateTick();   // Settings → Updates: what the updater's worker finished
@@ -2842,10 +2994,25 @@ void App::applyLoaded(TrackLoader::Result& r) {
         now.lyricsFromFile = r.sidecar;
         parseLyrics(r.lyrics);
         // The new texts render this frame; the cover is uploaded the next one (update), not both at once.
+#ifdef GF_ANDROID
+        coverWait_.release();   // one held while hidden, not uploaded: a newer song's replaces it
+#endif
         coverWait_ = std::move(r);
         coverWaiting_ = true;
+#ifdef GF_ANDROID
+        coverToldHidden_ = false;   // a new song: the system's controls are told of it
+#endif
         return;
     }
+#ifdef GF_ANDROID
+    if (hiddenNow()) {   // no GPU while hidden: it waits with the others (update)
+        coverWait_.release();
+        coverWait_ = std::move(r);
+        coverWaiting_ = true;
+        coverToldHidden_ = false;
+        return;
+    }
+#endif
     applyCover(r);
 }
 
@@ -3066,6 +3233,9 @@ unsigned App::canvasLayoutsOff() const {
 }
 
 void App::openCanvas(bool on) {
+#ifdef GF_ANDROID
+    if (on && css::H > css::W) return;   // no Canvas upright (the user, 2026-11-04): its key, the tour's step, nothing opens it there
+#endif
     canvas = on;
     // Opening shows the right layout at once; only changes while it is open are animated.
     cvTo = canvasLayoutShown();
@@ -3080,6 +3250,17 @@ void App::openCanvas(bool on) {
 
 void App::back() {
     if (canvas) { openCanvas(false); return; }
+#ifdef GF_ANDROID
+    // a phone upright: back closes its Up next, then its lyrics page, before it leaves the page (view_phone.cpp)
+    if (phonePortrait() && phoneQueue_) { phoneQueue_ = false; return; }
+    if (phonePortrait() && phoneLyrics_ && route.view == View::Now) { phoneLyrics_ = false; return; }
+    if (phonePortrait() && route.view == View::Settings && (settingsPhoneOpen_ || !settingsQuery.empty()) && !settingsPhoneDirect_) {   // a page: to the list
+        settingsPhoneOpen_ = false;
+        settingsQuery.clear();
+        return;
+    }
+    if (settingsPhoneDirect_) settingsPhoneOpen_ = settingsPhoneDirect_ = false;   // opened from elsewhere: back there
+#endif
     // The playlist browsers (import, export): B goes to the folder above; at the SD card's root it leaves them.
     if (route.view == View::PickPlaylist || route.view == View::PickExport) {
         const std::string& p = route.query;
@@ -3259,5 +3440,10 @@ int main(int argc, char** argv) {
 #endif
     if (app.init()) app.run();
     app.shutdown();
+#ifdef GF_ANDROID
+    // Android keeps the process after main returns and SDL would run main in it again, every static as this run left it: the next
+    // start gets a process of its own (shutdown has ended every thread and written everything)
+    exit(0);
+#endif
     return 0;
 }

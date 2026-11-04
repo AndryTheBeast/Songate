@@ -127,7 +127,7 @@ public:
     Id firstIn(const ScrollArea* a) const;
     /** The item under a point (the stick's pointer), 0 when none. */
     Id itemAt(float x, float y) const;
-    void touchDown(float x, float y);
+    void touchDown(float x, float y, bool finger = false);   // finger: a touch screen (a slider waits for its way), not a mouse
     void touchMove(float x, float y);
     void touchUp(float x, float y);
     void scrollFocusedArea(float dy);
@@ -135,6 +135,8 @@ public:
      *  takes input (an open sheet's, not the page's behind it). False when there is none. */
     bool scrollAreaAt(float x, float y, float dy);
     void setPadMode(bool on) { padMode_ = on; }
+    /** (dev: the options' preview draws every touch area) */
+    template <class F> void eachItem(F f) const { for (const auto& it : prev_) f(it.r); }
 
 private:
     struct Item {
@@ -182,6 +184,10 @@ private:
     // touch
     bool touching_ = false, scrolling_ = false;
     float downX_ = 0, downY_ = 0, lastY_ = 0, dragX_ = -1, dragY_ = -1;
+    // A finger on a slider (a sideways one): its way decides, sideways drags it, up or down scrolls the page under it (it grabbed
+    // the finger at once, and a page of sliders could not be scrolled from them); a tap without a move sets it there (two frames)
+    Id sliderWait_ = 0;
+    int tapRelease_ = 0;
     ScrollArea* touchArea_ = nullptr;
     Id touchHold_ = 0;              // touchHeld(): this frame's long touch
     float pressT_ = 0;              // how long the finger has been still on press_

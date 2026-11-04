@@ -1,0 +1,60 @@
+// Songate for Android: the same source/ as the Switch and the PC, built by the repository's CMakeLists.txt (its ANDROID part)
+// against the libraries tools/android/build-deps.sh made. tools/android/build.sh runs this.
+plugins {
+    id 'com.android.application'
+}
+
+// The version, as the Makefile has it (APP_VERSION := 2.0.0 BETA 2)
+def appVersion = file('../../Makefile').readLines().find { it.startsWith('APP_VERSION') }.replaceAll(/^APP_VERSION[ \t:=]*/, '').trim()
+def dev = (project.findProperty('dev') ?: '1') != '0'
+def abis = (project.findProperty('abis') ?: 'x86_64,arm64-v8a').split(',')
+
+android {
+    namespace 'io.github.andrythebeast.songate'
+    compileSdk 35
+    ndkVersion '27.2.12479018'
+
+    defaultConfig {
+        applicationId 'io.github.andrythebeast.songate'
+        minSdk 29
+        targetSdk 35
+        versionCode 1
+        versionName appVersion
+        externalNativeBuild {
+            cmake {
+                arguments "-DGF_DEV=${dev ? 'ON' : 'OFF'}", '-DANDROID_STL=c++_shared'
+            }
+        }
+        ndk { abiFilters(*abis) }
+    }
+
+    buildTypes {
+        debug { jniDebuggable false; minifyEnabled false }   // the native code optimised even here: frames are measured
+        release { minifyEnabled false }
+    }
+
+    sourceSets {
+        main {
+            assets.srcDirs = ['../build/assets']   // build.sh copies romfs/ there (git-ignored)
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file('../../CMakeLists.txt')
+            version '3.31.6'
+            buildStagingDirectory file('.cxx')
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packaging {
+        jniLibs { useLegacyPackaging true }   // extracted on install: FFmpeg's libraries load as plain files
+    }
+
+    lint { checkReleaseBuilds false; abortOnError false }
+}

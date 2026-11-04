@@ -164,8 +164,14 @@ void TrackLoader::work(const Request& r, Result& out) {
     // The cover is drawn at most ~450 px (the Canvas); 512 keeps it sharp without aliasing while it floats and zooms.
 #ifdef GF_WINDOWED
     out.cover = Gfx::shrink(rgba, 1536);   // … three times that on a big window
+#ifdef GF_ANDROID
+    // Android's music player spreads it across its whole panel (the user, 2026-11-03: "way too low quality"): up to 1024 px, the
+    // pixels themselves (no JPEG), Android scaling it to what it shows
+    out.mediaCover = Gfx::shrink(rgba, 1024);
+#else
     out.mediaCover = Gfx::shrink(rgba, 256);
     if (out.mediaCover) out.mediaJpeg = mediaJpeg(out.mediaCover);
+#endif
 #else
     out.cover = Gfx::shrink(rgba, 512);
 #endif

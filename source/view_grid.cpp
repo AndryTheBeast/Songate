@@ -175,7 +175,12 @@ void App::drawArtist(float x, float y, float w, float h, bool genre) {
     const int lead = ar.albums.empty() ? ar.tracks[0] : lib.albums[ar.albums[0]].tracks[0];
 
     const GridLayout gl = gridFor(x, w);
-    const float heroH = 26 + 220 + 22;
+    // narrow (a phone upright): the picture on top, the name, its line and Play and Shuffle under it
+    const bool narrow = w < kNarrowList;
+    const float ncs = std::min(w - 60, 240.f);
+    // (narrow: the name on up to two lines, as an album's title)
+    const std::vector<std::string> nameLines = narrow ? g.wrap(ar.name, { css::Xxl, Weight::Bold }, int(w - 60), 2) : std::vector<std::string>{ ar.name };
+    const float heroH = narrow ? 22 + ncs + 18 + 24 + nameLines.size() * 38 + 8 + 22 + 16 + 34 + 12 : 26 + 220 + 22;
     // One tab at a time under a switch, as in Library: a genre has Albums, Artists and Tracks, an artist Albums and
     // Tracks. Tabs are numbered alike (0 Albums, 1 Artists, 2 Tracks); with no albums, Albums is greyed and Tracks shows.
     int& chosen = genre ? genreTab : artistTab;
@@ -196,16 +201,18 @@ void App::drawArtist(float x, float y, float w, float h, bool genre) {
 
     // Gatefold tints the hero with the cover's accent and haloes the cover; on the console the tint covered
     // only the content area and clashed with the sidebar and player bar, so the page keeps the app's background.
-    const float cx = x + 30, cyTop = oy + 26;
-    if (genre) coverQuad(ar.tracks, cx, cyTop, 220, 16);
-    else coverBox(lead, cx, cyTop, 220, 110);
+    const float cs = narrow ? ncs : 220.f;
+    const float cx = narrow ? x + (w - cs) / 2 : x + 30, cyTop = oy + (narrow ? 22 : 26);
+    if (genre) coverQuad(ar.tracks, cx, cyTop, cs, 16);
+    else coverBox(lead, cx, cyTop, cs, cs / 2);
 
-    const float tx = cx + 220 + 28, tw = w - (tx - x) - 30;
-    float ty = cyTop + 220 - 34 - 16 - 22 - 8 - 48 - 6 - 18;
+    const float tx = narrow ? x + 30 : cx + 220 + 28, tw = w - (tx - x) - 30;
+    float ty = narrow ? cyTop + cs + 18 : cyTop + 220 - 34 - 16 - 22 - 8 - 48 - 6 - 18;
     kicker(genre ? "Genre" : "Artist", tx, ty + 8, pal.text3);
     ty += 24;
-    g.text(ar.name, { 46, Weight::ExtraBold }, tx - 2, ty - 4, pal.text, 1, Align::Left, int(tw));
-    ty += 48 + 8;
+    if (narrow) for (const auto& l : nameLines) { g.text(l, { css::Xxl, Weight::Bold }, tx - 2, ty - 4, pal.text, 1, Align::Left, int(tw)); ty += 38; }
+    else { g.text(ar.name, { 46, Weight::ExtraBold }, tx - 2, ty - 4, pal.text, 1, Align::Left, int(tw)); ty += 48; }
+    ty += 8;
     std::string meta2 = fmtTotal(ar.tracks);
     if (!ar.albums.empty()) meta2 = std::to_string(ar.albums.size()) + (ar.albums.size() == 1 ? " album · " : " albums · ") + meta2;
     g.text(meta2, { css::Base }, tx, ty, pal.text2, 1, Align::Left, int(tw));
@@ -229,7 +236,7 @@ void App::drawArtist(float x, float y, float w, float h, bool genre) {
         g.textC(count, { css::Lg, Weight::Bold }, x + 30, sy, pal.text);
         // On Tracks the four list views (as in Library → Tracks) take the right edge and the switch sits left of them
         float rx = x + w - 30;
-        if (tab == 2) {
+        if (tab == 2 && !narrow) {
             int mode = store.viewGenre;
             rx -= viewSwitch(genre ? "gen.view" : "ar.view", rx, sy, mode) + 10;
             store.viewGenre = mode;

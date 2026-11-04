@@ -137,6 +137,7 @@ void App::coverQuad(const std::vector<int>& tracks, float x, float y, float size
 
 /** Column labels for the row modes (.list-head). */
 void App::listColumns(float x, float y, float w, ListMode mode, bool extended) {
+    if (w < kNarrowList) { g.rect(x, y + 29, w, 1, pal.text, 0.09f); return; }   // a narrow list (a phone upright): no columns to name
     const Font f{ css::Xs, Weight::SemiBold };
     const float pad = 30, gap = 14;
     float cx = x + pad;
@@ -182,6 +183,15 @@ bool App::coverRow(Id id, int track, int number, float x, float y, float w, floa
     const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
     if (playing) g.roundRect(x, y, w, h - 4, 10, pal.accent, 0.09f);
     if (hot) g.roundRect(x, y, w, h - 4, 10, pal.text, ui.pressed(id) ? 0.11f : 0.065f);
+    if (w < kNarrowList) {   // narrow (a phone upright): the cover, the title over artist · album, the length
+        const float cy = y + (h - 4) / 2, cov = h - 4 - 16, tx = x + 12 + cov + 12, tw = w - (tx - x) - 64;
+        coverBox(track, x + 12, cy - cov / 2, cov, 7);
+        if (playing) { g.roundRect(x + 12, cy - cov / 2, cov, cov, 7, { 0, 0, 0 }, 0.38f); eqGlyph(x + 12 + cov / 2 - 9, cy, { 1, 1, 1 }); }
+        g.text(t.title, { css::Base, playing ? Weight::SemiBold : Weight::Regular }, tx, cy - 20, playing ? pal.accentInk : pal.text, 1, Align::Left, int(tw));
+        g.text(t.artist + (t.album.empty() ? "" : " · " + t.album), { css::Sm }, tx, cy + 2, pal.text3, 1, Align::Left, int(tw));
+        g.textC(t.duration > 0 ? fmtTime(t.duration) : "", { css::Sm }, x + w - 16, cy, pal.text3, 1, Align::Right);
+        return hit;
+    }
     const float pad = 16, gap = 14, inner = w - pad * 2;
     const float fixed = 44 + 64 + gap * (extended ? 5 : 3) + (extended ? 64 : 0);
     const float fr = (inner - fixed) / (extended ? 4.f : 3.f);

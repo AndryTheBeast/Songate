@@ -271,7 +271,10 @@ void App::drawAutomixPicker() {
     if (ap.sel.size() != lib.tracks.size()) ap.sel.assign(lib.tracks.size(), 0);   // the library changed under it
     ui.region(Region::Modal);
     g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, 0.6f);
-    const float W = 1080, H = 676, X = (css::W - W) / 2, Y = (css::H - H) / 2, pad = 24, ix = X + pad, iw = W - pad * 2;
+    // the PC's and the console's 1080 by 676; on a smaller screen, the screen less a margin (a phone upright: narrow, see below)
+    const float W = std::min(1080.f, css::W - 24.f), H = std::min(676.f, css::H - 40.f), X = (css::W - W) / 2, Y = (css::H - H) / 2;
+    const bool narrow = W < 700;
+    const float pad = narrow ? 18 : 24, ix = X + pad, iw = W - pad * 2;
     g.roundRect(X, Y, W, H, 18, pal.surface);
     g.roundStroke(X, Y, W, H, 18, 1, pal.text, 0.08f);
 
@@ -279,8 +282,16 @@ void App::drawAutomixPicker() {
     g.roundRect(ix, Y + pad, 40, 40, 10, pal.accent, 0.14f);
     g.icon(ICON_SPARKLE, ix + 20, Y + pad + 20, 20, pal.accentInk);   // the Automix playlists' icon
     kicker("New Automix playlist", ix + 54, Y + pad + 7, pal.accentInk);
-    g.text("Pick the songs; Songate orders them for the best joins", { css::Lg, Weight::Bold }, ix + 54, Y + pad + 16, pal.text, 1, Align::Left,
-           int(iw - 54 - 260));
+    // narrow: the line under the tile, wrapped, and Done on the row of the count (it has no room by the close)
+    const std::vector<std::string> titleLines = narrow ? g.wrap("Pick the songs; Songate orders them for the best joins", { css::Lg, Weight::Bold }, int(iw), 2)
+                                                       : std::vector<std::string>{ "Pick the songs; Songate orders them for the best joins" };
+    if (narrow) {
+        for (size_t k = 0; k < titleLines.size(); k++)
+            g.text(titleLines[k], { css::Lg, Weight::Bold }, ix, Y + pad + 52 + k * 26, pal.text, 1, Align::Left, int(iw));
+    } else {
+        g.text(titleLines[0], { css::Lg, Weight::Bold }, ix + 54, Y + pad + 16, pal.text, 1, Align::Left, int(iw - 54 - 260));
+    }
+    const float headExtra = narrow ? 52 + titleLines.size() * 26 + 6 : 0;   // what the narrow header adds above the count's row
     hint(uid("ap.x"), "Close");
     if (iconButton(uid("ap.x"), ICON_X, X + W - pad - 17, Y + pad + 20)) { closeAutomixPicker(); return; }
     int count = 0;
@@ -289,7 +300,8 @@ void App::drawAutomixPicker() {
         const Font bf{ css::Sm, Weight::SemiBold };
         const float dw = 16 + 24 + g.measure("Done", bf) + 16;
         bool done = false;
-        button(uid("ap.done"), ICON_CHECK, "Done", X + W - pad - 34 - 12 - dw, Y + pad + 3, count > 0, &done);
+        if (narrow) button(uid("ap.done"), ICON_CHECK, "Done", X + W - pad - dw, Y + pad + headExtra, count > 0, &done);
+        else button(uid("ap.done"), ICON_CHECK, "Done", X + W - pad - 34 - 12 - dw, Y + pad + 3, count > 0, &done);
         if (done) {
             if (!count) { toast("Pick a few songs first"); return; }
             std::string name = "Automix";
@@ -310,14 +322,15 @@ void App::drawAutomixPicker() {
     }
 
     // ---- the tabs, and how many are ticked
-    const float ty = Y + pad + 62;
+    // (narrow: the count by Done, the tabs on a row of their own under it)
+    const float ty = narrow ? Y + pad + headExtra + 46 : Y + pad + 62;
     {
         int picked = -1;
-        segmented(uid("ap.tab"), ix + iw, ty + 18, { "Tracks", "Albums", "Artists", "Genres", "Folders" }, ap.tab, &picked);
+        segmented(uid("ap.tab"), ix + iw, ty + 18, { "Tracks", "Albums", "Artists", "Genres", "Folders" }, ap.tab, &picked, 0, narrow ? iw : 0, narrow ? 2 : 0);   // (narrow: the column's width, as the text)
         if (picked >= 0 && picked != ap.tab) ap.tab = picked;
         char b[64];
         snprintf(b, sizeof b, "%d song%s ticked", count, count == 1 ? "" : "s");
-        g.textC(b, { css::Md, Weight::SemiBold }, ix, ty + 18, count ? pal.accentInk : pal.text2, 1);
+        g.textC(b, { css::Md, Weight::SemiBold }, ix, narrow ? Y + pad + headExtra + 17 : ty + 18, count ? pal.accentInk : pal.text2, 1);
     }
 
     // ---- the rows: only those on screen are drawn (a library of thousands)
@@ -375,9 +388,9 @@ void App::drawAutomixPicker() {
             g.roundStroke(bx, by, 20, 20, 5, 1.5f, pal.text, 0.35f);
             if (on) g.roundRect(bx + 5, by + 9, 10, 2.5f, 1, pal.accent);
         }
-        g.text(r.title.empty() ? "Unknown" : r.title, { css::Base, Weight::SemiBold }, lx + 48, y + 6, pal.text, 1, Align::Left, int(lw - 48 - 140));
+        g.text(r.title.empty() ? "Unknown" : r.title, { css::Base, Weight::SemiBold }, lx + 48, y + 6, pal.text, 1, Align::Left, int(lw - 48 - (narrow ? 72 : 140)));
         const std::string sub = r.one >= 0 ? r.sub : (r.sub.empty() ? "" : r.sub + " · ") + std::to_string(all) + (all == 1 ? " track" : " tracks");
-        g.text(sub, { css::Sm }, lx + 48, y + 26, pal.text3, 1, Align::Left, int(lw - 48 - 140));
+        g.text(sub, { css::Sm }, lx + 48, y + 26, pal.text3, 1, Align::Left, int(lw - 48 - (narrow ? 72 : 140)));
         if (on && r.one < 0) {
             char b[32];
             snprintf(b, sizeof b, "%d of %d", on, all);

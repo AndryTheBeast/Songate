@@ -176,6 +176,7 @@ void App::updateTick() {
         toast("Installed " + updater.installed.version + ": restart to finish");
         settingsCat = SetUpdates;
         settingsQuery.clear();
+        settingsPhoneOpen_ = settingsPhoneDirect_ = true;   // upright: its page, and back returns from where it came
         if (route.view == View::Settings) area("settings.pane").target = 0;
     } else if (!updater.error.empty()) {
         toast("Not installed: " + updater.error);
@@ -443,6 +444,9 @@ void App::defaultSettings() {
     store = std::move(fresh);
     sideW = store.sidebarCollapsed ? css::SideWCollapsed : css::SideW;
     sideP_ = store.sidebarCollapsed ? 0.f : 1.f;
+#ifdef GF_ANDROID
+    fitPending_ = true;   // Size back to Medium: laid out again between frames
+#endif
     volumeShown = store.volume;
     player.setVolume(volumeShown);
     setEq(store.eq);   // Gatefold's player, and the background player's copy (sent within 0.1 s)

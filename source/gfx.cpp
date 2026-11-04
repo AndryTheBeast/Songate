@@ -16,6 +16,7 @@ namespace {
 
 constexpr float PI = 3.14159265358979f;
 float gFade = 1;   // Gfx::setFade: every colour's alpha goes through sdl()
+float gFadeBase = 1;   // Gfx::setFadeBase: what every setFade is multiplied by
 
 const char* const kInter[] = { "fonts/Inter-Regular.ttf", "fonts/Inter-SemiBold.ttf", "fonts/Inter-Bold.ttf", "fonts/Inter-ExtraBold.ttf" };
 
@@ -379,7 +380,8 @@ void Gfx::triangle(SDL_FPoint a, SDL_FPoint b, SDL_FPoint c, const Rgb& col, flo
     SDL_RenderGeometry(r_, nullptr, verts_.data(), int(verts_.size()), idx_.data(), int(idx_.size()));
 }
 
-void Gfx::setFade(float f) { gFade = std::clamp(f, 0.f, 1.f); }
+void Gfx::setFade(float f) { gFade = std::clamp(f * gFadeBase, 0.f, 1.f); }
+void Gfx::setFadeBase(float b) { gFadeBase = std::clamp(b, 0.f, 1.f); gFade = gFadeBase; }
 
 void Gfx::fill(const Rgb& c, float alpha) {
     if (ghost_) return;   // a ghost draws nothing
@@ -865,7 +867,17 @@ int Gfx::text(const std::string& raw, Font f, float x, float y, const Rgb& c, fl
     else if (a == Align::Right) dx -= ct->dw;
     SDL_FRect dst{ snap(dx - shiftX_) + shiftX_ + nudgeX_, snap(y - shiftY_) + shiftY_ + nudgeY_, ct->dw, ct->dh };
 #if defined(GF_WINDOWED) && defined(GF_DEV)
-    if (alpha > 0.05f && gFade > 0.05f) said.push_back({ str, dst.x, dst.y, dst.w, dst.h });
+    if (alpha > 0.05f && gFade > 0.05f) {   // (tests: what shows of it, inside the clip)
+        SDL_FRect seen = dst;
+        if (SDL_RenderIsClipEnabled(r_)) {
+            SDL_Rect c;
+            SDL_RenderGetClipRect(r_, &c);
+            const float x0 = std::max(dst.x, float(c.x)), y0 = std::max(dst.y, float(c.y));
+            const float x1 = std::min(dst.x + dst.w, float(c.x + c.w)), y1 = std::min(dst.y + dst.h, float(c.y + c.h));
+            seen = { x0, y0, x1 - x0, y1 - y0 };
+        }
+        if (seen.w > 1 && seen.h > dst.h * 0.5f) said.push_back({ str, seen.x, seen.y, seen.w, seen.h, saidLayer, str.size() != raw.size() });
+    }
 #endif
     if (blurText_) {   // its blurred copy, the margin round it
         ct = blurTexture(str, f);
@@ -1140,6 +1152,24 @@ std::vector<std::string> Gfx::wrap(const std::string& s, Font f, int maxW, int m
         else cur += ch;
     }
     if (!cur.empty()) words.push_back(cur);
+    // A path longer than the line (a phone upright: /data/user/0/io.github...): broken after its slashes, its pieces joined
+    // without a space (glued), so it wraps whole instead of ending in an ellipsis
+    std::vector<char> glued(words.size(), 0);
+    for (size_t i = 0; i < words.size(); i++) {
+        if (words[i].find('/') == std::string::npos || words[i].size() < 12 || measure(words[i], f) <= maxW) continue;
+        std::vector<std::string> parts;
+        std::string piece;
+        for (char ch : words[i]) { piece += ch; if (ch == '/') { parts.push_back(piece); piece.clear(); } }
+        if (!piece.empty()) parts.push_back(piece);
+        if (parts.size() < 2) continue;
+        words.erase(words.begin() + long(i));
+        glued.erase(glued.begin() + long(i));
+        for (size_t k = 0; k < parts.size(); k++) {
+            words.insert(words.begin() + long(i + k), parts[k]);
+            glued.insert(glued.begin() + long(i + k), char(k > 0));
+        }
+        i += parts.size() - 1;
+    }
     // Each word measured on its own (remembered, and lyrics repeat their words), lines summed with the
     // space: what kerning across a space would change is under a pixel.
     const int space = spaceWidth(f);
@@ -1149,13 +1179,15 @@ std::vector<std::string> Gfx::wrap(const std::string& s, Font f, int maxW, int m
     bool over = false;   // the last line holds the rest and may need its ellipsis
     for (size_t i = 0; i < words.size(); i++) {
         const int ww = measure(words[i], f);
-        bool fits = line.empty() || lineW + space + ww <= maxW;
+        const int gap = glued[i] ? 0 : space;
+        const std::string joint = glued[i] ? "" : " ";
+        bool fits = line.empty() || lineW + gap + ww <= maxW;
         // The summed words run short of the drawn line (a part of a pixel each, kerning): Settings' hints ran 6 px past
         // their cards' padding. Near the edge the line itself is measured.
         int exact = -1;
-        if (fits && !line.empty() && lineW + space + ww > maxW - 24) fits = (exact = measure(line + ' ' + words[i], f)) <= maxW;
+        if (fits && !line.empty() && lineW + gap + ww > maxW - 24) fits = (exact = measure(line + joint + words[i], f)) <= maxW;
         if (fits) {
-            if (!line.empty()) { line += ' '; lineW += space; }
+            if (!line.empty()) { line += joint; lineW += gap; }
             line += words[i];
             lineW = exact >= 0 ? exact : lineW + ww;
             continue;
@@ -1165,7 +1197,7 @@ std::vector<std::string> Gfx::wrap(const std::string& s, Font f, int maxW, int m
         line = words[i];
         lineW = ww;
         if (int(lines.size()) == maxLines - 1) {
-            for (size_t k = i + 1; k < words.size(); k++) line += " " + words[k];
+            for (size_t k = i + 1; k < words.size(); k++) line += (glued[k] ? "" : " ") + words[k];
             over = true;
             break;
         }

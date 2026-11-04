@@ -60,6 +60,7 @@ void Ui::beginFrame(float dt) {
         if (std::fabs(a->target - a->y) < 0.5f) a->y = std::round(a->target);
     }
     glideCur_.clear();
+    if (tapRelease_ > 0 && --tapRelease_ == 0 && drag_) { releasedNext_ = drag_; drag_ = 0; }   // a tap on a slider: its one frame done
     activate_ = activateNext_;
     activateNext_ = 0;
     released_ = releasedNext_;
@@ -391,7 +392,7 @@ bool Ui::scrollAreaAt(float x, float y, float dy) {
     return false;
 }
 
-void Ui::touchDown(float x, float y) {
+void Ui::touchDown(float x, float y, bool finger) {
     padMode_ = false;
     touching_ = true;
     scrolling_ = false;
@@ -399,10 +400,13 @@ void Ui::touchDown(float x, float y) {
     press_ = 0;
     pressT_ = 0;
     pressFired_ = false;
+    sliderWait_ = 0;
     touchArea_ = nullptr;
     for (auto it = prev_.rbegin(); it != prev_.rend(); ++it) {
         if (!contains(it->r, x, y) || !contains(it->clip, x, y)) continue;
-        if (it->flags & Slider) { drag_ = it->id; dragX_ = x; dragY_ = y; focus_ = it->id; return; }
+        if ((it->flags & Slider) && (it->flags & Slider2D)) { drag_ = it->id; dragX_ = x; dragY_ = y; focus_ = it->id; return; }
+        if ((it->flags & Slider) && !finger) { drag_ = it->id; dragX_ = x; dragY_ = y; focus_ = it->id; return; }   // a mouse: at once, as ever
+        if (it->flags & Slider) { sliderWait_ = it->id; break; }   // a finger: which way it goes decides (touchMove)
         press_ = it->id;
         if (it->flags & Hold) { holding_ = it->id; holdPad_ = false; holdT_ = 0; holdFired_ = false; }
         break;
@@ -414,6 +418,12 @@ void Ui::touchDown(float x, float y) {
 void Ui::touchMove(float x, float y) {
     if (!touching_) return;
     if (drag_) { dragX_ = x; dragY_ = y; return; }
+    if (sliderWait_) {
+        const float dx = std::fabs(x - downX_), dy = std::fabs(y - downY_);
+        if (dx > 6 && dx >= dy) { drag_ = sliderWait_; focus_ = drag_; sliderWait_ = 0; dragX_ = x; dragY_ = y; return; }
+        if (dy > 10) sliderWait_ = 0;   // up or down: the page scrolls (below)
+        else return;
+    }
     if (!scrolling_ && touchArea_ && std::fabs(y - downY_) > 10) { scrolling_ = true; press_ = 0; }
     if (scrolling_ && touchArea_) {
         touchArea_->manual = clock_;
@@ -431,6 +441,13 @@ void Ui::touchUp(float x, float y) {
     if (!touching_) return;
     touching_ = false;
     if (drag_) { releasedNext_ = drag_; dragX_ = x; dragY_ = y; drag_ = 0; return; }
+    if (sliderWait_) {   // a tap on it: set there, as a drag of one frame
+        drag_ = focus_ = sliderWait_;
+        sliderWait_ = 0;
+        dragX_ = x; dragY_ = y;
+        tapRelease_ = 2;
+        return;
+    }
     if (press_ && !scrolling_) {
         focus_ = press_;
         if (!(holdFired_ && holding_ == press_) && !pressFired_) activateNext_ = press_;   // a long press was its own action

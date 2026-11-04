@@ -38,6 +38,9 @@ public:
     /** Every alpha drawn is multiplied by f (0..1) until set back to 1: a whole block faded at once (Now playing's info while
      *  Automix glides the cover over it). */
     void setFade(float f);
+    /** What every setFade is multiplied by (1 normally): a whole page faded while its parts set their own fades (an Automix join
+     *  upright: view_phone.cpp). Set back to 1 after. */
+    void setFadeBase(float b);
     /** A wipe (Automix's Simple joins: the user, 2026-10-29): while set, what is drawn fades through a soft edge `soft` wide
      *  centred on x = `edge`, kept to its left (keepLeft: the new song's) or to its right (the old one's). Text exactly,
      *  across its letters; shapes, images and icons by their middle. */
@@ -139,8 +142,9 @@ public:
     float shiftY() const { return shiftY_; }
 #if defined(GF_WINDOWED) && defined(GF_DEV)
     /** Tests: the words of this frame and where they are. */
-    struct Said { std::string text; float x, y, w, h; };
+    struct Said { std::string text; float x, y, w, h; int layer; bool cut; };   // cut: shortened to fit (…)
     std::vector<Said> said;
+    int saidLayer = 0;   // 1 while what is drawn sits over the page (sheets, cards, toasts): tests compare each layer apart
 #endif
     int measure(const std::string& s, Font f);
     float measureF(const std::string& s, Font f);   // … not rounded to app pixels
@@ -184,6 +188,15 @@ public:
     /** An RGBA32 copy whose longer side is at most maxSide: 2×2 box halvings, then one linear step. The GPU
      *  path has no mipmaps, so a 1280 px cover drawn at 450 px aliases and shimmers when it moves. */
     static SDL_Surface* shrink(SDL_Surface* src, int maxSide);
+    /** Bars `bar` wide every `step` (a waveform's 2 every 3), made whole real pixels so every bar has the same width and gap at
+     *  any scale (rounded one by one they came out 3 and 4 pixels, some touching: the user, 2026-11-04). In app units; start them
+     *  at onPixel(x). */
+    struct Pitch { float step, bar; };
+    Pitch barPitch(float bar, float step) const {
+        const int b = std::max(1, realPx(bar)), s = std::max(b + 1, realPx(step));
+        return { s / scale_, b / scale_ };
+    }
+    float onPixel(float v) const { return snap(v); }
 
 private:
     struct Cached { SDL_Texture* tex; int w, h; unsigned lastFrame; float dw, dh; };   // w, h: in app pixels, as measured; dw, dh: drawn exactly

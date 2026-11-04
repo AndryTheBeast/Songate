@@ -78,7 +78,7 @@ std::string& App::folderPickField() {
 }
 
 const char* App::folderPickName() const {
-    static const char* names[5] = { "Files opens in", "Importing playlists opens in", "Exporting playlists opens in", "The cover picker opens in",
+    static const char* names[5] = { "Files opens in", "Playlist imports open in", "Playlist exports open in", "Cover picker opens in",
                                     "Backups go to" };
     return names[std::clamp(folderFor, 0, 4)];
 }

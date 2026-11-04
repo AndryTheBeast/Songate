@@ -37,6 +37,9 @@ struct Row {
     std::function<void(float x, float y, float w)> block;
     Id focus = 0;   // its control, for showSetting (buttons; other rows are only scrolled to and lit)
     bool lifted = false;   // picked up with Move (a sidebar tab): drawn as the queue's held row
+    float words = 0;       // a choice bar: its choices' words, measured (whether it takes two rows: App::segGrid)
+    size_t nOpts = 0;
+    bool fill = false;     // a choice bar: upright (narrow) it takes a line of its own, the row's whole width (sliders too: ctlW 180)
 };
 struct Card { std::string kicker; std::vector<Row> rows; };
 struct Section { const char* name; const char* icon; std::vector<Card> cards; };
@@ -44,19 +47,48 @@ struct Section { const char* name; const char* icon; std::vector<Card> cards; };
 }  // namespace
 
 /** Gatefold's .seg: a pill holding the options, the chosen one raised. Right-aligned at rx; returns its width. */
-float App::segmented(Id id, float rx, float cy, const std::vector<std::string>& opts, int cur, int* picked, unsigned disabled) {
+/** A choice bar spread to a width (fill) with too little room round its words (under 20 each: a phone upright's four long ones,
+ *  the user's screenshot, 2026-11-04: "too cramped and not centered"): two rows of equal cells instead of one. */
+bool App::segGrid(float words, size_t n, float maxW) const { return maxW > 0 && n >= 4 && (maxW - 6 - words) / float(n) < 20; }
+
+float App::segmented(Id id, float rx, float cy, const std::vector<std::string>& opts, int cur, int* picked, unsigned disabled, float maxW, int fill) {
     const Font f{ css::Sm, Weight::SemiBold };
-    float w = 6;
-    for (const auto& o : opts) w += g.measure(o, f) + 26;
+    float words = 0;
+    for (const auto& o : opts) words += g.measure(o, f);
+    if (fill == 1 && segGrid(words, opts.size(), maxW)) {
+        const int cols = int((opts.size() + 1) / 2);
+        const float ch = 36, w = maxW, h = ch * 2 + 6, x0 = rx - w, y0 = cy - h / 2, cw = (w - 6) / cols;
+        g.roundRect(x0, y0, w, h, 12, pal.text, 0.05f);
+        g.roundStroke(x0, y0, w, h, 12, 1, pal.text, 0.09f);
+        for (int i = 0; i < int(opts.size()); i++) {
+            const float x = x0 + 3 + (i % cols) * cw, y = y0 + 3 + (i / cols) * ch;
+            const Id oid = id + 0x9e3779b97f4a7c15ull * uint64_t(i + 1);
+            const bool off = disabled & (1u << i);
+            if (!off && ui.item(oid, { x, y, cw, ch }, 9) && picked) *picked = i;
+            const bool on = i == cur, hot = !off && (ui.pressed(oid) || (ui.focused(oid) && ui.showFocusRing()));
+            if (on) g.roundRect(x, y, cw, ch, 9, pal.text, 0.13f);
+            else if (hot) g.roundRect(x, y, cw, ch, 9, pal.text, 0.065f);
+            g.textC(opts[i], f, x + cw / 2, y + ch / 2, on ? pal.text : pal.text2, off ? 0.35f : 1.f, Align::Center, int(cw - 8));
+        }
+        return w;
+    }
+    const float room = maxW > 0 && opts.size() ? std::clamp((maxW - 6 - words) / opts.size(), 12.f, fill ? 1e4f : 26.f) : 26.f;   // fill: exactly maxW
+    const float w = 6 + words + room * opts.size();
     const float h = 36, x0 = rx - w;
     g.roundRect(x0, cy - h / 2, w, h, 12, pal.text, 0.05f);
     g.roundStroke(x0, cy - h / 2, w, h, 12, 1, pal.text, 0.09f);
     float x = x0 + 3;
     for (int i = 0; i < int(opts.size()); i++) {
-        const float ow = g.measure(opts[i], f) + 26;
+        const float ow = g.measure(opts[i], f) + room;
         const Id oid = id + 0x9e3779b97f4a7c15ull * uint64_t(i + 1);
         const bool off = disabled & (1u << i);   // greyed: drawn, but not focusable or pressable
-        if (!off && ui.item(oid, { x, cy - h / 2 + 3, ow, h - 6 }, 9) && picked) *picked = i;
+#ifdef GF_ANDROID
+        // a finger: the whole height of the bar and 4 more above and below, 44 (drawn the same; the user chose it, 2026-11-04)
+        const SDL_FRect hitR{ x, cy - h / 2 - 4, ow, h + 8 };
+#else
+        const SDL_FRect hitR{ x, cy - h / 2 + 3, ow, h - 6 };
+#endif
+        if (!off && ui.item(oid, hitR, 9) && picked) *picked = i;
         const bool on = i == cur, hot = !off && (ui.pressed(oid) || (ui.focused(oid) && ui.showFocusRing()));
         if (on) g.roundRect(x, cy - h / 2 + 3, ow, h - 6, 9, pal.text, 0.13f);
         else if (hot) g.roundRect(x, cy - h / 2 + 3, ow, h - 6, 9, pal.text, 0.065f);
@@ -64,6 +96,25 @@ float App::segmented(Id id, float rx, float cy, const std::vector<std::string>& 
         x += ow;
     }
     return w;
+}
+
+/** A folder as shown in Settings: on Android, one in Songate's own app storage (/data/user/0/<package>/files/...) said so, not its path. */
+std::string placeWords(const std::string& p) {
+#ifdef GF_ANDROID
+    const size_t f = p.find("/files/");
+    if (p.rfind("/data/", 0) == 0 && f != std::string::npos) {
+        std::string rest = p.substr(f + 7), out = "Songate's app storage";
+        size_t a = 0;
+        while (a < rest.size()) {
+            size_t b = rest.find('/', a);
+            if (b == std::string::npos) b = rest.size();
+            if (b > a) out += " › " + rest.substr(a, b - a);
+            a = b + 1;
+        }
+        return out;
+    }
+#endif
+    return p;
 }
 
 std::string App::eqPresetName(int preset) const {
@@ -146,6 +197,7 @@ void App::toggleEq() {
 void App::openEqualizer() {
     settingsCat = SetEqualizer;
     settingsQuery.clear();
+    settingsPhoneOpen_ = settingsPhoneDirect_ = true;   // upright: its page, and back returns from where it came
     area("settings.pane").target = area("settings.pane").y = 0;
     navigate(View::Settings);
     settingsJump = "Equalizer";   // drawSettings focuses its switch and lights the row, as showSetting does
@@ -179,7 +231,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                          std::function<void()> changed = nullptr) {
         return Row{ label, value, hint, 180, [this, key, &v, changed](float rx, float cy) {
                        float nv = v;
-                       slider(uid(key), rx - 180, cy, 180, v, &nv);
+                       slider(uid(key), rx - setSliderW(), cy, setSliderW(), v, &nv);
                        if (nv != v) { v = nv; persistSoon(0.8f); if (changed) changed(); }
                    } };
     };
@@ -187,11 +239,15 @@ void App::drawSettings(float x, float y, float w, float h) {
                       std::function<void(int)> pick, unsigned disabled = 0) {
         float sw = 6;
         for (const auto& o : opts) sw += g.measure(o, { css::Sm, Weight::SemiBold }) + 26;
-        return Row{ label, "", hint, sw, [this, key, opts, cur, pick, disabled](float rx, float cy) {
-                       int p = -1;
-                       segmented(uid(key), rx, cy, opts, cur, &p, disabled);
-                       if (p >= 0 && p != cur) { pick(p); persistSoon(0.3f); }
-                   } };
+        Row r{ label, "", hint, sw, [this, key, opts, cur, pick, disabled](float rx, float cy) {
+                  int p = -1;
+                  segmented(uid(key), rx, cy, opts, cur, &p, disabled, settingsCtlMax_, settingsCtlMax_ > 0);   // (on its own line: the line's width)
+                  if (p >= 0 && p != cur) { pick(p); persistSoon(0.3f); }
+              } };
+        r.fill = true;
+        for (const auto& o : opts) r.words += g.measure(o, { css::Sm, Weight::SemiBold });
+        r.nOpts = opts.size();
+        return r;
     };
     auto buttonRow = [&](const std::string& label, const std::string& hint, const char* key, const char* icon, const std::string& text,
                          std::function<void()> act, bool danger = false, float minW = 0) {
@@ -251,6 +307,38 @@ void App::drawSettings(float x, float y, float w, float h) {
         const float mw = g.measure("Move", bf) + 32 + 24;
         const float rw = 34;   // Remove: a round icon button
         int lines = 0;
+        // A phone upright: a tab on one line, a drag handle beside its switch, held and dragged (the user chose it, 2026-11-04: "B";
+        // Move put the tab down at the next touch, so on a phone it could not be moved at all). Sideways, the PC, the Switch: Move.
+        const int sortWay = css::W < kNarrowList ? 1 : 0;
+        const float sortW = 40 + 12 + 44;
+        auto sortCtl = [this](int i, int tab, float rx, float cy) {
+            const int n = int(store.tabOrder.size());
+            const float x = rx - 40 - 12;   // what comes before the switch's column
+            {
+                const Id hid = uid("set.tabdrag", tab);
+                ui.item(hid, { x - 44, cy - 22, 44, 44 }, 10, Slider | Slider2D);   // held: it follows the finger at once (no scroll)
+                static Id dragging = 0;
+                static float anchorY = 0;
+                const float dy = ui.sliderDragY(hid);
+                if (dy >= 0) {
+                    if (dragging != hid) { dragging = hid; anchorY = dy; }
+                    constexpr float step = 56;   // a tab's row
+                    int at = i;
+                    if (dy - anchorY > step * 0.6f && at + 1 < n) { std::swap(store.tabOrder[size_t(at)], store.tabOrder[size_t(at + 1)]); at++; anchorY += step; }
+                    else if (anchorY - dy > step * 0.6f && at > 0) { std::swap(store.tabOrder[size_t(at)], store.tabOrder[size_t(at - 1)]); at--; anchorY -= step; }
+                    grab = Grab{};   // lifted while held (a touch puts a Move down each frame: set again)
+                    grab.kind = Grab::Tabs;
+                    grab.pos = at;
+                } else if (dragging == hid) {
+                    dragging = 0;
+                    grabDrop();
+                    persistSoon(0.3f);
+                }
+                const bool hot = dy >= 0 || (ui.focused(hid) && ui.showFocusRing());
+                if (hot) g.roundRect(x - 44, cy - 20, 44, 40, 10, pal.text, 0.08f);
+                g.icon(ICON_MENU, x - 22, cy, 20, hot ? pal.text : pal.text2);
+            }
+        };
         for (int i = 0; i < int(store.tabOrder.size()); i++) {
             const int tab = store.tabOrder[size_t(i)];
             const unsigned bit = Store::tabBit(tab);
@@ -258,9 +346,10 @@ void App::drawSettings(float x, float y, float w, float h) {
             if (Store::isLine(tab)) {   // one of your lines: Move it, or Remove it
                 lines++;
                 // The same columns as the tabs' rows: Move where their Move is, the cross centred where their switch is
-                Row r{ "Line", "", held ? GF_MOVING_WORDS : "A thin line in the sidebar between the tabs around it",
-                       40 + 16 + mw, [this, tab, i, mw, rw](float rx, float cy) {
+                Row r{ "Line", "", held && !sortWay ? GF_MOVING_WORDS : "A thin line in the sidebar between the tabs around it",
+                       sortWay ? sortW : 40 + 16 + mw, [this, tab, i, mw, rw, sortWay, sortCtl](float rx, float cy) {
                            bool c = false;
+                           if (sortWay) sortCtl(i, tab, rx, cy);
                            {   // Remove: round, the red cross only (as the playlist page's compact Delete)
                                const float cx = rx - 20 - rw / 2;
                                const Id did = uid("set.tabdel", tab);
@@ -275,6 +364,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                                persistSoon(0.3f);
                                return;
                            }
+                           if (sortWay) return;
                            button(uid("set.tabmove", tab), ICON_SORT_DOWN, "Move", rx - 40 - 16 - mw, cy - 17, false, &c);
                            if (c) {
                                grab = Grab{};
@@ -288,11 +378,11 @@ void App::drawSettings(float x, float y, float w, float h) {
                 sidebarRows.push_back(r);
                 continue;
             }
-            const char* hint = held                    ? GF_MOVING_WORDS
+            const char* hint = held && !sortWay        ? GF_MOVING_WORDS
                              : tab == Store::TabNow    ? "Always shown. Settings stays at the bottom"
                              : tab == Store::TabFiles  ? "The whole " GF_CARD_NAME ": open, rename, copy, move and delete, and what fits each file"
                                                        : "";
-            Row r{ Store::tabName(tab), "", hint, 40 + 16 + mw, [this, tab, bit, i, mw](float rx, float cy) {
+            Row r{ Store::tabName(tab), "", hint, sortWay ? sortW : 40 + 16 + mw, [this, tab, bit, i, mw, sortWay, sortCtl](float rx, float cy) {
                       if (bit) {
                           const bool shown = !(store.hiddenTabs & bit);
                           if (toggle(uid("set.tab", int(bit)), rx - 40, cy, shown)) {
@@ -300,6 +390,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                               persistSoon(0.3f);
                           }
                       }
+                      if (sortWay) { sortCtl(i, tab, rx, cy); return; }
                       bool c = false;
                       button(uid("set.tabmove", tab), ICON_SORT_DOWN, "Move", rx - 40 - 16 - mw, cy - 17, false, &c);
                       if (c) {
@@ -362,10 +453,17 @@ void App::drawSettings(float x, float y, float w, float h) {
                 g.roundRect(tx, py + ph * 0.42f, pw * 0.32f, 6, 3, p.text3);
                 g.roundRect(tx, py + ph * 0.62f, pw * 0.24f, 14, 7, p.accent);
                 g.roundStroke(px, py, pw, ph, 9, 1, p.dark ? Rgb{ 1, 1, 1 } : Rgb{ 0, 0, 0 }, 0.06f);
-                float lx = cx + 14;
-                if (on) { g.circle(lx + 4, cy + ch - 20, 4, pal.accent); lx += 14; }
-                g.textC(opts[i].name, { css::Base, Weight::SemiBold }, lx, cy + ch - 20, on ? pal.text : pal.text2, 1, Align::Left,
-                        int(cx + cw - 10 - lx));
+                if (cw < 110) {   // a narrow tile (a phone upright): its name centred, smaller, on two lines if it needs them
+                    const Font nf{ css::Sm, Weight::SemiBold };
+                    const auto nl2 = g.wrap(opts[i].name, nf, int(cw - 12), 2);
+                    float ny = cy + ch - 20 - (nl2.size() - 1) * 8.f;
+                    for (const auto& l : nl2) { g.textC(l, nf, cx + cw / 2, ny, on ? pal.text : pal.text2, 1, Align::Center); ny += 16; }
+                } else {
+                    float lx = cx + 14;
+                    if (on) { g.circle(lx + 4, cy + ch - 20, 4, pal.accent); lx += 14; }
+                    g.textC(opts[i].name, { css::Base, Weight::SemiBold }, lx, cy + ch - 20, on ? pal.text : pal.text2, 1, Align::Left,
+                            int(cx + cw - 10 - lx));
+                }
             }
         };
         static const std::vector<std::string> brightNames = { "Dark", "Light" };
@@ -373,7 +471,7 @@ void App::drawSettings(float x, float y, float w, float h) {
         static const std::vector<std::string> customBrightNames = { "Dark", "Light", "As picked" };
         const Row brightness =
             store.theme == 4
-                ? segRow("Brightness", "Your colours on a dark or a light background, like a cover's; or your background, moved only as far as text needs to stay readable",
+                ? segRow("Brightness", "Your colours on a dark or a light background, or yours as picked, kept readable",
                          "set.cbright", customBrightNames, store.customMode, [this](int i) { store.customMode = i; applyTheme(); })
                 : segRow("Brightness",
                          "From the cover, on a dark or a light background",
@@ -441,8 +539,7 @@ void App::drawSettings(float x, float y, float w, float h) {
             customRows.push_back(chooser("Accent", "Buttons, sliders and what is playing", "set.cacc", &store.customAccent, false, pal.accent));
             customRows.push_back(chooser("Second accent", "Where gradients start: the seek bar, the spectrum", "set.cacc2", &store.customAccent2,
                                          true, pal.accent2));
-            customRows.push_back(infoRow("Your colours", "Kept readable: text and an accent too close to the background move only as far as they must. "
-                                                         "A uses the cover's own; the colour wheel picks any colour."));
+            customRows.push_back(infoRow("Your colours", "Text too close to the background moves just enough to stay readable"));
         }
         // Brightness only where it does something: From the cover and Custom (Dark and Light are their own)
         std::vector<Row> colourRows = { themes };
@@ -454,6 +551,40 @@ void App::drawSettings(float x, float y, float w, float h) {
                           { toggleRow("Collapse the sidebar", "Icons only, more room for everything else", "set.side", store.sidebarCollapsed),
                             toggleRow("Background motion", "The slowly drifting colours behind every view and the Canvas", "set.motion",
                                       store.motion) } });
+#ifdef GF_ANDROID
+        // Size, sideways only (the user, 2026-11-04: "in portrait the default is standard but there will not be options to choose. in
+        // landscape yes"): upright is always Standard, its row not shown there
+        if (css::W >= css::H)
+            cards.back().rows.insert(cards.back().rows.begin(),
+                                     segRow("Size", store.uiSize == 0 ? "As on the Switch and the PC" : store.uiSize == 1 ? "A little larger, for a phone held close"
+                                                                                                           : "Larger still: less fits on each page",
+                                            "set.uisize", { "Standard", "Medium", "Largest" }, store.uiSize, [this](int i) {
+                                                store.uiSize = i;
+                                                store.save();
+                                                fitPending_ = true;   // laid out again between frames
+                                            }));
+        // The camera's cutouts and the rounded corners, whatever the phone or tablet has (the user, 2026-11-03: "works on every android
+        // or tablet ... give users lots of customisation options"): App::updateEdges
+        {
+            static const char* const edgeHints[] = {
+                "Only what a cutout would cover moves, by just enough",
+                "Nothing is placed on a cutout's side; Songate's colours still reach the edge",
+                "A black band on a cutout's side, as Android draws one",
+                "Nothing moves: a camera may cover a corner of the bars" };
+            const int extraPx = int(std::lround(store.edgeExtra * 24));
+            cards.push_back({ "Screen edges",
+                              { segRow("Around the camera", edgeHints[std::clamp(store.edgeMode, 0, 3)], "set.edgemode",
+                                       { "Step aside", "Clear side", "Black strip", "Whole screen" }, store.edgeMode,
+                                       [this](int i) { store.edgeMode = i; store.save(); }),
+                                sliderRow("Extra room", std::to_string(extraPx) + " px",
+                                          "More space around a cutout, if something is still covered", "set.edgeextra",
+                                          store.edgeExtra),
+                                toggleRow("Rounded corners", "The bars' ends keep clear of the screen's rounded corners", "set.edgecorners",
+                                          store.edgeCorners),
+                                buttonRow("Show where it is", "Outlines the cutouts and the corners for a few seconds", "set.edgeshow", ICON_INFO,
+                                          "Show", [this] { edgeShowUntil_ = time + 5; }) } });
+        }
+#endif
         // The opening can be turned off, and its bells with it left on (the user, 2026-11-02): the sound's row only while there is an
         // opening to ring with. Here, with how Songate looks, not in Playback (the user, 2026-11-03: "I think it makes more sense")
         {
@@ -466,20 +597,20 @@ void App::drawSettings(float x, float y, float w, float h) {
         // How an Automix join shows (the user, 2026-10-29), on Now playing and on the Canvas, each its own; where the hint
         // sits, only for Now playing's Simple (the user, 2026-10-29: every other animation has its own place)
         std::vector<Row> mixRows = { segRow("On Now playing",
-                                   store.mixAnimNow == 0   ? "The interface steps aside and the cover glides to the middle, frosted with the hint"
-                                   : store.mixAnimNow == 1 ? "The cover glides to the middle of the page; the sidebar and the player bar stay"
-                                                           : "Everything stays in place while the page changes from one song to the next, left to right",
+                                   store.mixAnimNow == 0   ? "The cover glides to the middle; everything else steps aside"
+                                   : store.mixAnimNow == 1 ? "The cover glides to the middle; the bars stay"
+                                                           : "The page changes from one song to the next, left to right",
                                    "set.mixnow", { "Full", "Immersive", "Simple" }, store.mixAnimNow, [this](int i) { store.mixAnimNow = i; store.save(); }),
                             segRow("On the Canvas",
                                    store.mixAnimCanvas == 0 ? "The cover glides to the middle, frosted with the hint"
-                                                            : "Everything stays in place while the page changes from one song to the next, left to right",
+                                                            : "The page changes from one song to the next, left to right",
                                    "set.mixcanvas", { "Full", "Simple" }, store.mixAnimCanvas, [this](int i) { store.mixAnimCanvas = i; store.save(); }) };
         if (store.mixAnimNow == 2)
             mixRows.push_back(segRow("The hint on Now playing",
                                      store.mixHint == 1 ? "On the cover; on the Lyrics tab, in the lyrics' place"
                                                         : "Above the cover; on the Lyrics tab, in the lyrics' place",
                                      "set.mixhint", { "Automatic", "On the cover", "Above" }, store.mixHint, [this](int i) { store.mixHint = i; store.save(); }));
-        cards.push_back({ "Automix", mixRows });
+        if (css::W >= css::H) cards.push_back({ "Automix", mixRows });   // upright: Full only, nothing to choose (App::mixCanvasMode)
         cards.push_back({ "Sidebar", sidebarRows });
 #ifdef GF_WINDOWED
         unsigned batteryNow = 0;
@@ -487,7 +618,7 @@ void App::drawSettings(float x, float y, float w, float h) {
 #endif
         cards.push_back({ "Title bar",
                           { toggleRow("Battery percentage", "Beside the battery, top right", "set.batpct", store.batteryPercent),
-                            toggleRow("Battery time", "How long to empty, or to full while charging; shown after a minute, steadier as it goes",
+                            toggleRow("Battery time", "Time to empty, or to full while charging",
                                       "set.batest", store.batteryEstimate) } });
         sections.push_back({ "Appearance", ICON_SPARKLE, cards });
     }
@@ -496,7 +627,13 @@ void App::drawSettings(float x, float y, float w, float h) {
     {
         // The background player (sysmodule): music on the HOME menu and in games, and its pause-for-apps.
         std::vector<Row> bgRows;
-#ifdef GF_WINDOWED
+#ifdef GF_ANDROID
+        // what Android does (SongateActivity.keepNativeWhenDestroyed): no switch, it always does it (a switch here changed nothing)
+        // (the user chose a switch, 2026-11-04: "B"; SongateActivity.keepNativeWhenDestroyed reads it)
+        bgRows.push_back(toggleRow("Keep playing when swiped away",
+                                   "Music keeps playing after you close Songate from the recent apps. Off: it stops",
+                                   "set.swipe", store.swipeKeep));
+#elif defined(GF_WINDOWED)
         bgRows.push_back(toggleRow("Keep playing when the window closes", "Songate stays by the clock, playing; its icon brings it back. Off: closing the window quits",
                                    "set.bg", store.background));
 #else
@@ -531,7 +668,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                 return Row{ label, v, "", 180, [this, key, field](float rx, float cy) {
                                const float cur = bgs.cfg.*field / 5.f;
                                float nv = cur;
-                               slider(uid(key), rx - 180, cy, 180, cur, &nv);
+                               slider(uid(key), rx - setSliderW(), cy, setSliderW(), cur, &nv);
                                if (nv != cur) { bgs.cfg.*field = std::round(nv * 50) / 10; bg.setConfig(bgs.cfg); }
                            } };
             };
@@ -563,7 +700,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                 const bool stopped = store.stopThumbs;
                 Row covers = buttonRow("Covers for the overlay",
                                        stopped ? "Stopped. Only the track playing gets one until you resume"
-                                       : left > 0 ? "Being made in the background. Keep Songate open until it finishes; the card above Settings shows how far"
+                                       : left > 0 ? "Being made in the background while Songate is open"
                                                   : "Made for each queue sent to the player, or for the whole library here",
                                        "set.bgcovers", stopped ? ICON_PLAY : left > 0 ? ICON_X : ICON_REFRESH,
                                        stopped ? "Resume" : left > 0 ? "Stop" : "Make all", [this, stopped, left] {
@@ -581,7 +718,7 @@ void App::drawSettings(float x, float y, float w, float h) {
         // Measured: the count beside the label; Stop / Resume while the library is not all measured.
         const size_t measured = std::min(levels.count(), lib.tracks.size());
         const std::string measuredHint =
-            store.levelMode == 0 ? "Starts once levelling is on, with the track playing first (Automix playlists' tracks: always)"
+            store.levelMode == 0 ? "Starts once levelling is on, from the track playing"
             : store.stopLevels       ? "Stopped. Only the track playing and the next ones are measured until you resume"
             : levels.secondsPerTrack() > 0 ? "In the background while Songate is open, about " + oneDecimal(levels.secondsPerTrack()) + " s a track"
                                      : "In the background while Songate is open, the track playing first";
@@ -594,7 +731,7 @@ void App::drawSettings(float x, float y, float w, float h) {
         static const std::vector<std::string> orders = { "Default", "Repeat list", "Repeat track", "Shuffle" };
         sections.push_back(
             { "Playback", ICON_PLAY,
-              { { "", { segRow("Order", automixQueue() ? "Also the first button in the player bar. An Automix playlist plays in its own order: no Shuffle"
+              { { "", { segRow("Order", automixQueue() ? "An Automix playlist keeps its own order: no Shuffle"
                                                     : "Also the first button in the player bar", "set.order", orders, int(store.order),
                                [this](int i) { setOrder(Order(i)); }, automixQueue() ? 1u << 3 : 0u),
                         Row{ "Stop after the current track", "", "Then playback stops until you start it again", 40,
@@ -604,11 +741,11 @@ void App::drawSettings(float x, float y, float w, float h) {
                         Row{ "Volume", pct(volumeShown), "", 180,
                              [this](float rx, float cy) {
                                  float v = volumeShown;
-                                 slider(uid("set.vol"), rx - 180, cy, 180, volumeShown, &v);
+                                 slider(uid("set.vol"), rx - setSliderW(), cy, setSliderW(), volumeShown, &v);
                                  if (v != volumeShown) { volumeShown = v; player.setVolume(v); }
                              } } } },
                 { "Volume levelling",
-                  { segRow("Volume levelling", "Every track about as loud as the next. Measured here; the files are not changed",
+                  { segRow("Volume levelling", "Every track about as loud as the next. Your files are not changed",
                            "set.level", { "Off", "Track", "Album", "Auto" }, store.levelMode,
                            [this](int i) { store.levelMode = i; persistSoon(0.3f); }),
                     segRow("Target loudness", "Quiet tracks are raised only as far as their peaks allow", "set.lvltarget",
@@ -621,8 +758,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                            store.levelMode ? 0u : 0x7u),
                     measuredRow } },
                 { "Crossfade",
-                  { segRow("Crossfade", "The end of a track fades into the next one. A track changed by hand fades in 0.3 s; Stop after "
-                                        "this track, Repeat track and a sleep timer's end never fade. Automix playlists mix theirs instead",
+                  { segRow("Crossfade", "The end of a track fades into the next one. Automix playlists mix their own",
 
                            "set.xfade", { "Off", "2", "4", "6", "8", "12 s" },
                            store.crossfade <= 0 ? 0 : store.crossfade <= 2 ? 1 : store.crossfade <= 4 ? 2 : store.crossfade <= 6 ? 3
@@ -631,21 +767,21 @@ void App::drawSettings(float x, float y, float w, float h) {
                                static const float secs[] = { 0, 2, 4, 6, 8, 12 };
                                store.crossfade = secs[i];
                            }),
-                    toggleRow("Not within an album", "Tracks of one album that follow each other keep their join, as live and "
-                                                     "gapless albums need. Automix playlists still mix them",
+                    toggleRow("Not within an album", "An album's tracks in a row keep their gapless join"
+                                                     "",
                               "set.xfadealbum", store.xfadeNotInAlbum) } },
                 // What plays when Songate opens; the opening itself is in Appearance (the user, 2026-11-03)
                 { "Startup",
                   { toggleRow("Resume where I left off", "The queue comes back paused at the same place in the same track", "set.resume",
                               store.resume) } },
                 { "Sleep",
-                  { segRow("Sleep timer", "The music fades out and pauses; also the moon in the player bar", "set.sleep",
+                  { segRow("Sleep timer", "The music fades out and pauses", "set.sleep",
                            { "Off", "15", "30", "45", "60", "90 min" }, sleepLeft() > 0 ? sleepChoice : 0,
                            [this](int i) {
                                static const int mins[] = { 0, 15, 30, 45, 60, 90 };
                                setSleep(mins[i] * 60.0, i);
                            }),
-                    segRow("Then sleep " GF_THE_CONSOLE, "When the timer ends with Songate open, a card counts down; Stay awake keeps it on",
+                    segRow("Then sleep " GF_THE_CONSOLE, "When the timer ends, after a countdown you can cancel",
                            "set.sleepcon", { "Off", "10 s", "30 s", "1 min" },
                            store.sleepConsole <= 0 ? 0 : store.sleepConsole <= 10 ? 1 : store.sleepConsole <= 30 ? 2 : 3,
                            [this](int i) {
@@ -682,7 +818,7 @@ void App::drawSettings(float x, float y, float w, float h) {
             return Row{ label, dbText(store.eq.*field), hint, 180, [this, key, field](float rx, float cy) {
                            const float cur = (store.eq.*field + 12) / 24;
                            float nv = cur;
-                           slider(uid(key), rx - 180, cy, 180, cur, &nv);
+                           slider(uid(key), rx - setSliderW(), cy, setSliderW(), cur, &nv);
                            if (nv != cur) {
                                GfbgEq e = store.eq;
                                e.*field = std::round((nv * 24 - 12) * 2) / 2;
@@ -695,8 +831,7 @@ void App::drawSettings(float x, float y, float w, float h) {
         const int own = store.eq.preset - GFEQ_PRESETS;   // ≥ 0: one of your saved presets
         const bool edited = own >= 0 && store.eq.edited;  // ... changed since it was saved
         const std::string preset = eqPresetName(store.eq.preset) + (edited ? " (edited)" : "");
-        Row onRow{ "Equalizer", "", GF_EQ_WHAT " A strong boost lowers the level a little so it "
-                                   "does not distort: the preamp brings it back up. Also the equalizer button in the player bar and the Canvas: a press turns it on or off, a long press opens this page",
+        Row onRow{ "Equalizer", "", GF_EQ_WHAT " Strong boosts lower the level a little to avoid distortion",
                    40, [this](float rx, float cy) {
                        if (toggle(uid("set.eqon"), rx - 40, cy, store.eq.on != 0)) {
                            GfbgEq e = store.eq;
@@ -714,7 +849,7 @@ void App::drawSettings(float x, float y, float w, float h) {
         presetRow.value = "";
         // Under the preset: Save while the curve is your own, Rename and Delete while one of yours is on
         std::vector<Row> presetRows = { presetRow };
-        const Row saveNew = buttonRow("Save as a new preset", "Keeps this sound, with bass, treble and the preamp, under a name in the preset list",
+        const Row saveNew = buttonRow("Save as a new preset", "Keeps this sound as a preset of your own",
                                       "set.eqsave", ICON_PLUS, "Save new", [this] { saveEqPreset(); });
         if (store.eq.preset < 0) {
             presetRows.push_back(saveNew);
@@ -769,7 +904,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                     }
                 }
             };
-            cards.push_back({ "Bands", { bands, dbRow("Preamp", "Everything louder or quieter, at any volume; past full scale the limiter holds the peaks", "set.eqpre",
+            cards.push_back({ "Bands", { bands, dbRow("Preamp", "Everything louder or quieter; a limiter holds the peaks", "set.eqpre",
                                                       &GfbgEq::preamp) } });
         }
         cards.push_back({ "", { buttonRow("Reset", "Flat, with bass, treble and the preamp at 0 dB", "set.eqreset", ICON_REFRESH, "Reset",
@@ -793,8 +928,7 @@ void App::drawSettings(float x, float y, float w, float h) {
         const int n = int(lib.tracks.size()), cached = std::min(meta.coversCached(), n);
         const bool sweeping = meta.sweepPos() > 0 && meta.sweepPos() < n && cached < n;
         const std::string coversHint = store.stopCovers ? "Stopped. Covers are still made for what is on screen; Resume caches the rest"
-                                                        : "Small copies of every cover, so lists open with their covers. Made in the background "
-                                                          "after the tags, and for new music after a rescan";
+                                                        : "Small copies of every cover, so lists open with them. Made in the background";
         Row coversRow = coversHeld && !store.stopCovers && cached < n   // held at launch, or Not now on the covers question
                             ? buttonRow("Covers ready", "Not made yet: covers are made for what is on screen; Make them caches the rest",
                                         "set.covstop", ICON_PLAY, "Make them", [this] { appCoverNotice = 2; releaseCovers(); })
@@ -823,14 +957,12 @@ void App::drawSettings(float x, float y, float w, float h) {
     // Lyrics
     sections.push_back({ "Lyrics", ICON_QUOTE,
                          { { "", { toggleRow("Lyrics in the Canvas", "Also the quote button in the Canvas", "set.cvlyr", store.canvasLyrics),
-                                   toggleRow("Timing control", "Earlier · 0.0 s · Later above synced lyrics, on Now playing and in the Canvas: "
-                                                               "each track keeps its own. Timings already set still apply when it is off",
+                                   toggleRow("Timing control", "Earlier · 0.0 s · Later above synced lyrics, kept for each track",
                                              "set.lyrtime", store.lyricTiming),
                                    segRow("Show it for", "Where the lyrics come from", "set.lyrtimefor", { "Tags", ".lrc files", "Both" },
                                           store.lyricTimingFor, [this](int i) { store.lyricTimingFor = i; }, store.lyricTiming ? 0u : 0x7u),
                                    infoRow("Where lyrics come from",
-                                           "An .lrc file with the track's name next to it, or the LYRICS / USLT tag. Synced lines follow "
-                                           "the music; " GF_TAP " one to jump there.") } } } });
+                                           "An .lrc file named as the track, or its LYRICS tag. " GF_CAP_TAP " a synced line to jump there") } } } });
 
     // Canvas
     {
@@ -842,20 +974,20 @@ void App::drawSettings(float x, float y, float w, float h) {
         const Row idleAfterRow{ "Controls fade after", idleV, "Without a button or a touch", 180, [this](float rx, float cy) {
                                    const float cur = (store.canvasIdleAfter - 2) / 13;   // 2..15 s
                                    float nv = cur;
-                                   slider(uid("set.cvidle"), rx - 180, cy, 180, cur, &nv);
+                                   slider(uid("set.cvidle"), rx - setSliderW(), cy, setSliderW(), cur, &nv);
                                    if (nv != cur) { store.canvasIdleAfter = std::round((2 + nv * 13) * 2) / 2; persistSoon(0.8f); }
                                } };
         const Row vizTimeRow{ "Spectrum rise", vizV, "How long the progress line takes to become the spectrum, and back", 180,
                               [this](float rx, float cy) {
                                   const float cur = (store.canvasVizTime - 0.2f) / 2.8f;   // 0.2..3 s
                                   float nv = cur;
-                                  slider(uid("set.cvviz"), rx - 180, cy, 180, cur, &nv);
+                                  slider(uid("set.cvviz"), rx - setSliderW(), cy, setSliderW(), cur, &nv);
                                   if (nv != cur) { store.canvasVizTime = std::round((0.2f + nv * 2.8f) * 10) / 10; persistSoon(0.8f); }
                               } };
         sections.push_back(
             { "Canvas", ICON_CANVAS,
               { { "", { segRow("Layout",
-                               canvasLayoutsOff() == 0b011 ? "This track has no lyrics, so the Canvas shows Minimal until one that has them"
+                               canvasLayoutsOff() == 0b011 ? "This track has no lyrics: Minimal until one that has them"
                                                            : "Also at the bottom of the Canvas",
                                "set.cvlayout", layouts, canvasLayoutShown(), [this](int i) { store.canvasLayout = i; }, canvasLayoutsOff()),
                         toggleRow("Minimal when there are no lyrics", "Your layout comes back with the next track that has lyrics",
@@ -897,7 +1029,17 @@ void App::drawSettings(float x, float y, float w, float h) {
     // Controls
     {
         std::vector<Row> keys;
-#ifdef GF_WINDOWED
+#ifdef GF_ANDROID
+        // a touch screen first; a keyboard or a pad when one is attached (no window here: no full screen key, no window buttons)
+        const std::pair<const char*, const char*> map[] = { { "Hold a track", "Its menu: tags, cover, queue, delete" },
+                                                            { "Hold a button", "What it does" },
+                                                            { "Enter  ·  pad A", "Select" },           { "Esc  ·  pad B", "Back" },
+                                                            { "Space  ·  pad X", "Play / pause" },    { "Ctrl F  ·  pad Y", "Search" },
+                                                            { "Ctrl ← →  ·  LB RB", "Previous / next track" },
+                                                            { "Shift ← →  ·  LT RT", "Seek 10 seconds" },
+                                                            { "C  ·  View", "Canvas (full screen)" },
+                                                            { "Arrows  ·  D-pad", "Move around" } };
+#elif defined(GF_WINDOWED)
         const std::pair<const char*, const char*> map[] = { { "Enter  ·  pad A", "Select" },           { "Esc  ·  pad B", "Back" },
                                                             { "Space  ·  pad X", "Play / pause" },    { "Ctrl F  ·  pad Y", "Search" },
                                                             { "Ctrl ← →  ·  LB RB", "Previous / next track" },
@@ -941,13 +1083,13 @@ void App::drawSettings(float x, float y, float w, float h) {
     std::vector<Row> folderRows, keptRows;
     {
         struct F { const char* label; const char* dflt; std::string* field; };
-        static const std::string backupsDflt = std::string(plat::backupDir()) + " (Settings › Updates makes one before each install)";
+        static const std::string backupsDflt = placeWords(plat::backupDir());
         const F fs[5] = { { "Files opens in", "The top of " GF_THE_CARD, &store.filesDir },
-                          { "Importing playlists opens in", "The top of " GF_THE_CARD "; then, while Songate is open, where you last picked one",
+                          { "Playlist imports open in", "The top of " GF_THE_CARD ", then where you last picked one",
                             &store.importDir },
-                          { "Exporting playlists opens in", "The music folder's Playlists folder (or the music folder); then where you last exported",
+                          { "Playlist exports open in", "The music folder's Playlists folder, then where you last exported",
                             &store.exportDir },
-                          { "The cover picker opens in", "The track's own folder (Change the cover… in the track menu)", &store.coverDir },
+                          { "Cover picker opens in", "The track's own folder", &store.coverDir },
                           { "Backups go to", backupsDflt.c_str(), &store.backupDir } };
         static const char* chooseKeys[5] = { "set.dir0", "set.dir1", "set.dir2", "set.dir3", "set.dir4" };
         static const char* defaultKeys[5] = { "set.dirdef0", "set.dirdef1", "set.dirdef2", "set.dirdef3", "set.dirdef4" };
@@ -965,9 +1107,9 @@ void App::drawSettings(float x, float y, float w, float h) {
         struct K { const char* label; const char* hint; };
         const K ks[6] = { { "Covers cache", "Small copies of every cover, so lists open with their covers (" GF_CONFIG_NAME "/art)" },
                           { "Covers for the overlay", "What the overlay shows for each track (thumbs)" },
-                          { "Loudness measurements", "Volume levelling's, Automix's and the moods' measurements of each track (loudness.tsv, mix.tsv, mood.tsv, gains.bin)" },
-                          { "Tag cache", "The tags read from your files, so launch does not read them again (tags.tsv, identity.tsv)" },
-                          { "Backups", "Your settings as they were before each install or restore (Backups go to, above)" },
+                          { "Loudness measurements", "Each track's levelling, Automix and mood measurements" },
+                          { "Tag cache", "The tags read from your files, so opening is quick" },
+                          { "Backups", "Your settings as they were before each install or restore" },
                           { "Downloads", GF_DOWNLOADS_WORDS } };
         static const char* clearKeys[6] = { "set.clr0", "set.clr1", "set.clr2", "set.clr3", "set.clr4", "set.clr5" };
         for (int i = 0; i < 6; i++) {
@@ -988,9 +1130,8 @@ void App::drawSettings(float x, float y, float w, float h) {
     float resetW = 0;
     for (const char* t : { "Back up", "Restore", "Reset", "Choose" }) resetW = std::max(resetW, float(g.measure(t, { css::Sm, Weight::SemiBold })) + 32 + 24);
     Section resetSection{ "Reset", ICON_REFRESH,
-          { { "", { infoRow("Saved in", std::string(Store::Dir) + ": settings, playlists, Liked, where you left off and the tag cache. "
-                                                                  "Saved as you change things, " GF_CLOSE_SAFE),
-                    buttonRow("Back up the settings now", "A copy of all of it in " + backupRoot() + ", to put back below",
+          { { "", { infoRow("Saved in", placeWords(Store::Dir) + ". Saved as you change things"),
+                    buttonRow("Back up the settings now", "A copy in " + placeWords(backupRoot()) + ", to restore below",
                               "set.backupnow", ICON_HISTORY, "Back up", [this] {
                                   persistNow();
                                   Store::flush();
@@ -1005,20 +1146,17 @@ void App::drawSettings(float x, float y, float w, float h) {
                                       return;
                                   fileWork.cat = SetReset;
                               }, false, resetW),
-                    buttonRow("Reset settings", GF_RESET_WORDS " Your music folder, playlists, Liked, "
-                                                "tag edits, covers and saved presets stay",
+                    buttonRow("Reset settings", GF_RESET_WORDS " Your music, playlists and Liked stay",
                               "set.reset", ICON_REFRESH, "Reset", [this] { resetSettings(); }, true, resetW),
-                    buttonRow("Factory reset", "Erase what you choose, your playlists, Liked and statistics among them, or everything, as if Songate were newly installed. Your music files and backups stay",
+                    buttonRow("Factory reset", "Erase what you choose, or everything. Your music files and backups stay",
                               "set.factory", ICON_X, "Choose", [this] { openFactory(); }, true, resetW) } } } };
 
     // Updates (view_updates.cpp, updater.hpp): off until allowed; then releases with their changelogs, install or go back
     {
         std::vector<Card> cards;
         const std::string me = Updater::thisVersion();
-        Row onRow{ "Updates", "", store.updates ? "Songate goes online only when you check, install or go back (and when it starts, if you turn "
-                                                  "that on), to GitHub and nowhere else"
-                                                : "Off: Songate never connects to the internet. On, it can look for new versions on GitHub, "
-                                                  "show what changed, install one, or go back to an earlier one",
+        Row onRow{ "Updates", "", store.updates ? "Online only to GitHub, when you check, install or go back"
+                                                : "Off: Songate never goes online. On: new versions from GitHub, and going back",
                    40, [this](float rx, float cy) {
                        if (toggle(uid("set.updon"), rx - 40, cy, store.updates != 0)) {
                            if (store.updates) {
@@ -1049,7 +1187,7 @@ void App::drawSettings(float x, float y, float w, float h) {
             // Beta versions (the user, 2026-10-29: "a beta toggle so users can test features early"; asked first, with the
             // warning: App::allowBetas)
             Row betaRow{ "Beta versions", "", store.betas ? "Listed apart below. They can be unstable and have bugs: please report them"
-                                                          : "Try new features before they are released. Off: only releases are listed and offered",
+                                                          : "New features before their release. Off: releases only",
                          40, [this](float rx, float cy) {
                              if (toggle(uid("set.updbeta"), rx - 40, cy, store.betas)) {
                                  if (store.betas) {
@@ -1141,7 +1279,7 @@ void App::drawSettings(float x, float y, float w, float h) {
             }
             cards.push_back({ "Automix models", mods });
         }
-        cards.push_back({ "Backups", { infoRow("Before every install", "Songate backs up your settings first. They are put back from Settings › Reset") } });
+        cards.push_back({ "Backups", { infoRow("Before every install", "Your settings are backed up first; Settings › Reset puts them back") } });
         sections.push_back({ "Updates", ICON_DOWNLOAD, cards });
     }
     // Reset: the backups (made by hand, before each install, before a restore) are listed here and put back from here,
@@ -1151,8 +1289,7 @@ void App::drawSettings(float x, float y, float w, float h) {
         const std::vector<Row> resetRows(first.end() - 2, first.end());
         first.erase(first.end() - 2, first.end());
         {
-            std::vector<Row> bk = { infoRow("Your backups", "Made by hand above, and before every install. Kept in " + backupRoot() +
-                                                                " (Settings › Storage chooses where new ones go)") };
+            std::vector<Row> bk = { infoRow("Your backups", "Made above and before every install, in " + placeWords(backupRoot())) };
             const std::string pend = updater.restorePending();
             if (!pend.empty())
                 bk.push_back(buttonRow("A restore waits", "When Songate closes: " + pend, "set.updrestx", ICON_X, "Cancel", [this] {
@@ -1184,8 +1321,8 @@ void App::drawSettings(float x, float y, float w, float h) {
         std::vector<Row> rep;
         if (report::available()) {
             // off until allowed, as Updates (the user, 2026-10-30): the prompt says what is sent and where (allowReports)
-            Row onRow{ "Reports", "", store.reports ? "Sent only when you press Send, to Songate's private reports on GitHub, and nowhere else"
-                                                    : "Off: Songate sends nothing. On, you can report a bug or suggest a feature from here",
+            Row onRow{ "Reports", "", store.reports ? "Sent only when you press Send, to Songate's private reports"
+                                                    : "Off: nothing is sent. On: report a bug or suggest a feature",
                        40, [this](float rx, float cy) {
                            if (toggle(uid("set.repon"), rx - 40, cy, store.reports)) {
                                if (store.reports) {
@@ -1326,7 +1463,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                                                    lastfm.signOut();
                                                    toast("Signed out of Last.fm");
                                                }) } });
-                cards.push_back({ "Sending", { toggleRow("Scrobbling", "Each track, once you have heard half of it or 4 minutes. Only tracks with tags", "set.lfscrob", store.lastfmScrobble),
+                cards.push_back({ "Sending", { toggleRow("Scrobbling", "Each tagged track, after half of it or 4 minutes", "set.lfscrob", store.lastfmScrobble),
                                                toggleRow("Now playing", "Shows the track on your Last.fm profile while it plays", "set.lfnow", store.lastfmNow) } });
             }
             if (lf.signedIn || lf.lapsed || lf.waiting > 0)
@@ -1429,7 +1566,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                                        persistSoon(0.8f);
                                    }
                                    float nv = nudge;
-                                   slider(id, rx - 180, cy, 180, nudge, &nv);
+                                   slider(id, rx - setSliderW(), cy, setSliderW(), nudge, &nv);
                                    if (nv != nudge) {
                                        nudge = nv;
                                        delay = int(std::lround(nudge * 600)) - 300;
@@ -1493,7 +1630,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                     apShow = mock;
 #endif
                     if (apShow) {
-                        Row ar{ "Receive AirPlay", "", apError.empty() ? "An iPhone on this network can play to this device. Its sound arrives about a second late. A new device asks first" : apError, 40, [this](float rx, float cy) {
+                        Row ar{ "Receive AirPlay", "", apError.empty() ? "iPhones on this network can play here, about a second late. New ones ask first" : apError, 40, [this](float rx, float cy) {
                                    if (toggle(uid("set.airplay"), rx - 40, cy, store.airplayReceive)) { store.airplayReceive = !store.airplayReceive; persistSoon(0.3f); }
                                } };
                         ar.focus = uid("set.airplay");
@@ -1532,11 +1669,11 @@ void App::drawSettings(float x, float y, float w, float h) {
                                     kindRow("Playlists", "Your own playlists, in their order. One deleted here is deleted there too", "set.cnk2", syncdata::KindLists),
                                     kindRow("Tag edits", "Your files are never changed", "set.cnk4", syncdata::KindEdits),
                                     kindRow("Play counts", "Each device keeps its own count; both show the total", "set.cnk8", syncdata::KindPlays),
-                                    toggleRow("Measurements and covers", "So the other device needn't work them out again. Only for exactly the same files", "set.cnres", store.syncResults) } });
+                                    toggleRow("Measurements and covers", "Saves the other device the work, for the same files", "set.cnres", store.syncResults) } });
                 {
                     const Copier::View fv = copier.view();
                     std::vector<Row> files;
-                    files.push_back(toggleRow("Music files", store.syncFiles ? "Copies the songs this device lacks, into the same folders as on the other device. Never replaces anything" : "Off: no songs are copied here. Each device has its own switch", "set.cnfiles", store.syncFiles));
+                    files.push_back(toggleRow("Music files", store.syncFiles ? "Copies the songs missing here into the same folders. Never replaces anything" : "Off: no songs are copied here. Each device has its own switch", "set.cnfiles", store.syncFiles));
                     if (store.syncFiles) {
                         if (fv.state == Copier::State::Copying) {
                             char t[120];
@@ -1628,7 +1765,7 @@ void App::drawSettings(float x, float y, float w, float h) {
     // About
     {
         Row head;
-        head.blockH = 76;
+        head.blockH = 92;
         head.block = [this](float bx, float by, float) {
             const Rgb note{ pal.accent.r + (pal.text.r - pal.accent.r) * 0.45f, pal.accent.g + (pal.text.g - pal.accent.g) * 0.45f, pal.accent.b + (pal.text.b - pal.accent.b) * 0.45f };   // (as the sidebar's mark)
             g.roundRect(bx, by + 8, 60, 60, 16, pal.accent, 0.12f);
@@ -1636,12 +1773,13 @@ void App::drawSettings(float x, float y, float w, float h) {
             g.icon(ICON_BRAND_ARCH, bx + 30, by + 38, 34, pal.accent);
             g.icon(ICON_BRAND_NOTE, bx + 30, by + 38, 34, note);
             g.text("Songate for " GF_PLATFORM, { css::Xl, Weight::Bold }, bx + 76, by + 12, pal.text);
-            g.text("Version " GF_VERSION " · by AndryTheBeast", { css::Base }, bx + 76, by + 46, pal.text2);
+            g.text("Version " GF_VERSION, { css::Base }, bx + 76, by + 46, pal.text2);
+            g.text("by AndryTheBeast", { css::Sm }, bx + 76, by + 68, pal.text3);   // (its own line: upright it ran off the side)
         };
         sections.push_back(
             { "About", ICON_INFO,
               { { "", { head } },
-                { "Tour", { buttonRow("Take the tour", "Every part of Songate on its own screens, with examples: Basic, Advanced or Complete",
+                { "Tour", { buttonRow("Take the tour", "Songate shown on its own screens: Basic, Advanced or Complete",
                                       "set.tour", ICON_SPARKLE, "Start", [this] { startTour(); }) } },
                 { "Credits",
                   // the project it began as (the user, 2026-10-29: mentioned only as that, respectfully and factually; the
@@ -1713,9 +1851,65 @@ void App::drawSettings(float x, float y, float w, float h) {
         if (settingsCat == SetReset) backupsAt = -100;
     }
 
-    // ------------------------------------------------------------ left column
-    const float lx = x + 24, lw = 214;
+    // ------------------------------------------------------------ narrow (a phone upright): the categories as a list of their own,
+    // each a large row with one line of what is in it; a category's page takes the whole width (back returns to the list)
+    const bool narrow = w < kNarrowList;
+    if (narrow && !settingsPhoneOpen_ && settingsQuery.empty()) {
+        static const std::pair<const char*, const char*> what[] = {
+            { "Appearance", "Colours, size, the sidebar, screen edges" }, { "Playback", "Order, crossfade, levelling, sleep" },
+            { "Equalizer", "Ten bands, bass, treble, presets" },          { "Library", "The music folder, rescan, covers" },
+            { "Storage", "Where browsers open, what is kept" },          { "Lyrics", "Where they come from, their timing" },
+            { "Canvas", "Its layouts and what it shows" },               { "Visualizer", "Bars, colours, motion" },
+            { "Controls", "Buttons, the pointer" },                       { "Devices", "Pairing, listening together, AirPlay" },
+            { "Last.fm", "Scrobbles and now playing" },                   { "Reset", "Settings, or everything" },
+            { "Updates", "New versions, betas, going back" },             { "Support", "Reports and what they hold" },
+            { "About", "Songate, its credits, the tour" } };
+        ScrollArea& la = area("settings.phone");
+        const float rowH = 66, lx = x + 18, lw = w - 36;
+        la.view = { x, y, w, h };
+        la.content = 24 + 16 + 50 + 44 + 16 + sections.size() * rowH + 24;
+        ui.pushArea(&la);
+        float cy = y + 24 - la.y;
+        kicker("Songate", lx, cy + 6, pal.text3, 0.14f);
+        cy += 16;
+        g.text("Settings", { css::Xxl, Weight::ExtraBold }, lx - 1, cy, pal.text);
+        cy += 50;
+        const Id sid = uid("set.find");
+        if (ui.item(sid, { lx, cy, lw, 44 }, 12)) openFindSetting();
+        g.roundRect(lx, cy, lw, 44, 12, pal.text, ui.pressed(sid) ? 0.09f : 0.05f);
+        g.roundStroke(lx, cy, lw, 44, 12, 1, pal.text, 0.12f);
+        g.icon(ICON_SEARCH, lx + 22, cy + 22, 18, pal.text3);
+        g.textC("Find a setting", { css::Base }, lx + 42, cy + 22, pal.text3);
+        cy += 44 + 16;
+        g.roundRect(lx - 8, cy, lw + 16, sections.size() * rowH, 16, pal.text, 0.04f);
+        for (int i = 0; i < int(sections.size()); i++, cy += rowH) {
+            const Id id = uid("set.cat", i);
+            if (ui.item(id, { lx - 8, cy, lw + 16, rowH }, 12)) {
+                settingsCat = i;
+                settingsPhoneOpen_ = true;
+                settingsPhoneDirect_ = false;
+                area("settings.pane").target = area("settings.pane").y = 0;
+            }
+            if (ui.pressed(id) || (ui.focused(id) && ui.showFocusRing())) g.roundRect(lx - 8, cy, lw + 16, rowH, 12, pal.text, 0.06f);
+            const float ccy = cy + rowH / 2;
+            g.roundRect(lx + 2, ccy - 20, 40, 40, 12, pal.text, 0.065f);
+            g.icon(sections[i].icon, lx + 22, ccy, 19, pal.text2);
+            const char* line = "";
+            for (const auto& [n, l] : what) if (!strcmp(n, sections[i].name)) line = l;
+            g.text(sections[i].name, { css::Md, Weight::SemiBold }, lx + 58, ccy - (*line ? 21 : 10), pal.text);
+            if (*line) g.text(line, { css::Sm }, lx + 58, ccy + 2, pal.text3, 1, Align::Left, int(lw - 58 - 30));
+            g.icon(ICON_CHEV, lx + lw - 8, ccy, 14, pal.text3);
+            if (i + 1 < int(sections.size())) g.rect(lx + 58, cy + rowH - 1, lw - 58, 1, pal.text, 0.07f);
+        }
+        ui.popArea();
+        settingsPaneX = 1e9f;
+        return;
+    }
+
+    // ------------------------------------------------------------ left column (not when narrow: the list above is it)
+    const float lx = x + 24, lw = narrow ? 0.f : 214.f;
     float cy = y + 24;
+    if (!narrow) {
     kicker("Songate", lx, cy + 6, pal.text3, 0.14f);
     cy += 16;
     g.text("Settings", { css::Xxl, Weight::ExtraBold }, lx - 1, cy, pal.text);
@@ -1762,9 +1956,10 @@ void App::drawSettings(float x, float y, float w, float h) {
     }
     g.unclip();
     ui.popArea();
+    }
 
-    // ------------------------------------------------------------ right pane
-    const float px = lx + lw + 28, pw = x + w - 24 - px;
+    // ------------------------------------------------------------ right pane (narrow: the whole width)
+    const float px = narrow ? x + 18 : lx + lw + 28, pw = x + w - (narrow ? 18 : 24) - px;
     settingsPaneX = px - 8;
     ScrollArea& sa = area("settings.pane");
     sa.view = { px - 8, y, x + w - (px - 8), h };
@@ -1806,7 +2001,8 @@ void App::drawSettings(float x, float y, float w, float h) {
     const float pad = 20, innerW = pw - pad * 2;
     settingsRows.clear();
     for (const Card& c : cards) {
-        struct Laid { const Row* r; std::vector<std::string> hint; float h, labelW; };
+        // stacked: a narrow page (a phone upright) puts a wide control on a line of its own under its label and hint
+        struct Laid { const Row* r; std::vector<std::string> hint; float h, labelW; bool stacked = false; std::vector<std::string> label; bool valueBelow = false; };
         std::vector<Laid> laid;
         float ch = c.kicker.empty() ? 6 : 42;
         for (const Row& r : c.rows) {
@@ -1814,10 +2010,20 @@ void App::drawSettings(float x, float y, float w, float h) {
             if (r.block) {
                 l.h = r.blockH + 16;
             } else {
-                l.labelW = innerW - (r.ctlW > 0 ? r.ctlW + 24 : 0);
-                if (!r.hint.empty()) l.hint = g.wrap(r.hint, hintF, int(l.labelW), 4);
-                const float textH = 21 + (l.hint.empty() ? 0 : 3 + l.hint.size() * 18.f);
-                l.h = std::max(r.minH, textH + 28);
+                // upright (narrow; the user, 2026-11-04: "Settings that have one button, that button will be in the right"): a slider or
+                // a choice bar on a line of its own, the row's whole width; a button, a switch or a value stays on the right of its
+                // text, the name taking two lines if it needs them; only one too wide to share the line goes under it, still right
+                l.stacked = narrow && (r.fill || r.ctlW == 180.f || r.ctlW > innerW * 0.55f);
+                const float sideW = innerW - (r.ctlW > 0 ? r.ctlW + 24 : 0);
+                l.labelW = l.stacked ? innerW : sideW;
+                l.label = narrow ? g.wrap(r.label, labelF, int(l.labelW), 2) : std::vector<std::string>{ r.label };
+                if (l.label.empty()) l.label.push_back(r.label);
+                l.valueBelow = narrow && !r.value.empty() && g.measure(l.label.back(), labelF) + 7 + g.measure(r.value, valueF) > l.labelW;
+                if (!r.hint.empty()) l.hint = g.wrap(r.hint, hintF, int(l.labelW), narrow ? 8 : 4);
+                const float labelH = (l.label.size() - 1 + (l.valueBelow ? 1 : 0)) * 24.f;
+                const float textH = 21 + labelH + (l.hint.empty() ? 0 : 3 + l.hint.size() * 18.f);
+                l.h = l.stacked ? textH + 28 + 40 : std::max(r.minH, textH + 28);
+                if (l.stacked && r.fill && segGrid(r.words, r.nOpts, innerW)) l.h += 42;   // its choices on two rows
             }
             ch += l.h;
             laid.push_back(l);
@@ -1854,13 +2060,25 @@ void App::drawSettings(float x, float y, float w, float h) {
                 if (r.block) {
                     r.block(px + pad, ry + 8, innerW);
                 } else {
-                    const float textH = 21 + (l.hint.empty() ? 0 : 3 + l.hint.size() * 18.f);
-                    float ty = ry + (l.h - textH) / 2;
-                    const int lw2 = g.text(r.label, labelF, px + pad, ty, pal.text, 1, Align::Left, int(l.labelW));
-                    if (!r.value.empty()) g.textNum(r.value, valueF, px + pad + lw2 + 7, ty, pal.text2);
+                    const float labelH = (l.label.size() - 1 + (l.valueBelow ? 1 : 0)) * 24.f;
+                    const float textH = 21 + labelH + (l.hint.empty() ? 0 : 3 + l.hint.size() * 18.f);
+                    float ty = l.stacked ? ry + 14 : ry + (l.h - textH) / 2;
+                    int lw2 = 0;
+                    for (size_t k = 0; k < l.label.size(); k++) {
+                        lw2 = g.text(l.label[k], labelF, px + pad, ty, pal.text, 1, Align::Left, int(l.labelW));
+                        if (k + 1 < l.label.size()) ty += 24;
+                    }
+                    if (!r.value.empty()) {
+                        if (l.valueBelow) { ty += 24; g.textNum(r.value, valueF, px + pad, ty, pal.text2); }
+                        else g.textNum(r.value, valueF, px + pad + lw2 + 7, ty, pal.text2);
+                    }
                     ty += 24;
                     for (const auto& hl : l.hint) { g.text(hl, hintF, px + pad, ty, pal.text3); ty += 18; }
-                    if (r.control) r.control(px + pw - pad, ry + l.h / 2);
+                    // on its own line: a slider or a choice bar the row's whole width; anything else on the right, as always
+                    settingsCtlMax_ = l.stacked ? innerW : 0;
+                    const float crx = px + pw - pad;
+                    const float gridDy = l.stacked && r.fill && segGrid(r.words, r.nOpts, innerW) ? 21.f : 0.f;
+                    if (r.control) { r.control(crx, l.stacked ? ry + 14 + textH + 8 + 18 + gridDy : ry + l.h / 2); settingsCtlMax_ = 0; }
                     else ui.item(uid("set.row", int64_t(std::hash<std::string>{}(r.label))), { px + 8, ry + 4, pw - 16, l.h - 8 }, 10);
                 }
             }

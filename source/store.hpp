@@ -99,6 +99,7 @@ struct Store {
     std::string automixModel;       // the Automix model by its name ("Automix V1.2.0"): Settings › Updates › Automix models (a
                                     // downloaded one, or the built-in); Settings › Debug's built-in ones in dev builds; empty: the newest built-in
     std::string modelToasted;       // the downloadable model announced at launch (once each)
+    bool swipeKeep = true;          // Android: swiped away from the recent apps while music plays, the music goes on (off: it ends)
     bool keepAwake = true;          // while Gatefold is open: no dimming and no auto-sleep (until a sleep timer ends)
     int dimAfter = 0;               // … but dim the screen after this many minutes without input; 0 off
     bool batteryPercent = true;     // the title bar: the battery's percentage
@@ -174,6 +175,11 @@ struct Store {
     bool syncAuto = true;           // on link and after any change (the user, 2026-10-31); false only by hand
     bool opening = true;        // Settings › Playback › Startup: the star and the name as Songate opens (view_opening.cpp)
     bool openingSound = true;   // … and its bells (only with the opening on)
+    // Settings › Appearance › Screen edges (Android): the camera's cutouts and the screen's rounded corners (App::updateEdges)
+    int edgeMode = 0;           // 0 Step aside, 1 Keep the side clear, 2 Black strip, 3 Use the whole screen
+    float edgeExtra = 0;        // 0..1: up to 24 px more room around a cutout
+    bool edgeCorners = true;    // keep clear of the rounded corners too
+    int uiSize = 1;             // Settings › Appearance › Layout › Size (Android), sideways only: 0 Standard (720 tall), 1 Medium (660, the default), 2 Largest (600); upright is always Standard
 
     void load();
     /** Queued for a background thread (store.cpp); flush() waits until everything is on the card. */

@@ -69,6 +69,7 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
         return [cat](App& a) {
             a.settingsCat = cat;
             a.settingsQuery.clear();
+            a.settingsPhoneOpen_ = true;   // upright: its page
             a.navigate(View::Settings, -1, {}, false);
             a.area("settings.pane").target = a.area("settings.pane").y = 0;
         };
@@ -80,7 +81,7 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
     static const std::vector<TourStep> all = {
         // ---- Welcome (the first card asks which tour: drawTour)
         { 0, 0, ICON_SPARKLE, "Welcome to the tour",
-          "Songate shows you around its own screens, using your music. {A} or Next moves on, {B} or Back goes back, "
+          "Songate shows you around its own screens, using your music. " GF_TOUR_KEYS ", "
           "Chapters jumps to a topic and × ends the tour. Choose how deep to go:",
           page(View::Now), {} },
         // ---- Playing
@@ -518,7 +519,7 @@ void App::drawTour() {
     };
     for (const TourTarget& tg : st.targets) {
         const std::string key = tg.key;
-        if (key == "@main") add({ sideW, float(css::TbH), css::W - sideW, float(css::H - css::TbH - css::BarH) });
+        if (key == "@main") add({ sideW + edge_.side, float(css::TbH), css::W - sideW - edge_.side - edge_.mainR, float(css::H - css::TbH - css::BarH) });
         else if (key == "@settingsCats") {
             // the ones in view: past what fits the list scrolls, and those below (About under the player bar) are not lit
             for (int i = 0; i < 16; i++) {
@@ -599,7 +600,7 @@ void App::drawTour() {
 
     // ---- the card
     const Font tf{ css::Lg, Weight::Bold }, bf{ css::Base };
-    float w = 520, iw = w - 24 * 2 - 52;   // narrower beside a part too wide to have the card above or below it
+    float w = cardW(520), iw = w - 24 * 2 - 52;   // narrower beside a part too wide to have the card above or below it
     const float pad = 24;
     // The text, with the Joy-Con's buttons as key caps in it (the user, 2026-10-28): {A} {B} {X} {Y} {L} {R} {ZL} {ZR}
     // {+} {-} {DPAD} ({DPAD-DOWN}: one button marked) {BTN-DOWN} (one direction button, as the Joy-Con's) {LS} {RS}, laid out word by word (Gfx::wrap knows nothing of them)
@@ -685,7 +686,9 @@ void App::drawTour() {
         g.textC(c, capF, cx0 + cw / 2, cy, pal.text, a, Align::Center);
     };
     constexpr float kChapRow = 44;   // a 34 px pill and 10 px clear between rows
-    constexpr float kLevelRow = 58, kLevelGap = 8;   // the first card's tours
+    // the first card's tours (a narrow card, a phone upright: two lines for what each one is, its length by its name)
+    const bool narrowLevels = w < 440;
+    const float kLevelRow = narrowLevels ? 76 : 58, kLevelGap = 8;
     const bool choosing = tourStep == 0 && !tourChapters;   // the first card: which tour (its rows replace Next)
     auto heightNow = [&] {
         const float bodyH = tourChapters ? kChapRow * ((kChapterCount + 1) / 2) - 10
@@ -774,14 +777,23 @@ void App::drawTour() {
                 if (ui.item(id, { rx, ry, rw, kLevelRow }, 12, i == tourLevel ? DefaultFocus : 0)) { tourLevel = i; tourGo(1); return; }
                 const bool hot = ui.pressed(id) || ui.focused(id);
                 g.roundRect(rx, ry, rw, kLevelRow, 12, pal.text, (hot ? 0.09f : 0.04f) * ta);
-                g.roundRect(rx + 10, ry + 11, 36, 36, 10, pal.accent, 0.16f * ta);
-                g.icon(kLevels[i].icon, rx + 28, ry + 29, 18, pal.accentInk, ta);
+                g.roundRect(rx + 10, ry + kLevelRow / 2 - 18, 36, 36, 10, pal.accent, 0.16f * ta);
+                g.icon(kLevels[i].icon, rx + 28, ry + kLevelRow / 2, 18, pal.accentInk, ta);
                 char n[24];
                 snprintf(n, sizeof n, "%d steps", int(tourStepsAt(i).size()));
                 const float nw = float(g.measure(n, whatF));
                 g.text(kLevels[i].name, nameF, rx + 58, ry + 9, pal.text, ta);
-                g.text(kLevels[i].what, whatF, rx + 58, ry + 32, pal.text2, ta, Align::Left, int(rw - 58 - nw - 24));
-                g.text(n, whatF, rx + rw - 14 - nw, ry + 20, pal.accentInk, ta);
+                if (narrowLevels) {
+                    g.text(n, whatF, rx + rw - 14 - nw, ry + 11, pal.accentInk, ta);
+                    float wy = ry + 32;
+                    for (const auto& l : g.wrap(kLevels[i].what, whatF, int(rw - 58 - 14), 2)) {
+                        g.text(l, whatF, rx + 58, wy, pal.text2, ta, Align::Left, int(rw - 58 - 14));
+                        wy += 17;
+                    }
+                } else {
+                    g.text(kLevels[i].what, whatF, rx + 58, ry + 32, pal.text2, ta, Align::Left, int(rw - 58 - nw - 24));
+                    g.text(n, whatF, rx + rw - 14 - nw, ry + 20, pal.accentInk, ta);
+                }
             }
         }
     }

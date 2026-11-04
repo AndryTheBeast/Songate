@@ -84,7 +84,9 @@ void App::drawNow(float x, float y, float w, float h) {
     // (drawPaletteTab's height) are enough, and the bars keep their height rather than shrinking to a sliver.
     const float paletteH = 8 + 26 + 10 + 4 * 30 + 8 + 20;
     const float wantPanel = title.size() > 1 ? std::max(8 + 3 * 52.f, paletteH) : 8 + 4 * 52;
-    const float vizH = store.showSpectrum ? clampf(avail - fixedH(0) - 14 - wantPanel, 28, 46) : 0;
+    // (and where even its smallest leaves Up next too little, a short window: it folds away, the panel keeps its rows)
+    const float vizRoom = avail - fixedH(0) - 14 - wantPanel;
+    const float vizH = store.showSpectrum && vizRoom >= 28 ? clampf(vizRoom, 28, 46) : 0;
     const float panelH = std::max(96.f, avail - fixedH(vizH));
     float cy = y + padT;
 
@@ -318,7 +320,7 @@ App::Focus App::automixFocus(int mode) const {
     return f;
 }
 
-void App::drawSpectrum(float x, float y, float w, float h) {
+void App::drawSpectrum(float x, float y, float w, float h, float played) {
     // viz.js drawSpectrum: 56 bars, gap max(2, w/n·0.28), gradient accent-2 (bottom) → accent (top), peak caps at 55%
     const int n = spec.bands;
     const float gap = std::max(2.f, std::round(w / n * 0.28f));
@@ -330,11 +332,13 @@ void App::drawSpectrum(float x, float y, float w, float h) {
         const float t = bh / h;
         const Rgb top{ pal.accent2.r + (pal.accent.r - pal.accent2.r) * t, pal.accent2.g + (pal.accent.g - pal.accent2.g) * t,
                        pal.accent2.b + (pal.accent.b - pal.accent2.b) * t };
-        g.roundRectV(bx, y + h - bh, bw, bh, std::min({ bw / 2, 4.f, bh / 2 }), top, pal.accent2);
+        // played (0..1, a phone upright's Now playing): what has played stays bright, the rest at 40%, as the Canvas's
+        const float a = played < 0 || bx + bw <= x + w * played ? 1.f : 0.4f;
+        g.roundRectV(bx, y + h - bh, bw, bh, std::min({ bw / 2, 4.f, bh / 2 }), top, pal.accent2, a);
     }
     for (int i = 0; i < n && store.vizPeaks; i++) {
-        const float py = y + h - spec.peaks[i] * h * 0.94f - 3;
-        g.rect(x + i * (bw + gap), std::max(y, py), bw, 1.5f, pal.accent, 0.55f);
+        const float py = y + h - spec.peaks[i] * h * 0.94f - 3, bx = x + i * (bw + gap);
+        g.rect(bx, std::max(y, py), bw, 1.5f, pal.accent, 0.55f * (played < 0 || bx + bw <= x + w * played ? 1.f : 0.4f));
     }
 }
 
@@ -396,7 +400,11 @@ void App::drawLyricsOf(float x, float y, float w, float h, const std::vector<Lyr
     if (lyrics.empty()) {
         // .lyr-msg
         g.text("No lyrics", { css::Lg, Weight::SemiBold }, x, y + 28, pal.text2);
-        g.text("Put an .lrc file with the track's name next to it, or a LYRICS tag.", { css::Base }, x, y + 56, pal.text3, 1, Align::Left, int(w));
+        float ty = y + 56;   // (wrapped where it does not fit: a phone upright)
+        for (const auto& l : g.wrap("Put an .lrc file with the track's name next to it, or a LYRICS tag.", { css::Base }, int(w), 3)) {
+            g.text(l, { css::Base }, x, ty, pal.text3, 1, Align::Left, int(w));
+            ty += 22;
+        }
         return;
     }
     // .lyr-bar: what they are, and for synced ones the timing control on the right

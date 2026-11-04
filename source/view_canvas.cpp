@@ -119,7 +119,7 @@ void App::drawCanvasLyrics(float x, float y, float w, float h, int size, int lay
     // a Simple join (Settings › Appearance › Automix › On the Canvas): the lyrics fade out, the hint takes their place, the
     // next song's fade back in (App::hintInLyrics; the user, 2026-10-29); the outgoing song's until the join's middle, on
     // their own clock. Drawn when hidden too, so the next song's glide to their line meanwhile.
-    if (store.mixAnimCanvas == 1) {
+    if (mixCanvasMode() == 1) {
         const float e = automixCoverEase();
         if (e > 0.002f) {
             if (mixOld.on && mixWipe() < 0.5f)
@@ -152,7 +152,7 @@ void App::drawCanvas() {
     // the middle and frosts over with the hint while the layout's text fades out; as the join ends it glides to the layout
     // the incoming track needs (Minimal without lyrics). A layout change while the stage hides the layout (one track with
     // lyrics, the other without) is taken at once: the return is a single move, never a switch in the middle of the join
-    const bool simple = store.mixAnimCanvas == 1;   // Settings › Appearance › Automix › On the Canvas: Simple
+    const bool simple = mixCanvasMode() == 1;   // Settings › Appearance › Automix › On the Canvas: Simple (sideways only)
     const Focus fc = automixFocus(simple ? 2 : 0);
     const float m = fc.move;
     const bool mixing = has && time < mixUntil;
@@ -424,7 +424,9 @@ void App::drawCanvas() {
     canvasCtl += ((idle || canvasViz > 0.12f ? 0.f : 1.f) - canvasCtl) * (1 - std::exp(-dt / 0.12f));
     const float padX = 4 * vw(), bottom = css::H - 3.2f * vh();
     // .cv-progress sits just above the transport, as on PC: closer to the buttons than to the text above
-    const float toolsCy = bottom - 21, transCy = toolsCy - 21 - 6 - 8 - 30, progCy = transCy - 30 - 14;
+    // narrow (a phone upright): the layouts take a row of their own at the foot, the other tools the row above it
+    const bool twoRows = css::W < kNarrowList;
+    const float segCy = bottom - 21, toolsCy = bottom - 21 - (twoRows ? 50 : 0), transCy = toolsCy - 21 - 6 - 8 - 30, progCy = transCy - 30 - 14;
     const float ctlA = canvasCtl, slide = (1 - canvasCtl) * 14;
     const bool live = canvasCtl > 0.3f;
 
@@ -528,7 +530,8 @@ void App::drawCanvas() {
     static const char* layouts[] = { "Cover", "Lyrics", "Minimal" };
     float segW = 6;
     for (const char* l : layouts) segW += g.measure(l, segF) + 28;
-    const float volW = 42 + 4 + 120 + 12;   // mute, gap, range, padding (the thumb travels inside the range)
+    const float volRange = twoRows ? 96 : 120;
+    const float volW = 42 + 4 + volRange + 12;   // mute, gap, range, padding (the thumb travels inside the range)
     // The sleep timer's moon: a pill with the time left while it runs.
     const double sleepLeftNow = sleepLeft();
     const Font sleepF{ 13, Weight::SemiBold };
@@ -537,10 +540,11 @@ void App::drawCanvas() {
     const bool syncShown = canvasLayoutShown() != 2 && store.canvasLyrics && lyricTimingShown();
     const Font syncF{ 13, Weight::SemiBold };
     const float syncW = syncShown ? lyricSyncControl(nullptr, 0, 0, 42, syncF, 0, false) : 0;
-    const float totalW = segW + 8 + volW + 8 + sleepW + 8 + (syncShown ? syncW + 8 : 0) + 42 + 8 + 42 + 8 + 42;
-    float x = mid - totalW / 2;
-    const float cy = toolsCy + slide;
-    g.roundRect(x, cy - 19, segW, 38, 19, pal.text, 0.08f * ctlA);
+    const float restW = volW + 8 + sleepW + 8 + (syncShown ? syncW + 8 : 0) + 42 + 8 + 42 + 8 + 42;
+    const float totalW = segW + 8 + restW;
+    float x = mid - (twoRows ? segW : totalW) / 2;
+    const float cy = toolsCy + slide, sy = (twoRows ? segCy : toolsCy) + slide;
+    g.roundRect(x, sy - 19, segW, 38, 19, pal.text, 0.08f * ctlA);
     float bx = x + 3;
     // While Minimal is forced (no lyrics), the layouts that cannot show are greyed and ignore presses,
     // and the one actually shown is the raised one.
@@ -549,13 +553,13 @@ void App::drawCanvas() {
         const float w = g.measure(layouts[i], segF) + 28;
         const Id id = uid("cv.layout", i);
         const bool disabled = off & (1u << i);
-        if (live && !disabled && ui.item(id, { bx, cy - 16, w, 32 }, 16)) { store.canvasLayout = i; persistSoon(0.3f); }
+        if (live && !disabled && ui.item(id, { bx, sy - 16, w, 32 }, 16)) { store.canvasLayout = i; persistSoon(0.3f); }
         const bool on = canvasLayoutShown() == i, hot = !disabled && ui.focused(id) && ui.showFocusRing();
-        if (on || hot) g.roundRect(bx, cy - 16, w, 32, 16, pal.text, (on ? 0.16f : 0.08f) * ctlA);
-        g.textC(layouts[i], segF, bx + w / 2, cy, on ? pal.text : pal.text2, ctlA * (disabled ? 0.35f : 1.f), Align::Center);
+        if (on || hot) g.roundRect(bx, sy - 16, w, 32, 16, pal.text, (on ? 0.16f : 0.08f) * ctlA);
+        g.textC(layouts[i], segF, bx + w / 2, sy, on ? pal.text : pal.text2, ctlA * (disabled ? 0.35f : 1.f), Align::Center);
         bx += w;
     }
-    x += segW + 8;
+    x = twoRows ? mid - restW / 2 : x + segW + 8;
     // .cv-vol: mute button + range (track in --text, not the accent)
     g.roundRect(x, cy - 21, volW, 42, 21, pal.text, 0.08f * ctlA);
     {
@@ -567,7 +571,7 @@ void App::drawCanvas() {
             player.setVolume(volumeShown);
         }
         g.icon(volumeShown <= 0.001f ? ICON_VOL_X : ICON_VOL, x + 21, cy, 18, pal.text, ctlA);
-        const float rx = x + 42 + 4, rw = 120;
+        const float rx = x + 42 + 4, rw = volRange;
         const Id rid = uid("cv.vol");
         float v = volumeShown;
         if (live) {

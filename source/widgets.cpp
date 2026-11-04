@@ -20,7 +20,13 @@ const char* upperAscii(std::string& s) {
 
 bool App::iconButton(Id id, const char* icon, float cx, float cy, bool on, float size, float iconSize, uint8_t flags) {
     const SDL_FRect r{ cx - size / 2, cy - size / 2, size, size };
+#ifdef GF_ANDROID
+    // a finger is wider than a pointer: a small button (a sheet's close, 34) takes touches a little round it, drawn the same
+    const float t = std::max(size, 42.f);
+    const bool hit = ui.item(id, { cx - t / 2, cy - t / 2, t, t }, 9, flags);
+#else
     const bool hit = ui.item(id, r, 9, flags);
+#endif
     const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
     if (hot) g.roundRect(r.x, r.y, r.w, r.h, 9, pal.text, ui.pressed(id) ? 0.11f : 0.065f);
     const float s = ui.pressed(id) ? iconSize * 0.94f : iconSize;
@@ -36,7 +42,11 @@ float App::button(Id id, const char* icon, const std::string& label, float x, fl
     const float w = std::max(natural, minW);   // a column of buttons one width (Settings › Reset)
     const float h = 34;
     const SDL_FRect r{ x, y, w, h };
+#ifdef GF_ANDROID
+    const bool hit = ui.item(id, { x, y - 4, w, h + 8 }, h / 2, flags);   // a finger: 4 more above and below, drawn the same
+#else
     const bool hit = ui.item(id, r, h / 2, flags);
+#endif
     if (clicked) *clicked = hit;
     const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
     Rgb fg = pal.text;
@@ -316,11 +326,20 @@ void App::kicker(const std::string& s, float x, float cy, const Rgb& c, float sp
  * it when there is no room below), over 0.15 s, and out as the focus moves on. Its text is made once and cached.
  */
 void App::drawHint() {
-    const Id f = ui.focusedId();
+    Id f = ui.focusedId();
     const std::string* text = nullptr;
     if (f && ui.showFocusRing() && ui.hasItem(f))
         for (const auto& [id, t] : hints_)
             if (id == f) { text = &t; break; }
+    // a touch screen: a finger held still on a button with a hint shows it a moment (as phones do), and the button is not pressed
+    static Id touchHint = 0;
+    static double touchHintUntil = 0;
+    if (const Id held = ui.touchHeld())
+        for (const auto& [id, t] : hints_)
+            if (id == held) { touchHint = held; touchHintUntil = time + 2.0; break; }
+    if (!text && touchHint && time < touchHintUntil && ui.hasItem(touchHint))
+        for (const auto& [id, t] : hints_)
+            if (id == touchHint) { text = &t; f = touchHint; break; }
     if (text) {
         const SDL_FRect r = ui.rectOf(f);
         if (f != hintId_) { hintId_ = f; hintSince_ = time; hintA_ = 0; hintAt_ = r; }
@@ -426,6 +445,7 @@ void App::coverBox(int track, float x, float y, float size, float rad, float alp
 }
 
 void App::listHead(float x, float y, float w, bool showAlbum) {
+    if (w < kNarrowList) { g.rect(x, y + 29, w, 1, pal.text, 0.09f); return; }   // narrow: no columns to name
     const Font f{ css::Xs, Weight::SemiBold };
     const float pad = 30, gap = 14;
     const float inner = w - pad * 2;
@@ -453,6 +473,15 @@ bool App::trackRow(Id id, int track, int number, float x, float y, float w, floa
     const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
     if (playing) g.roundRect(x, y, w, h, 8, pal.accent, 0.09f);
     if (hot) g.roundRect(x, y, w, h, 8, pal.text, ui.pressed(id) ? 0.11f : 0.065f);
+    if (w < kNarrowList) {   // narrow (a phone upright): the number, the title over the artist, the length
+        const float cy = y + h / 2, tx = x + 12 + 28 + 12, tw = w - (tx - x) - 64;
+        if (playing) eqGlyph(x + 12 + 28 - 13, cy, pal.accentInk);
+        else g.textC(std::to_string(number), { css::Sm }, x + 12 + 28, cy, pal.text3, 1, Align::Right);
+        g.text(t.title, { css::Base, playing ? Weight::SemiBold : Weight::Regular }, tx, cy - 20, playing ? pal.accentInk : pal.text, 1, Align::Left, int(tw));
+        g.text(t.artist + (showAlbum && !t.album.empty() ? " · " + t.album : ""), { css::Sm }, tx, cy + 2, pal.text3, 1, Align::Left, int(tw));
+        g.textC(t.duration > 0 ? fmtTime(t.duration) : "", { css::Sm }, x + w - 16, cy, pal.text3, 1, Align::Right);
+        return hit;
+    }
 
     const float pad = 16, gap = 14;
     const float inner = w - pad * 2;
@@ -479,9 +508,9 @@ float App::viewHead(const std::string& kick, const std::string& title, const std
     kicker(kick, x + 28, cy, pal.text3);
     cy += 10;
     const Font h2{ css::Xxl, Weight::Bold };
-    g.text(title, h2, x + 28, cy, pal.text, 1, Align::Left, int(w - 56 - 260));
+    g.text(title, h2, x + 28, cy, pal.text, 1, Align::Left, int(w - 56 - (w < kNarrowList ? 130 : 260)));
     cy += 38;
-    g.text(sub, { css::Sm }, x + 28, cy + 4, pal.text3, 1, Align::Left, int(w - 56 - 260));
+    g.text(sub, { css::Sm }, x + 28, cy + 4, pal.text3, 1, Align::Left, int(w - 56 - (w < kNarrowList ? 130 : 260)));
     return cy + 4 + 18 + 14;
 }
 
@@ -527,7 +556,11 @@ void App::vslider(Id id, float cx, float top, float h, float value, float* out, 
 }
 
 bool App::toggle(Id id, float x, float cy, bool on) {
+#ifdef GF_ANDROID
+    const bool hit = ui.item(id, { x - 8, cy - 20, 56, 40 }, 11);   // a finger: 56 by 40 round it, drawn the same (the user chose it, 2026-11-04)
+#else
     const bool hit = ui.item(id, { x, cy - 11, 40, 22 }, 11);
+#endif
     g.roundRect(x, cy - 11, 40, 22, 11, on ? pal.accent : pal.text, on ? 1.f : 0.16f);
     g.circle(on ? x + 29 : x + 11, cy, 8, on ? pal.onAccent : pal.text);
     return hit;

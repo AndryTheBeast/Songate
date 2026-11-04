@@ -257,6 +257,14 @@ private:
     // mode: Settings › Appearance › Automix: 0 Full, 1 Immersive (the same curve; what it moves and fades is the caller's),
     // 2 Simple (nothing moves or fades: the pulse's rest only)
     Focus automixFocus(int mode = 0) const;
+    // the Canvas's join animation in use: a phone upright has Full only (the user, 2026-11-04: "the automix full animation
+    // should be the only one default and available for portrait"), else Settings › Appearance › Automix
+    int mixCanvasMode() const {
+#ifdef GF_ANDROID
+        if (css::H > css::W) return 0;
+#endif
+        return store.mixAnimCanvas;
+    }
     // The outgoing song through a join (Simple and Immersive: the user, 2026-10-29): what it showed, kept when the next one
     // loads, so its title, lyrics, Up next and waveform can give way to the next one's as the join goes (mixWipe)
     struct MixOld {
@@ -597,6 +605,19 @@ private:
     float dt = 0;
     bool running = true;
     float sideW = css::SideW;
+    // Settings › Appearance › Screen edges (Android): how far each piece keeps from the camera's cutouts and the rounded corners,
+    // in app pixels, eased as the phone turns (App::updateEdges). tb: the title bar's two ends; side: the sidebar's column (the page
+    // starts that much later); bar: the player bar's two ends; mainR: the page's right edge; strip: Black strip's band on each side.
+    struct Edges { float tbL = 0, tbR = 0, side = 0, barL = 0, barR = 0, mainR = 0, stripL = 0, stripR = 0, searchL = 0, searchR = 0; };
+    Edges edge_, edgeWant_;
+    std::vector<SDL_FRect> edgeBoxes_;   // the cutouts and corners as the app sees them, for Show where it is
+    unsigned edgeGen_ = ~0u;
+    int edgeModeWas_ = -1;
+    float edgeExtraWas_ = -1, edgeScaleWas_ = 0;
+    bool edgeCornersWas_ = false;
+    double edgeShowUntil_ = 0;
+    void updateEdges();
+    void drawEdges();
     // The sidebar opening and closing (the user, 2026-10-30: "a nice animation"): sideP_ runs 0 (icons only) to 1 (open) in
     // 0.38 s, eased in and out; sideW follows it, and the labels, counts and the wordmark fade and slide in with it
     float sideP_ = 1;
@@ -870,7 +891,7 @@ private:
 
     // ================= view_now.cpp
     void drawNow(float x, float y, float w, float h);
-    void drawSpectrum(float x, float y, float w, float h);
+    void drawSpectrum(float x, float y, float w, float h, float played = -1);   // played 0..1: the bars before it bright, the rest dim
     void drawUpNext(float x, float y, float w, float h);
     void drawLyrics(float x, float y, float w, float h);
     // Now playing's lyrics from a source: the song playing (live: the timing control, taps, the scroll by hand), or the
@@ -1059,6 +1080,15 @@ public:
     void askBothFolders();
 #endif
     void frame();
+    // A card or sheet as wide as it wants, but never wider than the screen (a phone upright); upright, the sheets rise from its foot
+    float cardW(float want) const { return std::min(want, float(css::W) - 16); }
+    float cardY(float h) const { return css::H > css::W ? std::max(8.f, float(css::H) - h - 8) : (css::H - h) / 2; }
+    static constexpr float kNarrowList = 600;   // a list narrower than this (a phone upright) shows its rows without columns
+    int optShowTouch_ = 0;   // dev builds: every touch area outlined ("touch" in options.txt in the settings folder)
+    float settingsCtlMax_ = 0;
+    float setSliderW() const { return settingsCtlMax_ > 0 ? settingsCtlMax_ : 180.f; }   // a Settings slider: 180, or its line's width   // Settings: the width a stacked row's control may take (segmented shrinks to it)
+    bool settingsPhoneDirect_ = false;   // narrow Settings: that page was opened from elsewhere (back returns there, not to the list)
+    bool settingsPhoneOpen_ = false;   // narrow Settings: a category's page shown (else the list of categories)
 #ifdef GF_WINDOWED
     static constexpr int kNarrowW = 1170;   // under this the pages need the sidebar's room: it folds by itself, and comes back
     bool sideOpenedNarrow_ = false;
@@ -1082,6 +1112,37 @@ public:
     void keepWindowPlace();
     void systemCommands();
     bool mediaHas_ = false, mediaPlaying_ = false;
+#ifdef GF_ANDROID
+    // what Android's music controls were last told (systemCommands)
+    bool mediaLiked_ = false, mediaPushed_ = false;
+    int mediaOrder_ = -1;
+    double mediaDur_ = -1, mediaPos_ = 0, mediaPosAt_ = 0;
+    bool coverToldHidden_ = false;   // a cover held while hidden (no GPU then) was already sent to the system's controls
+    // Android's access to the music (plat::storageAllowed): asked for by a card (accessCard) or the music folder page; looked at
+    // once a second until it is given, then the music is offered as on any first start
+    bool storageOk_ = true;
+    double storageCheckAt_ = 0;
+    void accessCard();
+    void storageGiven();
+    // A phone held upright (view_phone.cpp): its own layout of the same pages. Up next and the lyrics page are Now playing's own,
+    // opened and closed with their animation (the P values, 0..1); the seek bar is the visualizer until touched (phoneSeekP_)
+    bool phonePortrait() const { return css::H > css::W; }
+    void drawPhone();
+    bool phoneQueue_ = false, phoneLyrics_ = false;
+    float phoneQueueP_ = 0, phoneLyricsP_ = 0, phoneSeekP_ = 1;
+    double phoneSeekAt_ = -10;   // the seek bar last touched
+    int phoneSearchKind_ = 0;    // Search upright: its pill (0 Tracks, 1 Albums, 2 Artists)
+    double turnAt_ = -10;        // the phone last turned (upright ⇄ sideways): App::frame fades the new layout in
+    float phoneToastBottom_ = 0;  // Now playing upright: where a toast sits (its foot: the gap above the seek bar)
+    float phoneJoinMove_ = -1;   // Now playing upright: an Automix join's glide (0..1) this frame; -1 no join
+    SDL_FRect phoneCoverRest_{};  // … and where its cover rests
+#ifdef GF_DEV
+    // Portrait mock-ups (view_portrait.cpp, dev only): which one, from portrait-mock.txt in the settings folder; -1 none
+    int portraitMock_ = -1;
+    void drawPortraitMock(int which);
+#endif
+    bool hiddenNow() const { return SDL_GetWindowFlags(window_) & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN); }
+#endif
     double titleAt_ = 0;
     Uint32 titleBg_ = 0xFFFFFFFF, titleFg_ = 0xFFFFFFFF;
     bool pumping_ = false, resizing_ = false;
@@ -1092,6 +1153,7 @@ public:
     void updateLights();
     float lightsShown() const;
     float lightsP_ = 0, lightsHold_ = 0;
+    float lightsNear_ = 0;                  // how long the mouse has been near the lights (updateLights)
     bool cameFromInside_ = false;
     int lightDown_ = -1;
     SDL_FRect titleKeep_[3] = {};           // what is pressed in the title bar, not dragged: the rest of it moves the window
@@ -1497,7 +1559,10 @@ private:
     bool keyboard(const char* header, const std::string& initial, std::string& out);
     void loadTrackCoverAgain();
     void openFindSetting();
-    float segmented(Id id, float rx, float cy, const std::vector<std::string>& opts, int cur, int* picked, unsigned disabled = 0);
+    /** maxW: narrower than its natural width, the room round each choice shrinks to fit (down to 12; a phone upright) */
+    bool segGrid(float words, size_t n, float maxW) const;
+    float segmented(Id id, float rx, float cy, const std::vector<std::string>& opts, int cur, int* picked, unsigned disabled = 0, float maxW = 0,
+                    int fill = 0);   // fill: exactly maxW wide (a choice bar on a line of its own), 1 on two rows when cramped, 2 never (tabs)
     int settingsCat = 0;
     bool settingsFocusFirst = false;   // a category was chosen: its first setting takes the focus next frame
     int settingsCatSeen_ = -1;   // the category last drawn: opening one may read the card once (drawSettings)

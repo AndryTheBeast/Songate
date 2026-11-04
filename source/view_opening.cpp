@@ -34,14 +34,16 @@ float noise(int i) {
 }  // namespace
 
 void App::openingScene(double t, float alpha) {
-    const float w = g.wordmarkW() * kBig, h = g.wordmarkH() * kBig, cx = css::W / 2.f, cy = css::H / 2.f, x = cx - w / 2;
+    // five times the toolbar's, smaller where the screen is narrower (a phone upright: the name ran off both sides)
+    const float big = std::min(kBig, css::W * 0.84f / std::max(1.f, float(g.wordmarkW())));
+    const float w = g.wordmarkW() * big, h = g.wordmarkH() * big, cx = css::W / 2.f, cy = css::H / 2.f, x = cx - w / 2;
     const float run = eased(t / kCross);                                  // how far the star has come, 0..1 across the name
     const float swell = std::sin(float(std::clamp(t / (kCross * 1.5), 0.0, 1.0)) * 3.14159f);   // the light, up as it crosses and back
     const Rgb white{ 1, 1, 1 }, light = mixed(pal.accent, white, 0.55f), warm = mixed(pal.accent2, white, 0.5f);
     g.rect(0, 0, css::W, css::H, pal.bg, alpha);
     const float shine = t >= kCross * 0.75 && t < kCross + 0.75 ? float(-0.25 + 1.5 * (t - kCross * 0.75) / (0.75 + kCross * 0.25)) : -1;
     g.wordmark(x, cy, mixed(pal.accent, pal.text, 0.12f), mixed(pal.accent2, pal.text, 0.2f), mixed(pal.accent2, pal.text, 0.78f), pal.glow,
-               (0.3f + 0.35f * swell) * eased((run - 0.75f) / 0.25f), shine, alpha, kBig, run);   // (its blur only behind letters that are there)
+               (0.3f + 0.35f * swell) * eased((run - 0.75f) / 0.25f), shine, alpha, big, run);   // (its blur only behind letters that are there)
     // The dust: each mote lights as the star passes its place, drifts up and twinkles out
     for (int i = 0; i < kDust; i++) {
         const float u = noise(i), born = float(kCross) * std::acos(1 - 2 * std::clamp(u, 0.f, 1.f)) / 3.14159f, life = 0.8f + 0.7f * noise(i + 100);

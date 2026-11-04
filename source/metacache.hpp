@@ -43,6 +43,8 @@ public:
 
     void start(Library* lib, const std::string& cacheFile, bool keep = false);   // keep: the tracks hold their tags already, and the covers' map is known
     void stop();   // joins the worker and saves the tag cache
+    /** The tag cache written now, if it changed: Android may end the app without its own end (App::onLeave). Main thread. */
+    void saveTags() { if (dirty_) save(); }
 
     /** The cover of a track; queues it when not loaded yet. */
     AlbumArt& art(int trackIdx);
