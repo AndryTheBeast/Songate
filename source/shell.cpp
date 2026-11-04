@@ -703,14 +703,18 @@ void App::drawSidebar() {
     }
     while (!shownTabs.empty() && Store::isLine(shownTabs.back())) shownTabs.pop_back();
     // A short window (a phone sideways at a large Size): the tabs come closer, 38 down to 30, as far as the playlists under
-    // them need to keep three rows (the user, 2026-11-04: "some things start running out of space like playlists")
+    // them need to keep three rows (the user, 2026-11-04: "some things start running out of space like playlists"). Only the rows
+    // there are: with Liked alone a PC window kept BETA 2's 38 (session 13: every PC size had them closer)
     float tabH = 38;
     {
         int nTabs = 0, nLines = 0;
         for (int tab : shownTabs) (Store::isLine(tab) ? nLines : nTabs)++;
         const float footH = 2 + 8 + 1 + 11 + 38 + jobsHeight(collapsed);
-        const float room = css::H - css::BarH - 12 - footH - y - (15 + 28) - nLines * 11.f - 3 * 34.f;
-        if (nTabs > 0) tabH = std::clamp(std::floor(room / nTabs), 30.f, 38.f);
+        const int plRows = std::min(3, 1 + int(store.playlists.size()));   // Liked, then yours
+        // under the tabs: the line (4 + 11), the Playlists header only while the labels show (28), the rows (34 each);
+        // each tab is its height and a 2 px gap (navItem)
+        const float room = css::H - css::BarH - 12 - footH - y - (15 + 28 * labA) - nLines * 11.f - plRows * 34.f;
+        if (nTabs > 0) tabH = std::clamp(std::floor(room / nTabs) - 2, 30.f, 38.f);
     }
     for (int tab : shownTabs) {
         if (Store::isLine(tab)) {
