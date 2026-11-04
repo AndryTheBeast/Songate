@@ -11,6 +11,7 @@
 #include <cmath>
 #include <ctime>
 #include <functional>
+#include <map>
 
 #include "app.hpp"
 #include "icons.inc"
@@ -37,10 +38,17 @@ struct Row {
     std::function<void(float x, float y, float w)> block;
     Id focus = 0;   // its control, for showSetting (buttons; other rows are only scrolled to and lit)
     bool lifted = false;   // picked up with Move (a sidebar tab): drawn as the queue's held row
+    int dragKey = -1;      // a sidebar tab's row: its height noted, drawn where it slides to (tabSlide), held over the others
     float words = 0;       // a choice bar: its choices' words, measured (whether it takes two rows: App::segGrid)
     size_t nOpts = 0;
     bool fill = false;     // a choice bar: upright (narrow) it takes a line of its own, the row's whole width (sliders too: ctlW 180)
 };
+// The sidebar's tabs dragged by touch (the user, 2026-11-04: "you can actually grab and bring it over to the desired sorting
+// order"): the held row follows the finger; a row it passes slides into the place it left; let go, it settles into its own.
+std::map<int, float> tabRowH;     // each tab row's height, last frame (what the finger must pass to change places)
+std::map<int, float> tabSlide;    // each tab row's offset from its place, easing back to 0
+int tabHeld = -1;                 // the tab under the finger
+
 struct Card { std::string kicker; std::vector<Row> rows; };
 struct Section { const char* name; const char* icon; std::vector<Card> cards; };
 
@@ -307,9 +315,10 @@ void App::drawSettings(float x, float y, float w, float h) {
         const float mw = g.measure("Move", bf) + 32 + 24;
         const float rw = 34;   // Remove: a round icon button
         int lines = 0;
-        // A phone upright: a tab on one line, a drag handle beside its switch, held and dragged (the user chose it, 2026-11-04: "B";
-        // Move put the tab down at the next touch, so on a phone it could not be moved at all). Sideways, the PC, the Switch: Move.
-        const int sortWay = css::W < kNarrowList ? 1 : 0;
+        // By touch: a drag handle beside each tab's switch, held and dragged (the user chose it for a phone upright, 2026-11-04: "B";
+        // Move put the tab down at the next touch). Then "only change to the sort mode by touch when touch is detected and be how it
+        // was for joycons": the handle once a finger is on the screen, Move again at a button, a key or a click.
+        const int sortWay = css::W < kNarrowList || byTouch_ ? 1 : 0;
         const float sortW = 40 + 12 + 44;
         auto sortCtl = [this](int i, int tab, float rx, float cy) {
             const int n = int(store.tabOrder.size());
@@ -318,20 +327,39 @@ void App::drawSettings(float x, float y, float w, float h) {
                 const Id hid = uid("set.tabdrag", tab);
                 ui.item(hid, { x - 44, cy - 22, 44, 44 }, 10, Slider | Slider2D);   // held: it follows the finger at once (no scroll)
                 static Id dragging = 0;
-                static float anchorY = 0;
+                static float anchorY = 0;   // where the finger would be with the row in its place
                 const float dy = ui.sliderDragY(hid);
                 if (dy >= 0) {
                     if (dragging != hid) { dragging = hid; anchorY = dy; }
-                    constexpr float step = 56;   // a tab's row
+                    auto heightOf = [](int t) { const auto f = tabRowH.find(t); return f != tabRowH.end() ? f->second : 56.f; };
+                    const float myH = heightOf(tab);
                     int at = i;
-                    if (dy - anchorY > step * 0.6f && at + 1 < n) { std::swap(store.tabOrder[size_t(at)], store.tabOrder[size_t(at + 1)]); at++; anchorY += step; }
-                    else if (anchorY - dy > step * 0.6f && at > 0) { std::swap(store.tabOrder[size_t(at)], store.tabOrder[size_t(at - 1)]); at--; anchorY -= step; }
-                    grab = Grab{};   // lifted while held (a touch puts a Move down each frame: set again)
-                    grab.kind = Grab::Tabs;
-                    grab.pos = at;
+                    // past half of the next row: they change places; the row passed slides from where it was to the place left
+                    while (at + 1 < n && dy - anchorY > heightOf(store.tabOrder[size_t(at + 1)]) * 0.5f) {
+                        const int other = store.tabOrder[size_t(at + 1)];
+                        anchorY += heightOf(other);
+                        tabSlide[other] += myH;
+                        std::swap(store.tabOrder[size_t(at)], store.tabOrder[size_t(at + 1)]);
+                        at++;
+                    }
+                    while (at > 0 && anchorY - dy > heightOf(store.tabOrder[size_t(at - 1)]) * 0.5f) {
+                        const int other = store.tabOrder[size_t(at - 1)];
+                        anchorY -= heightOf(other);
+                        tabSlide[other] -= myH;
+                        std::swap(store.tabOrder[size_t(at)], store.tabOrder[size_t(at - 1)]);
+                        at--;
+                    }
+                    // under the finger, but not far past the first or the last place
+                    float off = dy - anchorY;
+                    if (at == 0) off = std::max(off, -10.f);
+                    if (at == n - 1) off = std::min(off, 10.f);
+                    tabSlide[tab] = off;
+                    tabHeld = tab;   // drawn floating, with its shadow; not Move's lifted outline (a touch puts a Move down each
+                                     // frame the finger moves, so the outline came and went: the user, 2026-11-04, "always flashing")
+                    (void)at;
                 } else if (dragging == hid) {
                     dragging = 0;
-                    grabDrop();
+                    tabHeld = -1;   // it settles from where the finger left it (tabSlide eases to 0)
                     persistSoon(0.3f);
                 }
                 const bool hot = dy >= 0 || (ui.focused(hid) && ui.showFocusRing());
@@ -366,7 +394,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                            }
                            if (sortWay) return;
                            button(uid("set.tabmove", tab), ICON_SORT_DOWN, "Move", rx - 40 - 16 - mw, cy - 17, false, &c);
-                           if (c) {
+                           if (c && !byTouch_) {
                                grab = Grab{};
                                grab.kind = Grab::Tabs;
                                grab.pos = i;
@@ -375,6 +403,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                        } };
                 r.lifted = held;
                 r.minH = 48;
+                r.dragKey = tab;
                 sidebarRows.push_back(r);
                 continue;
             }
@@ -393,7 +422,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                       if (sortWay) { sortCtl(i, tab, rx, cy); return; }
                       bool c = false;
                       button(uid("set.tabmove", tab), ICON_SORT_DOWN, "Move", rx - 40 - 16 - mw, cy - 17, false, &c);
-                      if (c) {
+                      if (c && !byTouch_) {
                           grab = Grab{};
                           grab.kind = Grab::Tabs;
                           grab.pos = i;
@@ -401,6 +430,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                       }
                   } };
             r.lifted = held;
+            r.dragKey = tab;
             sidebarRows.push_back(r);
         }
         // A new line goes in at the end, picked up, so it is placed straight away
@@ -2000,6 +2030,18 @@ void App::drawSettings(float x, float y, float w, float h) {
     // .st-group cards
     const float pad = 20, innerW = pw - pad * 2;
     settingsRows.clear();
+    {
+        static int settling = -1;   // the row let go, still on its way to its place: drawn over the others until there
+        if (tabHeld >= 0) settling = tabHeld;
+        const float k = store.motion ? std::exp(-dt / 0.07f) : 0.f;
+        for (auto& [tab, off] : tabSlide) {
+            if (tab == tabHeld) continue;
+            off *= k;
+            if (std::fabs(off) < 0.3f) off = 0;
+        }
+        if (settling >= 0 && tabHeld < 0 && tabSlide[settling] == 0) settling = -1;
+        tabFloat_ = settling;
+    }
     for (const Card& c : cards) {
         // stacked: a narrow page (a phone upright) puts a wide control on a line of its own under its label and hint
         struct Laid { const Row* r; std::vector<std::string> hint; float h, labelW; bool stacked = false; std::vector<std::string> label; bool valueBelow = false; };
@@ -2034,10 +2076,9 @@ void App::drawSettings(float x, float y, float w, float h) {
         g.roundStroke(px, py, pw, ch, 18, 1, pal.text, 0.09f);
         float ry = py + (c.kicker.empty() ? 6 : 42);
         if (!c.kicker.empty()) kicker(c.kicker, px + pad, py + 26, pal.text3, 0.12f);
-        for (size_t i = 0; i < laid.size(); i++) {
-            const Laid& l = laid[i];
+        // one row's contents at ry (the loop below: in its place, or where it slides to)
+        auto drawRow = [&](const Laid& l, float ry) {
             const Row& r = *l.r;
-            if (i > 0) g.rect(px + pad, ry, innerW, 1, pal.text, 0.09f);
             if (r.lifted) {   // held to be moved: lifted, the accent around it (the queue's Move)
                 g.roundRect(px + 8, ry + 4, pw - 16, l.h - 8, 12, pal.accent, 0.14f);
                 g.roundStroke(px + 8, ry + 4, pw - 16, l.h - 8, 12, 2, pal.accent, 0.95f);
@@ -2082,7 +2123,34 @@ void App::drawSettings(float x, float y, float w, float h) {
                     else ui.item(uid("set.row", int64_t(std::hash<std::string>{}(r.label))), { px + 8, ry + 4, pw - 16, l.h - 8 }, 10);
                 }
             }
+        };
+        const Laid* floating = nullptr;
+        float floatY = 0;
+        for (size_t i = 0; i < laid.size(); i++) {
+            const Laid& l = laid[i];
+            const Row& r = *l.r;
+            float slide = 0;
+            if (r.dragKey >= 0) {
+                tabRowH[r.dragKey] = l.h;
+                const auto f = tabSlide.find(r.dragKey);
+                if (f != tabSlide.end()) slide = f->second;
+            }
+            if (r.dragKey >= 0 && r.dragKey == tabFloat_) {
+                floating = &l;
+                floatY = ry + slide;
+                ry += l.h;
+                continue;
+            }
+            if (i > 0) g.rect(px + pad, ry + slide, innerW, 1, pal.text, 0.09f);
+            drawRow(l, ry + slide);
             ry += l.h;
+        }
+        if (floating) {   // lifted off the card: a shadow under it, opaque, the accent round it
+            const float fx = px + 8, fy = floatY + 4, fw = pw - 16, fh = floating->h - 8;
+            g.glowAround(fx, fy + 6, fw, fh, 12, 18, 10, { 0, 0, 0 }, 0.45f);
+            g.roundRect(fx, fy, fw, fh, 12, pal.bg, 1);
+            g.roundRect(fx, fy, fw, fh, 12, pal.surface, 0.9f);
+            drawRow(*floating, floatY);
         }
         py += ch + 16;
     }

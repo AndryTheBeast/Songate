@@ -1132,6 +1132,10 @@ void App::input() {
         rehover_ -= dt;
         if (pointer.idle <= Pointer::Hide && !pointer.down && !mouseHeld_) ui.point(ui.itemAt(pointer.x, pointer.y));
     }
+    // What moves things by touch (the sidebar's handles) shows once a finger is on the screen; a button, a key, the stick or a click
+    // bring Move back (the user, 2026-11-04: "only change to the sort mode by touch when touch is detected")
+    if (touched) byTouch_ = true;
+    if (down || stickMoved || mouseClicked) byTouch_ = false;
     // A picked-up queue row (the track menu's Move): A or B puts it down, as with a slider; a
     // finger, the stick's pointer, a click or leaving the page put it down too. Not the mouse moving: on the PC the
     // slightest move put it down as soon as it was picked up (the user, 2026-11-03); the wheel moves it instead

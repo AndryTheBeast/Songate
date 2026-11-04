@@ -1402,5 +1402,14 @@ void App::drawFocusRing() {
     if (r.w <= 0) return;
     // :focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px }
     const float rad = ui.radiusOf(id) + 3;
+    // Behind what is around its list, as the item itself is (the user, 2026-11-04: "every single focus ring is overlaping the
+    // UI"): cut at the list's edge where the item goes under it; where the item is all in view, the ring's 6 px outside it stay
+    const SDL_FRect c = ui.clipOf(id);
+    constexpr float out = 6;
+    const float x0 = r.x >= c.x ? r.x - out : c.x, y0 = r.y >= c.y ? r.y - out : c.y;
+    const float x1 = r.x + r.w <= c.x + c.w ? r.x + r.w + out : c.x + c.w, y1 = r.y + r.h <= c.y + c.h ? r.y + r.h + out : c.y + c.h;
+    if (x1 <= x0 || y1 <= y0) return;   // all of it out of view
+    g.clip(x0, y0, x1 - x0, y1 - y0);
     g.roundStroke(r.x - 4, r.y - 4, r.w + 8, r.h + 8, rad, 2, pal.accentInk);
+    g.unclip();
 }

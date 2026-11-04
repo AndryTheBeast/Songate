@@ -106,6 +106,8 @@ public:
     /** As rectOf, and also an item drawn under a modal (not focusable then); its scroll area if area is given. */
     SDL_FRect rectAny(Id id, ScrollArea** area = nullptr) const;
     float radiusOf(Id id) const;
+    /** What of the screen its list shows (its scroll area's view), or everywhere when it is in none. */
+    SDL_FRect clipOf(Id id) const;
 
     // ---- input ----
     void navigate(int dx, int dy);

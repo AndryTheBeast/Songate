@@ -146,6 +146,12 @@ SDL_FRect Ui::rectAny(Id id, ScrollArea** area) const {
     return SDL_FRect{};
 }
 
+SDL_FRect Ui::clipOf(Id id) const {
+    const Item* it = find(cur_, id);
+    if (!it) it = find(prev_, id);
+    return it ? it->clip : SDL_FRect{ -1e5f, -1e5f, 2e5f, 2e5f };
+}
+
 float Ui::radiusOf(Id id) const {
     const Item* it = find(cur_, id);
     return it ? it->radius : 0;

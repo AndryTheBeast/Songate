@@ -603,6 +603,8 @@ private:
     float toastT = 0;
     double time = 0;
     float dt = 0;
+    bool byTouch_ = false;                  // the last input was a finger, not a button, a key, the stick or a click (App::frame)
+    int tabFloat_ = -1;                     // Settings → Sidebar: the tab row held by touch or settling, drawn over the others
     bool running = true;
     float sideW = css::SideW;
     // Settings › Appearance › Screen edges (Android): how far each piece keeps from the camera's cutouts and the rounded corners,
