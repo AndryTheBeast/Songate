@@ -171,6 +171,12 @@ std::string Identity::looseKey(const std::string& artist, const std::string& alb
     return hex(h, kHash);
 }
 
+std::string Identity::textHash(const std::string& s) {
+    uint8_t h[kHash];
+    crypto_blake2b(h, kHash, reinterpret_cast<const uint8_t*>(s.data()), s.size());
+    return hex(h, kHash);
+}
+
 std::string Identity::exactHash(const std::string& path, int64_t size) {
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return {};

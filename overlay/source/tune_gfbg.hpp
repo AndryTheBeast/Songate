@@ -43,3 +43,5 @@ void gfFlush();
 
 /** Gatefold's copy of a track's cover for the overlay (GFBG_THUMBS): GFBG_ART² RGB; false when there is none. */
 bool gfLoadThumb(const char* trackPath, std::vector<u8>& rgb);
+/** The song's title and artist from Songate's tag list (tags.tsv: path, title, artist, ...); false when it is not there. */
+bool gfSongTags(const char* trackPath, std::string& title, std::string& artist, double* seconds = nullptr);   // (and its length)

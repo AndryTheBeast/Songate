@@ -294,6 +294,46 @@ std::string gfPlaylistName(u64 hash) {
     return {};
 }
 
+bool gfSongTags(const char* trackPath, std::string& title, std::string& artist, double* seconds) {
+    // read only when the background player has no tags for the song (not opened yet), once per song shown
+    static std::string lastKey, lastTitle, lastArtist;
+    static double lastSeconds = 0;
+    const std::string key = mounted(trackPath);
+    if (key == lastKey) {
+        title = lastTitle; artist = lastArtist;
+        if (seconds) *seconds = lastSeconds;
+        return !title.empty() || !artist.empty();
+    }
+    double secs = 0;
+    FILE* f = fopen(gfCfgFile("tags.tsv").c_str(), "r");
+    if (!f) return false;
+    static char line[4096];
+    bool found = false;
+    while (fgets(line, sizeof line, f)) {
+        if (strncmp(line, key.c_str(), key.size()) != 0 || line[key.size()] != '\t') continue;
+        const char* t = line + key.size() + 1;
+        const char* t2 = strchr(t, '\t');
+        if (!t2) break;
+        const char* a = t2 + 1;
+        const char* a2 = strpbrk(a, "\t\r\n");
+        title.assign(t, t2);
+        artist.assign(a, a2 ? a2 : a + strlen(a));
+        // then album, date, length in seconds (path, title, artist, album, date, length, ...)
+        const char* c = a2;
+        for (int k = 0; k < 2 && c && *c == '\t'; k++) c = strchr(c + 1, '\t');
+        if (c && *c == '\t') secs = atof(c + 1);
+        found = true;
+        break;
+    }
+    fclose(f);
+    lastKey = key;
+    lastTitle = found ? title : "";
+    lastArtist = found ? artist : "";
+    lastSeconds = found ? secs : 0;
+    if (seconds) *seconds = lastSeconds;
+    return found;
+}
+
 bool gfLoadThumb(const char* trackPath, std::vector<u8>& rgb) {
     // map.tsv changes while Gatefold works through a queue, so it is read again each time: a few
     // KB, once per track change.

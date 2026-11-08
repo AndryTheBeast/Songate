@@ -59,6 +59,11 @@ struct Store {
     bool canvasLyrics = true;
     bool lyricTiming = false;  // Settings → Lyrics: the timing control (Earlier · 0.0 s · Later) on Now playing and the Canvas
     int lyricTimingFor = 2;    // ... for lyrics from 0 the tags, 1 .lrc files, 2 both
+    // Settings → Lyrics → Online (BETA 3): a song with none looks on LRCLIB; what is found plays at once (0) or is asked about
+    // first (1); kept beside the song (0) or in Songate's own folder (1)
+    bool lyricsOnline = false;
+    int lyricsOnlineWay = 0;
+    int lyricsSaveTo = 0;          // 0 beside the song, 1 Songate's folder, 2 inside the song (by way of the folder)
     bool resume = true;
     bool background = true;   // play through the background player (sysmodule) when it is installed
 #ifdef GF_WINDOWED
@@ -68,7 +73,7 @@ struct Store {
     // The list views (ListMode) of the playlists, Folders and Library → Tracks, and the Library's tab
     int viewPlaylist = 1, viewFolders = 2, viewTracks = 1, viewGenre = 1;   // viewGenre: a genre's or an artist's Tracks tab
     int viewPlaylists = 2;     // the Playlists page: tiles
-    int libTab = 1;            // 0 Albums, 1 Tracks, 2 Folders
+    int libTab = 1;            // 0 Albums, 1 Tracks, 2 Folders, 3 Artists, 4 Genres (in Library too: the sidebar's may be hidden)
     int tracksSort = 0;        // by artist, title, album, year, genre, length
     bool tracksDesc = false;
     int theme = 0;                  // 0 from the cover, 1 Dark, 3 Light (theme.js FIXED), 4 Custom; 2 was Grey, read as Dark
@@ -86,6 +91,7 @@ struct Store {
     float vizSmoothing = 0.f;
     int vizBands = 56;
     bool vizPeaks = true;
+    bool seekWave = true;          // Settings › Visualizer › Seek bar › Waveform: the song's loudness as bars; off, a plain line
     float coverPulse = 1.f;     // 1 = Gatefold's breathing
     bool canvasPulse = true;    // the pulse on the Canvas cover too
     int canvasBars = 112;           // the Canvas's idle spectrum (Now playing has vizBands)
@@ -104,9 +110,36 @@ struct Store {
     int dimAfter = 0;               // … but dim the screen after this many minutes without input; 0 off
     bool batteryPercent = true;     // the title bar: the battery's percentage
     bool batteryEstimate = true;    // ... and how long to full or to empty
+    // the battery (BETA 3; the user, 2026-11-05: "Let the user customise almost everything about the battery"): what else shows beside
+    // it, its colour, and each of its animations
+    bool batteryWatts = false, batteryTemp = false, batteryVolts = false, batteryHealth = false, batteryFahrenheit = false;
+    bool batteryPower = false;      // what the battery gives or takes now, in watts (the fuel gauge: the Switch)
+    // what shows beside it, in your order (the user, 2026-11-05: "sortable from settings like the side bar is"): 0 percentage, 1 time,
+    // 2 charger watts, 3 temperature, 4 voltage, 5 health, 6 power
+    std::vector<int> batteryOrder{ 0, 1, 2, 3, 4, 5, 6 };
+    // each state's colour and animation ("choose colour for each state, charging animation (by how fast is charging), discharging
+    // animation, animation when its fully charged"; "consistent with the UI and magical too"; "a gradual gradient from full/empty";
+    // "the accent color from the cover or theme pallete"). States: 0 on battery, 1 low, 2 charging slowly, 3 charging,
+    // 4 charging fast, 5 charged. Colours: 0 as the text, 1 the accent, 2 the palette's gradient (the seek bar's), 3 by charge (red at
+    // empty, yellow, green at full, gradually), 4 green, 5 yellow, 6 orange, 7 red, 8 blue, 9 purple, 10 pink.
+    // Animations: 0 none, 1 sweep, 2 pulse, 3 glow, 4 fill up, 5 blink, 6 sparkle, 7 shimmer.
+    static constexpr int BatteryStates = 6, BatteryColours = 11, BatteryLooks = 8;
+    int batteryCol[BatteryStates]{ 0, 7, 0, 0, 0, 0 };
+    int batteryLook[BatteryStates]{ 0, 2, 1, 1, 1, 3 };
+    int batteryOutline = -1;        // its edge (the user, 2026-11-05: "edit the color of ... the little outline"): -1 as each state's
+                                    // fill, else one of the colours above for every state
+    int batteryLowAt = 15;          // low at or under this (10, 15, 20, 30)
+    int batteryAnimPace = 1;        // 0 calm, 1 normal, 2 lively
     int sleepConsole = 30;
     // Background work stopped by hand (the progress stack's menu, Settings) until resumed: the cover cache, the overlay's covers, measuring loudness
-    bool stopCovers = false, stopThumbs = false, stopLevels = false;
+    bool stopCovers = false, stopThumbs = false, stopLevels = false, stopLyrics = false, stopDownloads = false;
+    bool stopTagWrites = false;
+    // the pocket lock (the Switch; Settings › Controls): its button on Now playing; the unlock: 0 Volume −, 1 Volume +, 3 Capture (twice); 2 either is only the fallback when Capture is refused,
+    // held (pocketHold seconds) or pressed twice; a hint lit on a press while locked
+    bool pocketButton = true, pocketHint = true;
+    bool pocketPads = false;   // the controllers off the console turned off at the lock
+    int pocketKey = 0, pocketHow = 0, pocketHold = 2;   // writing tag and cover changes into the files, stopped until resumed
+    int tagWrite = 0;             // a tag or cover change (Settings › Library): 0 asks each time, 1 Songate only, 2 into the file too
     int levelMode = 0;              // volume levelling: 0 off (the default: the user chooses), 1 track, 2 album, 3 auto (GfbgLevel)
     int levelTarget = -14;          // ... to this loudness, LUFS          // seconds of the "going to sleep" card after the sleep timer ends; 0: do not sleep the console
     // Settings → Playback → Crossfade: seconds (0 off), and whether consecutive tracks of one album keep their join
@@ -130,20 +163,20 @@ struct Store {
     // (Files is hidden until shown: a settings.txt from before it existed gets bit 6 too, Store::load)
     unsigned hiddenTabs = 64;
     // The sidebar's tabs in your order (Settings → Appearance → Sidebar); Settings stays at the bottom
-    enum Tab { TabNow, TabQueue, TabAlbums, TabArtists, TabGenres, TabFolders, TabLibrary, TabFiles, TabCount };
+    enum Tab { TabNow, TabQueue, TabAlbums, TabArtists, TabGenres, TabFolders, TabLibrary, TabFiles, TabServer, TabCount };   // TabServer: a Subsonic server's (shown while signed in)
     // Lines between the tabs, placed as you like (Settings → Appearance → Sidebar: Add a line, Move, Remove): ids TabLine + k
     static constexpr int TabLine = 100, MaxLines = 4;
     static bool isLine(int tab) { return tab >= TabLine && tab < TabLine + MaxLines; }
     static unsigned tabBit(int tab) {   // its bit in hiddenTabs (0.4's numbering); Now playing and lines have none
-        static const unsigned bits[TabCount] = { 0, 1, 32, 2, 4, 16, 8, 64 };
+        static const unsigned bits[TabCount] = { 0, 1, 32, 2, 4, 16, 8, 64, 128 };
         return tab >= 0 && tab < TabCount ? bits[tab] : 0;
     }
     static const char* tabName(int tab) {
-        static const char* names[TabCount] = { "Now playing", "Playlist", "Albums", "Artists", "Genres", "Folders", "Library", "Files" };
+        static const char* names[TabCount] = { "Now playing", "Playlist", "Albums", "Artists", "Genres", "Folders", "Library", "Files", "Server" };
         return tab >= 0 && tab < TabCount ? names[tab] : "Line";
     }
     // (a line above Files by default: it had one of its own before lines could be placed)
-    std::vector<int> tabOrder = { TabNow, TabQueue, TabAlbums, TabArtists, TabGenres, TabFolders, TabLibrary, TabLine, TabFiles };
+    std::vector<int> tabOrder = { TabNow, TabQueue, TabAlbums, TabArtists, TabGenres, TabFolders, TabLibrary, TabServer, TabLine, TabFiles };
     bool showHidden = false;   // Files: names starting with a dot
     // Settings → Storage and reset → Folders: where each browser starts (empty: its own default)
     std::string filesDir, importDir, exportDir, coverDir, backupDir;
@@ -159,12 +192,15 @@ struct Store {
     // Settings › Connections: off, no socket is open; on, asked first (App::allowConnections). connectAim: a typed address
     bool connections = false;
     std::string connectAim;
-    unsigned syncKinds = 15;        // syncdata::Kind: what is shared, each with its own switch
+    unsigned syncKinds = 111;       // syncdata::Kind: what is shared, each with its own switch (32: lyrics, 64: mood choices, BETA 3)
     bool syncResults = true;        // measurements and covers, for exactly the same files
     bool syncFiles = false;         // take the songs this device lacks: off until you turn it on
     int togetherOutput = 0;         // listening together: 0 speakers, 1 headphones, 2 Bluetooth
     bool airplayReceive = false;    // an iPhone may play here: off until you turn it on
+    std::string airSpeakerVol;      // AirPlay speakers this device played to, and how loud: "id\tvolume" a line (airsend.hpp)
     std::string handoffFrom;        // devices whose handoffs are taken without asking, by their ids
+    static constexpr int kTimingMax = 1000;   // ms either way: a Bluetooth speaker was 415 ms behind (2026-11-05), past the ±300 before
+    bool togetherMeasured[3] = {};  // each output's delay measured with the chirps once (micmeasure.hpp): not measured again by itself
 #ifdef __SWITCH__
     int togetherDelay[3] = { 39, 0, 0 };   // ms this device plays ahead; 39: the console's speakers against the PC's, measured (session 10)
 #else
@@ -179,6 +215,11 @@ struct Store {
     int edgeMode = 0;           // 0 Step aside, 1 Keep the side clear, 2 Black strip, 3 Use the whole screen
     float edgeExtra = 0;        // 0..1: up to 24 px more room around a cutout
     bool edgeCorners = true;    // keep clear of the rounded corners too
+    int serverDlPlace = 0;      // Settings › Library › Subsonic server › Downloads: 0 Songate's folder, 1 the music folder (Songate downloads)
+    int plSource = 0;           // the Playlists page and the sidebar's list: 0 yours, 1 the server's (shown only while signed in)
+    int libSource = 0;          // Library's Local | Server (the user, 2026-11-06: "two options, Local or Server")
+    int serverTab = 0;          // the Server tab's view: 0 Albums, 1 Artists, 2 Genres, 3 Folders, 4 Tracks
+    int serverPlace = 0;        // Settings › Library › Subsonic server › Its music: 0 its own tab (Server), 1 in the library with yours
     int uiSize = 1;             // Settings › Appearance › Layout › Size (Android), sideways only: 0 Standard (720 tall), 1 Medium (660, the default), 2 Largest (600); upright is always Standard
 
     void load();
@@ -189,6 +230,7 @@ struct Store {
     static void stopWriter();
     /** Any file of ours, written on the same thread (and atomically: next to it, then renamed over it). */
     void writeFile(const char* file, std::string data) const;
+    void removeFile(const char* file) const;   // on the writer thread, after what is queued for it
     void saveEdits() const;
     void saveLyricNudges() const;
     void saveJoins() const;

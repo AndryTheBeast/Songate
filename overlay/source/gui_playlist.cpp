@@ -2,7 +2,6 @@
 #include "gui_main.hpp"
 
 #include "elm_overlayframe.hpp"
-#include "config/config.hpp"
 #include "play_context.hpp"
 #include "tag_reader.hpp"
 #include "symbol.hpp"
@@ -228,8 +227,7 @@ PlaylistGui::PlaylistGui(std::function<void(u32)> on_count_changed)
     m_list->addItem(new tsl::elm::CategoryHeader(
         "Playlist " + ult::DIVIDER_SYMBOL +
         " \uE0E3 Remove "   + ult::DIVIDER_SYMBOL +
-        " \uE0E2 Remove All " + ult::DIVIDER_SYMBOL +
-        " \uE0B6 Set As Startup", true));
+        " \uE0E2 Remove All", true));
 
     // Jump target: only meaningful when source == Playlist (indicator would
     // be shown) — otherwise we leave the list at the top.
@@ -310,7 +308,6 @@ PlaylistGui::PlaylistGui(std::function<void(u32)> on_count_changed)
                         tuneGetShuffleMode(&shuffleMode);
                         if (shuffleMode != TuneShuffleMode_Off) {
                             tuneSetShuffleMode(TuneShuffleMode_Off);
-                            config::set_shuffle(TuneShuffleMode_Off);
                         }
                     }
                     play_ctx::switchToPlaylist(static_cast<u32>(tune_index));
@@ -407,16 +404,6 @@ PlaylistGui::PlaylistGui(std::function<void(u32)> on_count_changed)
                 }
                 return true;
 
-            // ---- Minus: set as startup path --------------------------------
-            } else if (keys & KEY_MINUS) {
-                // Use saved[] path directly — it's the authoritative source.
-                const auto &sp = play_ctx::savedPlaylist();
-                if ((size_t)tune_index < sp.size()) {
-                    config::set_load_path(sp[tune_index].c_str());
-                    if (tsl::notification)
-                        tsl::notification->showNow(item->getText(), 26, "Startup File Set", 2500, false);
-                }
-                return true;
             }
             return false;
         });

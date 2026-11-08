@@ -8,7 +8,7 @@
 #include "elm_status_bar.hpp"
 #include "tune_gfbg.hpp"
 #include "symbol.hpp"
-#include "config/config.hpp"
+#include "pl_symbols.hpp"
 #include "play_context.hpp"
 #include "tune_gfbg.hpp"
 
@@ -643,6 +643,9 @@ namespace {
 // =============================================================================
 
 StatusBar::StatusBar() {
+    // Automix's sparkle from the first frame: asked here, not on the 15th update (the user, 2026-11-08: back from Settings, Shuffle
+    // showed grey for a moment before the sparkle)
+    this->m_automix = gfQueueAutomix();
     if (R_FAILED(tuneGetRepeatMode(&this->m_repeat)))
         this->m_repeat = TuneRepeatMode_Off;
     if (R_FAILED(tuneGetShuffleMode(&this->m_shuffle)))
@@ -929,7 +932,8 @@ void StatusBar::draw(tsl::gfx::Renderer *renderer) {
                ring, same as the trackbar's circular slider handle. R-held
                cross-fades to the alternate (warm) palette via the shared
                ~300ms blend; the wheel only reads the colour's alpha. */
-            const tsl::Switch2Wheel w2 = this->buildSwitch2Wheel(m_r_held, S2_WHEEL_SLOT_HANDLE);
+            // (picked up with A: the warm wheel, as a held R; the user, 2026-11-08: "the colour after we press A to scrub does not change")
+            const tsl::Switch2Wheel w2 = this->buildSwitch2Wheel(m_r_held || m_seek_engaged, S2_WHEEL_SLOT_HANDLE);
             renderer->drawCircle(thumb_x, bar_y + 2, 7 + 4, true, a(hcol), &w2);
         } else {
             renderer->drawCircle(thumb_x, bar_y + 2, 7 + 4, true, a(hcol));
@@ -1074,9 +1078,15 @@ void StatusBar::draw(tsl::gfx::Renderer *renderer) {
     else
         symbol::repeat::all::symbol.draw(GetRepeatX(), GetRepeatY(), renderer, repeat_color);
 
-    const auto shuffle_color = this->m_shuffle ? tsl::onTextColor
-                                               : tsl::offTextColor;
-    symbol::shuffle::symbol.draw(GetShuffleX(), GetShuffleY(), renderer, shuffle_color);
+    // An Automix playlist playing: Automix's sparkle (the app's icon for it) where Shuffle is, lit; Shuffle never applies to one
+    // (the user, 2026-11-07: "a way to see in the overlay main screen when an Automix playlist is playing", "C")
+    if (this->m_automix) {
+        plsym::sparkle.draw(GetShuffleX(), GetShuffleY(), renderer, tsl::onTextColor);
+    } else {
+        const auto shuffle_color = this->m_shuffle ? tsl::onTextColor
+                                                   : tsl::offTextColor;
+        symbol::shuffle::symbol.draw(GetShuffleX(), GetShuffleY(), renderer, shuffle_color);
+    }
     symbol::prev::symbol.draw  (GetPrevX(),     GetPrevY(),    renderer, tsl::style::color::ColorText);
     this->GetPlaybackSymbol().draw(GetPlayStateX() + (this->m_playing ? 0 : 2),
                                    GetPlayStateY(), renderer, tsl::style::color::ColorText);
@@ -1187,6 +1197,7 @@ void StatusBar::update() {
 
     if (R_FAILED(tuneGetStatus(&this->m_playing)))
         this->m_playing = false;
+    if (static u8 tick = 0; (tick++ % 15) == 0) this->m_automix = gfQueueAutomix();
 
     if (R_SUCCEEDED(tuneGetCurrentQueueItem(path_buffer, FS_MAX_PATH, &this->m_stats))) {
         s_no_song_ticks = 0;  // song present — reset debounce
@@ -1255,11 +1266,26 @@ void StatusBar::update() {
         this->m_stats    = {};
     }
 
-    const u32 current = this->m_stats.current_frame / this->m_stats.sample_rate;
-    const u32 total   = this->m_stats.total_frames   / this->m_stats.sample_rate;
-    this->m_percentage = std::clamp(
+    const u32 current = this->m_stats.sample_rate ? this->m_stats.current_frame / this->m_stats.sample_rate : 0;
+    u32 total         = this->m_stats.sample_rate ? this->m_stats.total_frames   / this->m_stats.sample_rate : 0;
+    this->m_percentage = this->m_stats.total_frames ? std::clamp(
         float(this->m_stats.current_frame) / float(this->m_stats.total_frames),
-        0.0f, 1.0f);
+        0.0f, 1.0f) : 0.0f;
+    // After a restart the song waits unopened: no length from the background player yet (it showed 1:20 of 0:00, the bar full;
+    // the user, 2026-11-08). Songate's tag list has it
+    // (asked whatever the tags: the background player may have them and still no length; the user, 2026-11-08: "still says 0:00")
+    if (total == 0 && !m_last_full_path.empty()) {
+        if (m_tag_len_path != m_last_full_path) {   // once per song
+            m_tag_len_path = m_last_full_path;
+            std::string t, a;
+            m_tag_seconds = 0;
+            gfSongTags(m_last_full_path.c_str(), t, a, &m_tag_seconds);
+        }
+        if (m_tag_seconds > 0) {
+            total = static_cast<u32>(m_tag_seconds + 0.5);
+            this->m_percentage = std::clamp(float(current) / float(m_tag_seconds), 0.0f, 1.0f);
+        }
+    }
 
     /* Don't overwrite current_buffer while the user is touch-dragging —
        onTouch writes it live to track the thumb position. */
@@ -1294,13 +1320,17 @@ bool StatusBar::loadArt(const char *fullPath) {
        which sys-tune's reader does not know), and says where the picture is. */
     GfbgTrackInfo info{};
     const bool haveInfo = gfTrackInfo(&info) && samePath(info.path, fullPath);
+    // Its tags come when it opens the song: after a restart, the song waiting paused has none yet (the user, 2026-11-08: "the last
+    // played songs show with unknown artist until you press next"). Songate's own tag list has them, any format
+    std::string title = haveInfo ? info.title : "", artist = haveInfo ? info.artist : "";
+    if (title.empty() && artist.empty()) gfSongTags(fullPath, title, artist);
 
     /* Gatefold's own copy of the cover comes first: it is ready-made, whatever the original. */
     {
         std::vector<u8> thumb;
         if (gfLoadThumb(fullPath, thumb)) {
-            if (haveInfo && info.title[0]) { m_song_title_str = info.title; m_text_width = 0; }
-            m_artist_str           = haveInfo && info.artist[0] ? info.artist : "Unknown Artist";
+            if (!title.empty()) { m_song_title_str = title; m_text_width = 0; }
+            m_artist_str           = !artist.empty() ? artist : "Unknown Artist";
             m_artist_width         = 0;
             m_artist_scroll_offset = 0;
             m_artist_counter       = 0;
@@ -1321,8 +1351,8 @@ bool StatusBar::loadArt(const char *fullPath) {
 
     TrackTags tags;
     if (haveInfo) {
-        tags.title  = info.title;
-        tags.artist = info.artist;
+        tags.title  = title;
+        tags.artist = artist;
         if (info.coverKind == 1 || info.coverKind == 2) tags.art = { (long)info.coverOffset, (size_t)info.coverSize };
         else if (info.coverKind == 3) {
             fseek(f, 0, SEEK_END);
@@ -1332,6 +1362,8 @@ bool StatusBar::loadArt(const char *fullPath) {
     else if (memcmp(magic, "ID3",  3) == 0) tags = readTagsMP3(f);
     else if (memcmp(magic, "fLaC", 4) == 0) tags = readTagsFLAC(f);
     else if (memcmp(magic, "RIFF", 4) == 0) tags = readTagsWAV(f);
+    if (tags.title.empty()) tags.title = title;     // (Songate's list, when the file's own could not be read here: M4A)
+    if (tags.artist.empty()) tags.artist = artist;
 
     if (!tags.title.empty()) {
         m_song_title_str = std::move(tags.title);
@@ -1450,7 +1482,6 @@ void StatusBar::ActivateButton(int i) {
 
 void StatusBar::CycleRepeat() {
     this->m_repeat = static_cast<TuneRepeatMode>((this->m_repeat + 1) % TuneRepeatMode_Count);
-    config::set_repeat(this->m_repeat);
     tuneSetRepeatMode(this->m_repeat);
 }
 
@@ -1461,7 +1492,6 @@ void StatusBar::CycleShuffle() {
         return;
     }
     this->m_shuffle = static_cast<TuneShuffleMode>((this->m_shuffle + 1) % TuneShuffleMode_Count);
-    config::set_shuffle(this->m_shuffle);
     tuneSetShuffleMode(this->m_shuffle);
 }
 

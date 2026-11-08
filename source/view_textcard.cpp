@@ -63,6 +63,14 @@ plat::TextResult App::textCard(const char* header, const char* guide, const char
     bool dragging = false;
     float scroll = 0;
     const Font titleF{ css::Lg, Weight::Bold }, fieldF{ css::Md }, buttonF{ css::Base, Weight::SemiBold };
+    // a password (plat::textSecret): a dot for each letter, wherever the text is measured or drawn; the letters stay underneath
+    const bool secret = plat::textSecret().load();
+    auto vis = [secret](const std::string& s) {
+        if (!secret) return s;
+        std::string o;
+        for (unsigned char c : s) if ((c & 0xC0) != 0x80) o += "\xE2\x80\xA2";
+        return o;
+    };
     const float w = std::min(620.f, css::W - 40.f), pad = 24, fieldH = 46, buttonH = 36;
     const float h = pad + 26 + 14 + fieldH + 18 + buttonH + pad;
     const float x = (css::W - w) / 2, textX = x + pad + 14, textW = w - pad * 2 - 28, okW = 92, cancelW = 92;
@@ -112,7 +120,7 @@ plat::TextResult App::textCard(const char* header, const char* guide, const char
         size_t best = 0;
         float bestD = 1e9f;
         for (size_t i = 0;; i = stepOn(text, i)) {
-            const float d = std::fabs(textX - scroll + g.measureF(text.substr(0, i), fieldF) - px);
+            const float d = std::fabs(textX - scroll + g.measureF(vis(text.substr(0, i)), fieldF) - px);
             if (d < bestD) { bestD = d; best = i; }
             if (i >= text.size()) break;
         }
@@ -192,9 +200,9 @@ plat::TextResult App::textCard(const char* header, const char* guide, const char
         if (down & plat::BtnB) open = false;
 
         // Keep the caret in the box
-        const float caretPx = g.measureF(text.substr(0, caret), fieldF), compW = composing.empty() ? 0 : g.measureF(composing, fieldF);
+        const float caretPx = g.measureF(vis(text.substr(0, caret)), fieldF), compW = composing.empty() ? 0 : g.measureF(vis(composing), fieldF);
         scroll = std::clamp(scroll, std::max(0.f, caretPx + compW - textW + 2), std::max(0.f, caretPx));
-        scroll = std::min(scroll, std::max(0.f, g.measureF(text, fieldF) + compW - textW + 2));
+        scroll = std::min(scroll, std::max(0.f, g.measureF(vis(text), fieldF) + compW - textW + 2));
 
         const float a = std::clamp((SDL_GetTicks() - opened) / 150.f, 0.f, 1.f), lift = (1 - a) * 10;
         int pw = 1, ph = 1;
@@ -226,17 +234,17 @@ plat::TextResult App::textCard(const char* header, const char* guide, const char
         g.clip(textX - 2, fy, textW + 4, fieldH);
         const auto [sa, sb] = chosen();
         if (sa != sb) {
-            const float x0 = g.measureF(text.substr(0, sa), fieldF), x1 = g.measureF(text.substr(0, sb), fieldF);
+            const float x0 = g.measureF(vis(text.substr(0, sa)), fieldF), x1 = g.measureF(vis(text.substr(0, sb)), fieldF);
             g.rect(textX - scroll + x0, fy + 9, x1 - x0, fieldH - 18, pal.accent, 0.35f * a);
         }
         if (text.empty() && composing.empty()) g.text(guide, fieldF, textX, ty, pal.text3, a);
         else {
-            g.text(text.substr(0, caret), fieldF, textX - scroll, ty, pal.text, a);
+            g.text(vis(text.substr(0, caret)), fieldF, textX - scroll, ty, pal.text, a);
             if (!composing.empty()) {
-                g.text(composing, fieldF, textX - scroll + caretPx, ty, pal.accentInk, a);
+                g.text(vis(composing), fieldF, textX - scroll + caretPx, ty, pal.accentInk, a);
                 g.rect(textX - scroll + caretPx, fy + fieldH - 11, compW, 1.5f, pal.accentInk, a);
             }
-            g.text(text.substr(caret), fieldF, textX - scroll + caretPx + compW, ty, pal.text, a);
+            g.text(vis(text.substr(caret)), fieldF, textX - scroll + caretPx + compW, ty, pal.text, a);
         }
         if ((SDL_GetTicks() - opened) % 1060 < 620) g.rect(textX - scroll + caretPx + compW, fy + 11, 1.5f, fieldH - 22, pal.text, a);
         g.unclip();

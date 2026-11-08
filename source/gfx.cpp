@@ -621,6 +621,20 @@ void Gfx::glowAround(float x, float y, float w, float h, float rad, float spread
     SDL_RenderGeometry(r_, nullptr, verts_.data(), int(verts_.size()), idx_.data(), int(idx_.size()));
 }
 
+void Gfx::glowInside(float x, float y, float w, float h, float rad, const Rgb& c, float alpha) {
+    if (ghost_ || alpha <= 0 || w <= 0 || h <= 0) return;
+    std::vector<Pt> pts;
+    outline(x, y, w, h, rad, pts);
+    const int n = int(pts.size());
+    const SDL_Color s = sdl(c, alpha);
+    verts_.clear();
+    idx_.clear();
+    verts_.push_back({ { x + w / 2, y + h / 2 }, s, {} });   // a fan from the middle
+    for (const Pt& p : pts) verts_.push_back({ { p.x, p.y }, s, {} });
+    for (int i = 0; i < n; i++) idx_.insert(idx_.end(), { 0, 1 + i, 1 + (i + 1) % n });
+    SDL_RenderGeometry(r_, nullptr, verts_.data(), int(verts_.size()), idx_.data(), int(idx_.size()));
+}
+
 void Gfx::glow(float cx, float cy, float rad, const Rgb& c, float alpha) {
     if (ghost_) return;
     const SDL_Color s = sdl(c, alpha);
@@ -866,8 +880,8 @@ int Gfx::text(const std::string& raw, Font f, float x, float y, const Rgb& c, fl
     if (a == Align::Center) dx -= ct->dw / 2.f;
     else if (a == Align::Right) dx -= ct->dw;
     SDL_FRect dst{ snap(dx - shiftX_) + shiftX_ + nudgeX_, snap(y - shiftY_) + shiftY_ + nudgeY_, ct->dw, ct->dh };
-#if defined(GF_WINDOWED) && defined(GF_DEV)
-    if (alpha > 0.05f && gFade > 0.05f) {   // (tests: what shows of it, inside the clip)
+#ifdef GF_DEV
+    if (sayOn && alpha > 0.05f && gFade > 0.05f) {   // (tests: what shows of it, inside the clip)
         SDL_FRect seen = dst;
         if (SDL_RenderIsClipEnabled(r_)) {
             SDL_Rect c;

@@ -43,7 +43,7 @@ std::string stripTrackNumber(std::string s) {
 }
 
 /** Every audio file below dir, as full paths (the folder walk: the slow part on an SD card). */
-void walk(const std::string& dir, std::vector<std::string>& out, int depth) {
+void walk(const std::string& dir, std::vector<std::string>& out, int depth, std::vector<std::string>* lrcs = nullptr) {
     if (depth > 10) return;
     DIR* d = opendir(dir.c_str());
     if (!d) return;
@@ -56,8 +56,9 @@ void walk(const std::string& dir, std::vector<std::string>& out, int depth) {
             struct stat st;
             isDir = stat(full.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
         }
-        if (isDir) { walk(full, out, depth + 1); continue; }
+        if (isDir) { walk(full, out, depth + 1, lrcs); continue; }
         const std::string ext = extOf(name);
+        if (lrcs && ext == "lrc") { lrcs->push_back(full); continue; }   // (search by lyrics: which songs' .lrc came or went)
         if (std::none_of(std::begin(kAudioExt), std::end(kAudioExt), [&](const char* x) { return ext == x; })) continue;
         out.push_back(full);
     }
@@ -121,9 +122,9 @@ std::vector<std::string> Library::validRoots(const std::vector<std::string>& can
     return out;
 }
 
-std::vector<std::string> Library::listFiles(const std::vector<std::string>& roots) {
+std::vector<std::string> Library::listFiles(const std::vector<std::string>& roots, std::vector<std::string>* lrcs) {
     std::vector<std::string> files;
-    for (const auto& r : roots) walk(r, files, 0);
+    for (const auto& r : roots) walk(r, files, 0, lrcs);
     return files;
 }
 

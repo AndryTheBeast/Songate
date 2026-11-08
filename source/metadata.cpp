@@ -123,6 +123,8 @@ void readMp3(const std::string& path, TrackInfo& out, bool wantCover, bool wantL
                 for (size_t i = 0; i < v2->texts; i++) {
                     if (!memcmp(v2->text[i].id, "TPE2", 4)) out.albumArtist = str(&v2->text[i].text);
                     else if (!memcmp(v2->text[i].id, "TRCK", 4)) out.trackNo = atoi(str(&v2->text[i].text).c_str());
+                    // an ID3v2.4 date (TDRC: mpg123's year is TYER's only; 2.4 tags, Songate's own writes among them, had no date)
+                    else if (!memcmp(v2->text[i].id, "TDRC", 4) && out.date.empty()) out.date = str(&v2->text[i].text);
                 }
                 if (wantLyrics)
                     for (size_t i = 0; i < v2->texts; i++)

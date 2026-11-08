@@ -17,6 +17,7 @@ class StatusBar final : public tsl::elm::Element {
     bool m_playing;
     TuneRepeatMode m_repeat;
     TuneShuffleMode m_shuffle;
+    bool m_automix = false;   // an Automix playlist plays: its sparkle in Shuffle's place (asked a few times a second, not every frame)
     TuneCurrentStats m_stats;
 
     float m_percentage;
@@ -95,6 +96,8 @@ class StatusBar final : public tsl::elm::Element {
     bool            m_art_valid = false;
 
     std::string     m_last_full_path;
+    double          m_tag_seconds = 0;   /* the song's length from Songate's tag list, while the background player gives none */
+    std::string     m_tag_len_path;      /* the song it was looked up for (once each) */
     u32             m_art_retry = 0;   /* update() ticks since the cover was last missing */
 
   public:

@@ -25,13 +25,18 @@ constexpr size_t kMaxSongs = 20000;
 struct Song {
     std::string exact, loose;   // identity.hpp's two hashes; either may be ""
     double duration = 0;
+    // a server's song (the user, 2026-11-07: Listening together and Handoff with server libraries, "Both"): the server's print
+    // (Identity::textHash of its address: never the address, the account or a key) and the song's id there; both "" for your own
+    std::string server, sid;
 };
+constexpr size_t kMaxSongId = 128;
 
 enum class Kind : char {
     Invite = 'I',    // shall we?
     Answer = 'A',    // flag: yes
     Queue = 'Q',     // the songs
-    Have = 'H',      // which of them this device holds: have, one byte each
+    Have = 'H',      // which of them this device holds: have, one byte each; song: 1 it has a microphone, 2 its output's delay was
+                     // never measured
     Prepare = 'P',   // open this song at this position; flag: the track playing plays out first
     Ready = 'R',     // it is open
     Go = 'G',        // start it at this moment
@@ -45,8 +50,12 @@ enum class Kind : char {
     Leave = 'L',
     Print = 'F',     // a song held as another file (the same tags, other bytes): from the other device, the print from `position`
                      // of its own; flag: this is it (print, empty if its file would not read)
-    Who = 'W'        // the starter: who changes what plays; flag: only the starter (else both); song: its order (Order, 0..3), which
+    Who = 'W',       // the starter: who changes what plays; flag: only the starter (else both); song: its order (Order, 0..3), which
                      // decides what comes next on both
+    Members = 'M',   // the starter: the other devices in the session (BETA 3: three or more), their names in list, one a line
+    Tones = 'T',     // the delay, measured (micmeasure.hpp): chirp in slot `song` of `serial` slots from the moment `at`; flag: you listen
+    Delay = 'D'      // to the starter, from the device listening: "slot ms" a line ("slot -": not heard; "!words": it failed); from the
+                     // starter: "ms", this device's correction
 };
 /** What the device that did not start the session may ask for. */
 constexpr char AskPause = 'p', AskPlay = 'r', AskSeek = 's', AskSong = 'o', AskOrder = 'm';   // AskOrder: song is the order wanted

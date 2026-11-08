@@ -115,7 +115,7 @@ void App::drawPortraitMock(int which) {
         const double dur = in.duration;
         const float frac = dur > 0 ? float(std::clamp(shownPosition() / dur, 0.0, 1.0)) : 0;
         const float cy = y + h / 2, foot = y + h;
-        const bool waveNow = wave.ready() && has && wave.path() == lib.tracks[now.track].path;
+        const bool waveNow = store.seekWave && wave.ready() && has && !playingFile().empty() && wave.path() == playingFile();
         const auto& pk = wave.peaks();
         const int bars = int(w / 3);
         // the visualizer's columns, as drawSpectrum lays them
@@ -371,7 +371,7 @@ void App::drawPortraitMock(int which) {
         // a word of the artist playing, as someone would type it
         std::string qtext = has ? in.artist.substr(0, in.artist.find_first_of(" ,&")) : "a";
         if (qtext.empty()) qtext = "a";
-        searchField(64, qtext, "Artist, album or track");
+        searchField(64, qtext, searchHint());
         static const char* pills[6] = { "All", "Tracks", "Albums", "Artists", "Folders", "Lyrics" };
         float px = kPad;
         for (int i = 0; i < 6; i++) {

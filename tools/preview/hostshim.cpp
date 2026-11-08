@@ -397,9 +397,18 @@ void hostHookMusic(void (*f)(void*, Uint8*, int), void* arg) {
 // ---- battery, dock, sleep and backlight (switch.h)
 Result psmGetChargerType(PsmChargerType* out) {
     *out = getenv("GF_CHARGING") ? PsmChargerType_EnoughPower : PsmChargerType_Unconnected;
+    if (const char* m = getenv("GF_BATTERY_MOCK")) {
+        const std::string k = m;
+        *out = k == "slow" ? PsmChargerType_LowPower : k == "normal" || k == "fast" || k == "full" ? PsmChargerType_EnoughPower : PsmChargerType_Unconnected;
+    }
     return 0;
 }
 Result psmGetRawBatteryChargePercentage(double* out) {
+    if (const char* m = getenv("GF_BATTERY_MOCK")) {
+        const std::string k = m;
+        *out = k == "low" ? 12.4 : k == "full" ? 100 : k == "slow" ? 41.2 : k == "normal" ? 58.7 : k == "fast" ? 63.1 : 76;
+        return 0;
+    }
     const double minutes = frame / 60.0 / 60.0;
     const double v = getenv("GF_CHARGING") ? 40 + minutes : 76 - minutes * 0.5;   // windows.h's min/max macros: no std::min here
     *out = v > 100 ? 100 : v < 1 ? 1 : v;

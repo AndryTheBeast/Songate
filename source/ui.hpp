@@ -139,6 +139,15 @@ public:
     void setPadMode(bool on) { padMode_ = on; }
     /** (dev: the options' preview draws every touch area) */
     template <class F> void eachItem(F f) const { for (const auto& it : prev_) f(it.r); }
+    /** Last frame's items that take input and show (its id and rectangle): the self test walks and checks them. */
+    template <class F> void eachItemId(F f) const {
+        for (const auto& it : prev_) {
+            if (!shown(it)) continue;
+            const float x0 = std::max(it.r.x, it.clip.x), y0 = std::max(it.r.y, it.clip.y);
+            const float x1 = std::min(it.r.x + it.r.w, it.clip.x + it.clip.w), y1 = std::min(it.r.y + it.r.h, it.clip.y + it.clip.h);
+            if (x1 > x0 && y1 > y0) f(it.id, SDL_FRect{ x0, y0, x1 - x0, y1 - y0 });
+        }
+    }
 
 private:
     struct Item {

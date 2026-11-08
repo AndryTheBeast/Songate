@@ -120,6 +120,13 @@ std::vector<std::string> presentThen(const std::vector<std::string>& ids, const 
 
 }  // namespace
 
+std::string lyricsText(std::string s) {
+    std::string t;
+    for (char c : s) if (c != '\r') t += c;
+    while (!t.empty() && (t.back() == '\n' || t.back() == ' ' || t.back() == '\t')) t.pop_back();
+    return t;
+}
+
 std::string Changes::summary() const {
     std::string s;
     auto add = [&](size_t n, const char* one, const char* many) {
@@ -133,6 +140,8 @@ std::string Changes::summary() const {
     add(listsSet.size() + listsRename.size(), "playlist changed", "playlists changed");
     add(listsDelete.size(), "playlist deleted", "playlists deleted");
     add(filesDelete.size(), "song deleted", "songs deleted");
+    add(lyricsSet.size(), "song's lyrics", "songs' lyrics");
+    add(moodsSet.size(), "song's mood", "songs' moods");
     add(edits.size(), "tag edit", "tag edits");
     add(plays.size(), "play count updated", "play counts updated");
     if (!listOrder.empty()) add(1, "playlist order changed", "");
@@ -166,10 +175,35 @@ void scan(Ledger& ledger, const Snapshot& now, ListIds& ids, const Seen& seen, u
         if (x && x->value == "1" && !kv.second.copies.empty() && !seen.songs.count(kv.first)) ledger.put("X" + kv.first, "");
     }
 
+    if (kinds & KindLyrics)
+        for (const std::string& song : now.lyricsGone) {
+            auto it = g.find(song);
+            bool still = false;
+            if (it != g.end()) for (const Song* s : it->second.copies) still = still || now.lyrics.count(s->path);
+            if (!still) ledger.put(ledgerkey::lyrics(song), "");
+        }
+
     for (const auto& kv : g) {
         const std::string& song = kv.first;
         const auto& copies = kv.second.copies;
         if (copies.empty()) continue;
+        if (kinds & KindLyrics) {
+            for (const Song* s : copies) {
+                auto l = now.lyrics.find(s->path);
+                if (l != now.lyrics.end() && !l->second.empty()) { ledger.put(ledgerkey::lyrics(song), l->second); break; }
+            }
+        }
+        if (kinds & KindMoods) {   // as Liked: put while chosen here; cleared only if it was here before
+            std::string v;
+            for (const Song* s : copies) {
+                auto it = now.moods.find(s->path);
+                if (it != now.moods.end() && !it->second.empty()) { v = it->second; break; }
+            }
+            const std::string key = ledgerkey::mood(song);
+            const Ledger::Entry* e = ledger.find(key);
+            if (!v.empty() && (!e || e->value != v)) ledger.put(key, v);
+            else if (v.empty() && e && !e->value.empty() && seen.keys.count(key) && !addOnly) ledger.put(key, "");
+        }
         if (kinds & KindLiked) {
             bool on = false;
             for (const Song* s : copies) on = on || liked.count(s->path);
@@ -303,6 +337,24 @@ Changes plan(const Ledger& after, const Snapshot& now, ListIds& ids, Seen& seen,
                 const std::string have = e == now.edits.end() || !e->second.count(field) ? std::string() : e->second.at(field);
                 if (have != v) out.edits.push_back({ s->path, field, v });
             }
+        } else if (k[0] == 'Y' && (kinds & KindLyrics)) {
+            auto it = g.find(k.substr(1));
+            if (it == g.end()) continue;
+            for (const Song* s : it->second.copies) {
+                const std::string ownKey = "own\t" + s->path;
+                if (std::find(now.lyricsKept.begin(), now.lyricsKept.end(), ownKey) != now.lyricsKept.end()) continue;   // its own: never touched
+                auto have = now.lyrics.find(s->path);
+                if (!v.empty()) { if (have == now.lyrics.end() || have->second != v) out.lyricsSet.push_back({ s->path, v }); }
+                else if (have != now.lyrics.end()) out.lyricsRemove.push_back(s->path);
+            }
+        } else if (k[0] == 'M' && (kinds & KindMoods)) {
+            auto it = g.find(k.substr(1));
+            if (it == g.end()) continue;
+            for (const Song* s : it->second.copies) {
+                auto have = now.moods.find(s->path);
+                const std::string h = have == now.moods.end() ? std::string() : have->second;
+                if (h != v) out.moodsSet.push_back({ s->path, v });
+            }
         } else if (k[0] == 'X' && (kinds & KindDeletes)) {
             if (v != "1" || kv.second.clock <= now.deleteFrom) continue;
             auto it = g.find(k.substr(1));
@@ -422,9 +474,9 @@ Changes plan(const Ledger& after, const Snapshot& now, ListIds& ids, Seen& seen,
     for (const auto& kv : g) if (!kv.second.copies.empty()) seen.songs.insert(kv.first);
     for (const auto& kv : after.entries()) {
         const std::string& k = kv.first;
-        if ((k[0] != 'L' && k[0] != 'E') || kv.second.value.empty()) continue;
+        if ((k[0] != 'L' && k[0] != 'E' && k[0] != 'M') || kv.second.value.empty()) continue;
         const size_t sep = k.find(kSep);
-        if (seen.songs.count(k[0] == 'L' ? k.substr(1) : k.substr(1, sep == std::string::npos ? sep : sep - 1))) seen.keys.insert(k);
+        if (seen.songs.count(k[0] != 'E' ? k.substr(1) : k.substr(1, sep == std::string::npos ? sep : sep - 1))) seen.keys.insert(k);
     }
     return out;
 }

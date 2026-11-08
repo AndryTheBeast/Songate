@@ -8,6 +8,7 @@
 
 #include "app.hpp"
 #include "icons.inc"
+#include "plicons.inc"
 
 namespace {
 float clampf(float v, float lo, float hi) { return std::min(hi, std::max(lo, v)); }
@@ -52,15 +53,17 @@ void App::drawNow(float x, float y, float w, float h) {
     }
     if (fc.ui <= 0.001f) return;   // the info fully faded: not drawn at all (App::draw)
     if (fc.ui < 1) g.setFade(fc.ui);
+    // the pocket lock: a pill under the cover, centred between it and the player bar (the user, 2026-11-07), the cover at rest
+    if (m < 0.01f) pocketPill(rx + art / 2, ry + art + (y + h - (ry + art)) / 2);
 
     // ---- .np-info, measured first so the panel can take what is left
     // .np-title: Inter 760, clamp(30px, 4.2vw, 52px), line-height 1.04; a title that needs two lines steps down
     // to 42 px, because at 720 p every line it takes is a row of Up next.
-    Font titleF{ css::Hero, Weight::ExtraBold };
-    const std::string titleText = has ? now.info.title : "Songate";
-    std::vector<std::string> title = g.wrap(titleText, titleF, int(iw), 2);
-    if (title.size() > 1) { titleF.size = 42; title = g.wrap(titleText, titleF, int(iw), 2); }
-    const float titleLH = std::round(titleF.size * 1.04f);
+    std::string titleText = has ? now.info.title : "Songate";
+#ifdef GF_PREVIEW
+    if (const char* t = getenv("GF_NP_TITLE"); t && has) titleText = t;   // (the preview: a title to try the fitting with)
+#endif
+    const TitleFit fit = fitTitle(titleText, iw);   // (a copy: fitTitle's cache may move under the outgoing song's)
     auto badgesOf = [&](const TrackInfo& in) {
         std::vector<std::string> bs;
         if (!in.codec.empty()) bs.push_back(in.codec);
@@ -75,7 +78,7 @@ void App::drawNow(float x, float y, float w, float h) {
     // Gatefold's column is sized for a desktop window; on 720 p the fixed rows are tightened and the spectrum
     // shrinks (then folds away) so .np-panel keeps at least four Up next rows and five synced lyric lines.
     const float padT = 16, padB = 10;
-    const float titleH = 4 + title.size() * titleLH + 2;
+    const float titleH = 4 + fit.h + 2;
     auto fixedH = [&](float vizH) {
         return 17 + titleH + 4 + 31 + 2 + 22 + (badges.empty() ? 0 : 10 + 22) + (has ? 12 + 34 : 0) + (vizH > 0 ? 14 + vizH : 0) + 8 + 35 + 6;
     };
@@ -83,33 +86,30 @@ void App::drawNow(float x, float y, float w, float h) {
     // What the panel must keep: four .up-rows, but for a two-line title three rows and the whole Palette tab
     // (drawPaletteTab's height) are enough, and the bars keep their height rather than shrinking to a sliver.
     const float paletteH = 8 + 26 + 10 + 4 * 30 + 8 + 20;
-    const float wantPanel = title.size() > 1 ? std::max(8 + 3 * 52.f, paletteH) : 8 + 4 * 52;
+    const float wantPanel = fit.lines.size() > 1 ? std::max(8 + 3 * 52.f, paletteH) : 8 + 4 * 52;
     // (and where even its smallest leaves Up next too little, a short window: it folds away, the panel keeps its rows)
-    const float vizRoom = avail - fixedH(0) - 14 - wantPanel;
-    const float vizH = store.showSpectrum && vizRoom >= 28 ? clampf(vizRoom, 28, 46) : 0;
+    float vizRoom = avail - fixedH(0) - 14 - wantPanel;
+    // a short screen (a phone on Medium or Largest): the spectrum keeps its row and Up next shows three (the user, 2026-11-05: "the android
+    // app no longer display the waveform spectrum in now playing landscape"; "Spectrum stays, 3 rows")
+    if (store.showSpectrum && vizRoom < 28) vizRoom = avail - fixedH(0) - 14 - (8 + 3 * 52.f);
+    const float vizH = store.showSpectrum && vizRoom >= 22 ? clampf(vizRoom, 22, 46) : 0;
     const float panelH = std::max(96.f, avail - fixedH(vizH));
     float cy = y + padT;
 
     // .np-kicker
-    eqGlyph(ix, cy + 8, pal.accentInk, isPlaying() || extOn);   // (AirPlay plays: the bars move with it)
-    const std::string state = extOn ? "Playing over AirPlay" : !has ? "Nothing playing" : isPlaying() ? "Playing" : "Paused";
+    eqGlyph(ix, cy + 8, pal.accentInk, isPlaying() || (extOn && !srvq_.on));   // (AirPlay plays: the bars move with it)
+    const std::string state = srvq_.on ? (isPlaying() ? "Playing from your server" : "Paused") : extOn ? "Playing over AirPlay" : !has ? "Nothing playing" : isPlaying() ? "Playing" : "Paused";
     kicker(state, ix + 13 + 10, cy + 8, pal.accentInk, 0.14f);
     cy += 17 + 4;
     // the title, .np-artist and .np-album; in a Simple join (Settings › Appearance › Automix) the outgoing song's give way
     // to the next one's from left to right, timed to the join (the user, 2026-10-29). The next one's title decides the layout
     auto meta = [&](bool old) {
         const TrackInfo& in = old ? mixOld.info : now.info;
-        Font tf = titleF;
-        std::vector<std::string> tl = title;
-        if (old) {
-            tf = { css::Hero, Weight::ExtraBold };
-            tl = g.wrap(in.title, tf, int(iw), 2);
-            if (tl.size() > 1) { tf.size = 42; tl = g.wrap(in.title, tf, int(iw), 2); }
-        }
+        const TitleFit tfit = old ? fitTitle(in.title, iw) : fit;
         float yy = cy;
-        for (const auto& l : tl) { g.text(l, tf, ix - 2, yy - tf.size * 0.08f, pal.text, 1, Align::Left, int(iw)); yy += std::round(tf.size * 1.04f); }
+        for (const auto& l : tfit.lines) { g.text(l, tfit.font, ix - 2, yy - tfit.font.size * 0.08f, pal.text, 1, Align::Left, int(iw)); yy += tfit.lh; }
         if (!has) return;
-        yy = cy + title.size() * titleLH + 2 + 4;
+        yy = cy + fit.h + 2 + 4;
         std::string al = in.album;
         if (in.date.size() >= 4) al += (al.empty() ? "" : " · ") + in.date.substr(0, 4);
         // too long for the column: they scroll as the player bar's (one clock: a new song starts them again)
@@ -120,13 +120,14 @@ void App::drawNow(float x, float y, float w, float h) {
         // (across the texts themselves, the wider song's: across the whole column a short title changed in a moment)
         float wide = 0;
         for (const TrackInfo* in : { &mixOld.info, &now.info }) {
-            for (const auto& l : g.wrap(in->title, titleF, int(iw), 2)) wide = std::max(wide, float(g.measure(l, titleF)));
+            const TitleFit wf = fitTitle(in->title, iw);
+            for (const auto& l : wf.lines) wide = std::max(wide, float(g.measure(l, wf.font)));
             wide = std::max({ wide, float(g.measure(in->artist, { 24, Weight::SemiBold })), float(g.measure(in->album, { css::Md })) + 60 });
         }
-        wiped(ix, ix + std::min(iw, wide), cy, cy + title.size() * titleLH + 6 + 31 + 2 + 22, meta);
+        wiped(ix, ix + std::min(iw, wide), cy, cy + fit.h + 6 + 31 + 2 + 22, meta);
     }
     else meta(false);
-    cy += title.size() * titleLH + 2 + 4 + 31 + 2 + 22;
+    cy += fit.h + 2 + 4 + 31 + 2 + 22;
     // .np-badges: the codec chip is the accent one
     if (!badges.empty()) {
         cy += 10;
@@ -134,21 +135,34 @@ void App::drawNow(float x, float y, float w, float h) {
             const std::vector<std::string> bs = old ? badgesOf(mixOld.info) : badges;
             float bx = ix;
             for (size_t i = 0; i < bs.size(); i++) bx += chip(bs[i], bx, cy + 11, i == 0) + 6;
-            // The first genre, as a chip that opens its page
+            // The first genre, as a chip that opens its page (a server track's: the server's genre); a server's track, then where from
             const int tr = old ? mixOld.track : now.track;
-            if (extOn || tr < 0 || tr >= int(lib.tracks.size())) return;
-            const std::string& gs = lib.tracks[tr].genre;
+            const bool server = srvq_.on && !old;
+            if (!server && (extOn || tr < 0 || tr >= int(lib.tracks.size()))) return;
+            const std::string& gs = server ? now.info.genre : lib.tracks[tr].genre;
             const std::string g1 = gs.substr(0, gs.find(';'));
             if (!g1.empty()) {
                 const Font gf{ css::Xs, Weight::SemiBold };
                 const float gw = g.measureSpaced(g1, gf, 0.02f) + 16 + 18;
                 const Id gid = uid("np.genre");
-                if (!old && ui.item(gid, { bx, cy, gw, 22 }, 6)) openGenre(g1);
+                if (!old && ui.item(gid, { bx, cy, gw, 22 }, 6)) { if (server) openServer(3, g1, g1); else openGenre(g1); }
                 const bool hot = !old && (ui.pressed(gid) || (ui.focused(gid) && ui.showFocusRing()));
                 g.roundRect(bx, cy, gw, 22, 6, pal.text, hot ? 0.13f : 0.065f);
                 g.roundStroke(bx, cy, gw, 22, 6, 1, pal.text, 0.09f);
                 g.icon(ICON_TAG, bx + 13, cy + 11, 12, pal.text2);
                 g.textSpaced(g1, gf, bx + 8 + 18, cy + 11, 0.02f, pal.text2);
+                bx += gw + 6;
+            }
+            if (server) {   // where it plays from: the server, as a chip of its own (Library › Server)
+                const Font sf{ css::Xs, Weight::SemiBold };
+                const float sw = g.measureSpaced(extFrom, sf, 0.02f) + 16 + 18;
+                const Id sid = uid("np.server");
+                if (ui.item(sid, { bx, cy, sw, 22 }, 6)) { store.libSource = 1; libSourceChanged(); navigate(View::Library); }
+                const bool hot = ui.pressed(sid) || (ui.focused(sid) && ui.showFocusRing());
+                g.roundRect(bx, cy, sw, 22, 6, pal.text, hot ? 0.13f : 0.065f);
+                g.roundStroke(bx, cy, sw, 22, 6, 1, pal.text, 0.09f);
+                g.icon(PLI_CLOUD, bx + 13, cy + 11, 13, pal.text2);
+                g.textSpaced(extFrom, sf, bx + 8 + 18, cy + 11, 0.02f, pal.text2);
             }
         };
         if (pageWipe_.on) wiped(ix, ix + iw, cy, cy + 22, badgeRow);
@@ -156,10 +170,44 @@ void App::drawNow(float x, float y, float w, float h) {
         cy += 22;
     }
     // .np-actions; an outside source has none of a song here, only where it comes from
-    if (extOn) {
+    if (srvq_.on && srvq_.pos >= 0 && srvq_.pos < int(srvq_.songs.size())) {   // a server's track: as one of yours (the user, 2026-11-06)
         cy += 12;
-        g.icon(ICON_LINK, ix + 9, cy + 17, 16, pal.text2);
-        g.textC("From " + extFrom + " · play, pause and skip there", { css::Sm }, ix + 26, cy + 17, pal.text2, 1, Align::Left, int(iw - 26));
+        const Subsonic::Song& so = srvq_.songs[size_t(srvq_.pos)];
+        const bool liked = currentLiked();
+        float bx = ix;
+        bool clicked = false;
+        bx += button(uid("np.like"), liked ? ICON_HEART_F : ICON_HEART, liked ? "Liked" : "Add to Liked", bx, cy, false, &clicked, liked, false, DefaultFocus) + 8;
+        if (clicked) toggleCurrentLike();
+        if (!so.albumId.empty()) {
+            clicked = false;
+            bx += button(uid("np.album"), ICON_GRID, "Album", bx, cy, false, &clicked) + 8;
+            if (clicked) openServer(2, so.albumId, so.album);
+        }
+        if (!so.artistId.empty()) {
+            clicked = false;
+            bx += button(uid("np.artist"), ICON_MIC, "Artist", bx, cy, false, &clicked) + 8;
+            if (clicked) openServer(1, so.artistId, so.artist);
+        }
+        if (!so.parent.empty()) {
+            clicked = false;
+            bx += button(uid("np.folder"), ICON_FOLDER, "Folder", bx, cy, false, &clicked) + 8;
+            if (clicked) openServer(4, so.parent, so.album);
+        }
+        {   // .np-actions .more: the server track's menu (also + on the controller)
+            const Id mid = uid("np.more");
+            if (ui.item(mid, { bx, cy, 34, 34 }, 17)) openServerMenu(so);
+            const bool hot = ui.pressed(mid) || (ui.focused(mid) && ui.showFocusRing());
+            g.roundRect(bx, cy, 34, 34, 17, pal.text, hot ? 0.11f : 0.065f);
+            g.roundStroke(bx, cy, 34, 34, 17, 1, pal.text, 0.15f);
+            g.icon(ICON_MORE, bx + 17, cy + 17, 16, pal.text);
+        }
+        cy += 34;
+    } else if (extOn) {
+        cy += 12;
+        float lx = ix;
+        g.icon(ICON_LINK, lx + 9, cy + 17, 16, pal.text2);
+        g.textC(srvq_.on ? "From " + extFrom + (srvq_.name.empty() ? "" : " · " + srvq_.name) : "From " + extFrom + " · play, pause and skip there", { css::Sm }, lx + 26,
+                cy + 17, pal.text2, 1, Align::Left, int(iw - (lx - ix) - 26));
         cy += 34;
     } else if (has) {
         cy += 12;
@@ -219,10 +267,8 @@ void App::drawNow(float x, float y, float w, float h) {
         const std::vector<int> nx = upNext(1);
         if (!nx.empty() && nx[0] != now.track) {
             const Track& n = lib.tracks[nx[0]];
-            Font tf{ css::Hero, Weight::ExtraBold };
-            std::vector<std::string> lines = g.wrap(n.title, tf, int(iw), 2);
-            if (lines.size() > 1) { tf.size = 42; lines = g.wrap(n.title, tf, int(iw), 2); }
-            for (const auto& l : lines) g.warm(l, tf, int(iw));
+            const TitleFit nf = fitTitle(n.title, iw);
+            for (const auto& l : nf.lines) g.warm(l, nf.font, int(iw));
             g.warm(n.artist, { 24, Weight::SemiBold }, int(iw));
             std::string al = n.album;
             if (n.date.size() >= 4) al += (al.empty() ? "" : " · ") + n.date.substr(0, 4);
@@ -239,6 +285,196 @@ void App::drawNow(float x, float y, float w, float h) {
     // behind the hint instead: the user, 2026-10-29)
     groupMagic(y + padT, npTab == 1 ? vizTop : cy + ph);
     g.setFade(1);
+}
+
+std::string App::titleTrim(const std::string& text, Font f, float w) {
+    static std::vector<std::pair<std::string, std::string>> cache;   // (a few: each layout's, the outgoing song's, the next one's)
+    const std::string key = std::to_string(f.size) + "|" + std::to_string(int(f.weight)) + "|" + std::to_string(int(w)) + "|" + text;
+    for (const auto& c : cache) if (c.first == key) return c.second;
+    if (cache.size() >= 16) cache.erase(cache.begin());
+    auto trim = [](std::string s) {
+        while (!s.empty() && (s.back() == ' ' || s.back() == '-')) s.pop_back();
+        while (!s.empty() && s.front() == ' ') s.erase(s.begin());
+        return s;
+    };
+    std::string main = text;
+    if (g.wrap(text, f, int(w), 2).size() > 1) {   // the part in brackets at its end (feat., from the series…, Remastered…), or after " - ": left out
+        const char close = text.empty() ? 0 : text.back();
+        if (close == ')' || close == ']') {
+            const char open = close == ')' ? '(' : '[';
+            int depth = 0;
+            for (size_t i = text.size(); i-- > 0;) {
+                if (text[i] == close) depth++;
+                else if (text[i] == open && --depth == 0) {
+                    const std::string head = trim(text.substr(0, i)), inner = trim(text.substr(i + 1, text.size() - i - 2));
+                    if (!head.empty() && !inner.empty()) main = head;
+                    break;
+                }
+            }
+        } else if (const size_t d = text.rfind(" - "); d != std::string::npos && d > 0) {
+            const std::string head = trim(text.substr(0, d)), tail = trim(text.substr(d + 3));
+            if (!head.empty() && !tail.empty()) main = head;
+        }
+    }
+    cache.push_back({ key, main });
+    return main;
+}
+
+const App::TitleFit& App::fitTitle(const std::string& text, float w) {
+    // kept: the current song's, the outgoing one's and the next one's, measured once each, not every frame
+    static std::vector<std::pair<std::string, TitleFit>> cache;
+    const std::string key = std::to_string(int(w)) + "|" + text;
+    for (const auto& c : cache) if (c.first == key) return c.second;
+    if (cache.size() >= 8) cache.erase(cache.begin());
+    TitleFit r;
+    auto fits = [&](const std::string& s, Font f, int n) { return int(g.wrap(s, f, int(w), n + 1).size()) <= n; };
+    const std::string main = titleTrim(text, r.font, w);
+    // one line at its full size; else two at 42 (at 720 p every line it takes is a row of Up next), cut with … past that
+    r.lines = { main };
+    if (!fits(main, r.font, 1)) { r.font.size = 42; r.lines = g.wrap(main, r.font, int(w), 2); }
+    r.lh = std::round(r.font.size * 1.04f);
+    r.h = r.lines.size() * r.lh;
+    cache.push_back({ key, r });
+    return cache.back().second;
+}
+
+// ------------------------------------------------------------------ the pocket lock (the Switch)
+
+bool App::pocketAvailable() {
+#ifdef __SWITCH__
+    static int can = -1;   // asked once: the pads open, or not (never each frame)
+    if (can < 0) { bool up, down; can = plat::volumeKeys(up, down) ? 1 : 0; }
+    return can == 1;   // (its unlock needs them read)
+#elif defined(GF_PREVIEW)
+    return getenv("GF_POCKET") != nullptr;   // (the preview: to see the pill; there is no unlock)
+#else
+    return false;
+#endif
+}
+
+/** Now playing's lock: a pill, "Lock" and its padlock, centred on (cx, cy) (Settings › Controls › Pocket lock shows or hides it). */
+void App::pocketPill(float cx, float cy) {
+    if (!store.pocketButton || !pocketAvailable()) return;
+    const Font f{ css::Sm, Weight::SemiBold };
+    const float w = g.measure("Lock", f) + 32 + 24;
+    bool clicked = false;
+    const Id id = uid("np.pocket");
+    hint(id, "The screen off, buttons and touch ignored; " + pocketHowWords() + " to unlock");
+    button(id, ICON_LOCK, "Lock", cx - w / 2, cy - 17, false, &clicked);
+    if (clicked) pocketLock(true);
+}
+
+std::string App::pocketHowWords() const {
+    const int k = pocketLocked_ ? pocketKeyNow_ : store.pocketKey;
+    if (k == 3) return "press Capture twice";
+    const char* key = k == 0 ? "Volume −" : k == 1 ? "Volume +" : "a volume button";
+    return store.pocketHow == 0 ? std::string("hold ") + key + " " + std::to_string(store.pocketHold) + " s" : std::string("press ") + key + " twice";
+}
+
+void App::pocketLock(bool on) {
+    if (on == pocketLocked_) return;
+    pocketLocked_ = on;
+    pocketKeyAt_ = -1;
+    pocketFirstAt_ = -10;
+    pocketKeyNow_ = store.pocketKey;
+    // Capture: its short presses taken while locked (no screenshots); refused, the volume buttons unlock this time (never stuck)
+    if (on && pocketKeyNow_ == 3 && !plat::takeCapture(true)) pocketKeyNow_ = 2;
+    if (!on) plat::takeCapture(false);
+    bool up = false, down = false;
+    plat::volumeKeys(up, down);
+    pocketKeyWas_ = pocketKeyNow_ == 0 ? down : pocketKeyNow_ == 1 ? up : pocketKeyNow_ == 2 ? (up || down) : false;   // (a key already down starts nothing)
+    if (on) {
+        ui.touchUp(-10000, -10000);   // (the finger on the lock lifts nowhere: no touch is left half way)
+        pocketHintUntil_ = time + 2.5;   // the screen says how to unlock, then goes off
+        pocketLightOff_ = false;
+        if (!plat::outputVolume(pocketVolIdle_)) pocketVolIdle_ = -1;
+        const bool homeHeld = plat::blockHome(true);   // (HOME does nothing while locked; run from the album it stays the system's)
+        const int pads = store.pocketPads ? plat::disconnectControllers() : 0;
+        logLine(std::string(homeHeld ? "Pocket lock: on, HOME held back" : "Pocket lock: on (HOME stays the system's)") +
+                (pads > 0 ? ", " + std::to_string(pads) + " controller(s) off" : "") +
+                (store.pocketKey == 3 ? (pocketKeyNow_ == 3 ? ", Capture unlocks" : ", Capture refused: the volume buttons unlock") : ""));
+    } else {
+        if (pocketLightOff_) plat::backlightOff(false);
+        pocketLightOff_ = false;
+        plat::blockHome(false);
+        logLine("Pocket lock: off");
+        toast("Unlocked");
+    }
+}
+
+/** Every frame while locked (input() hands it nothing else): the unlock on the volume buttons; a press lights the hint. */
+void App::pocketTick(bool pressed) {
+    if (!plat::inFocus()) { pocketLock(false); return; }   // HOME, or another applet: never left dark
+    bool up = false, down = false;
+    if (!plat::volumeKeys(up, down)) { pocketLock(false); return; }
+    if (pocketKeyNow_ == 3) {   // Capture: pressed twice within 0.7 s (its short presses are all the system hands over)
+        const int n = plat::capturePresses();
+        if (n > 1 || (n == 1 && time - pocketFirstAt_ <= 0.7)) { pocketLock(false); return; }
+        if (n == 1) pocketFirstAt_ = time;
+        pressed = pressed || n > 0;
+    }
+    const bool key = pocketKeyNow_ == 0 ? down : pocketKeyNow_ == 1 ? up : pocketKeyNow_ == 2 ? (up || down) : false;
+    const bool edge = key && !pocketKeyWas_, released = !key && pocketKeyWas_;
+    pocketKeyWas_ = key;
+    // The volume (the system changes it with these keys; the user, 2026-11-07): set to hold, a quick press still changes it and a
+    // hold does not; set to press twice, a hold still changes it and the quick presses do not. What the key did is undone once
+    // it is known what it was (a press past 0.3 s is a hold)
+    constexpr double kTap = 0.3;
+    // the volume before the press: the one read while the key was up (by the frame the key reads down, the system has stepped it)
+    if (edge) { pocketPressAt_ = time; pocketVol0_ = pocketVolIdle_; if (pocketVol0_ < 0 && !plat::outputVolume(pocketVol0_)) pocketVol0_ = -1; }
+    if (pocketVol0_ >= 0 && pocketPressAt_ >= 0) {
+        const double held = time - pocketPressAt_;
+        int v = -1;
+        const bool keep = store.pocketHow == 0 ? (key && held >= kTap)                  // holding: kept where it began
+                                               : ((key && held < kTap) || (released && held < kTap));   // tapping: undone
+        if (keep && plat::outputVolume(v) && v != pocketVol0_) plat::setOutputVolume(pocketVol0_);
+    }
+    if (released) pocketPressAt_ = -1;
+    if (!key) { int v = -1; if (plat::outputVolume(v)) pocketVolIdle_ = v; }   // (after any putting back above)
+    if (pocketKeyNow_ == 3) {
+    } else if (store.pocketHow == 0) {   // held
+        if (!key) pocketKeyAt_ = -1;
+        else if (pocketKeyAt_ < 0) pocketKeyAt_ = time;
+        else if (time - pocketKeyAt_ >= store.pocketHold) { pocketGuard_ = pocketVol0_ >= 0; pocketLock(false); return; }
+    } else if (edge) {            // pressed twice, within 0.7 s
+        if (time - pocketFirstAt_ <= 0.7) { pocketGuard_ = pocketVol0_ >= 0; pocketLock(false); return; }
+        pocketFirstAt_ = time;
+    }
+    if ((pressed || edge) && store.pocketHint) pocketHintUntil_ = time + 3;
+    // the light: on while the hint shows, else off (asked again each second: waking from sleep brings it back)
+    const bool lit = time < pocketHintUntil_;
+    if (lit && pocketLightOff_) { plat::backlightOff(false); pocketLightOff_ = false; }
+    else if (!lit && (!pocketLightOff_ || time - pocketLitAt_ > 1)) { plat::backlightOff(true); pocketLightOff_ = true; pocketLitAt_ = time; }
+}
+
+/** Unlocked by a volume key still down: its volume kept where the press began until it is let go (the user, 2026-11-07: held on past
+ *  the unlock, the volume ran down to nothing). */
+void App::pocketGuardTick() {
+    bool up = false, down = false;
+    if (!plat::volumeKeys(up, down)) { pocketGuard_ = false; return; }
+    const bool key = pocketKeyNow_ == 0 ? down : pocketKeyNow_ == 1 ? up : pocketKeyNow_ == 2 ? (up || down) : false;
+    int v = -1;
+    if (key && pocketVol0_ >= 0 && plat::outputVolume(v) && v != pocketVol0_) plat::setOutputVolume(pocketVol0_);
+    if (!key) pocketGuard_ = false;
+}
+
+/** Over everything while locked: black, and the hint while it is lit. */
+void App::drawPocket() {
+    if (!pocketLocked_) return;
+    g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, 1);
+    if (time >= pocketHintUntil_) return;
+    const float a = std::clamp(float(pocketHintUntil_ - time) / 0.4f, 0.f, 1.f) * 0.55f;   // dim, and fading out at its end
+    const float cx = css::W / 2.f, cy = css::H / 2.f;
+    g.icon(ICON_LOCK, cx, cy - 34, 34, pal.text, a);
+    g.textC("Locked", { css::Lg, Weight::SemiBold }, cx, cy + 10, pal.text, a, Align::Center);
+    std::string how = pocketHowWords();
+    how[0] = char(toupper(uint8_t(how[0])));
+    g.textC(how + " to unlock", { css::Base }, cx, cy + 40, pal.text2, a, Align::Center);
+    if (store.pocketHow == 0 && pocketKeyAt_ >= 0) {   // held: how far
+        const float f = std::clamp(float(time - pocketKeyAt_) / float(store.pocketHold), 0.f, 1.f);
+        g.roundRect(cx - 80, cy + 64, 160, 4, 2, pal.text, 0.12f * a / 0.55f);
+        g.roundRect(cx - 80, cy + 64, 160 * f, 4, 2, pal.accent, a);
+    }
 }
 
 /**
@@ -343,6 +579,37 @@ void App::drawSpectrum(float x, float y, float w, float h, float played) {
 }
 
 void App::drawUpNext(float x, float y, float w, float h) {
+    if (srvq_.on) {   // the server's queue: what comes after this one, as rows (a press plays it)
+        ScrollArea& sa = area("np.srv");
+        const int from = srvq_.pos + 1, n = std::max(0, std::min(int(srvq_.songs.size()) - from, 30));
+        sa.view = { x - 8, y, w + 16, h };
+        sa.content = 8 + n * 52.f + 8;
+        if (n == 0) { g.textC("Nothing after this one", { css::Base }, x + w / 2, y + 40, pal.text3, 1, Align::Center); return; }
+        ui.pushArea(&sa);
+        g.clip(x - 8, y, w + 16, h);
+        for (int k = 0; k < n; k++) {
+            const float ry = y + 8 + k * 52.f - sa.y;
+            if (ry + 52 < y || ry > y + h) continue;
+            const Subsonic::Song& s = srvq_.songs[size_t(from + k)];
+            const Id id = uid("np.srvnext", k);
+            // as your own Up next's rows: a 40 px cover | title + artist · album | duration (the user, 2026-11-07: the Switch showed
+            // no covers here, the phone's sheet did)
+            if (ui.item(id, { x - 8, ry, w + 16, 52 }, 8)) { serverPlayAt(from + k); break; }
+            hoverServer(id, s);
+            if (ui.pressed(id) || (ui.focused(id) && ui.showFocusRing())) g.roundRect(x - 8, ry, w + 16, 52, 8, pal.text, 0.065f);
+            if (SDL_Texture* tex = serverCover(s.cover)) g.image(tex, x, ry + 6, 40, 40, 6);
+            else g.roundRect(x, ry + 6, 40, 40, 6, pal.surface2);
+            const std::string dur = s.duration > 0 ? fmtTime(s.duration) : "";
+            const int dw = g.measure(dur, { css::Sm });
+            const int tw = int(w - 52 - dw - 20);
+            g.text(s.title, { css::Base, Weight::SemiBold }, x + 52, ry + 7, pal.text, 1, Align::Left, tw);
+            g.text(s.artist + (s.album.empty() ? "" : " · " + s.album), { css::Sm }, x + 52, ry + 27, pal.text3, 1, Align::Left, tw);
+            g.textC(dur, { css::Sm }, x + w, ry + 26, pal.text3, 1, Align::Right);
+        }
+        g.unclip();
+        ui.popArea();
+        return;
+    }
     if (extOn) {   // what plays next is the other device's
         g.textC("What plays next is up to " + extFrom, { css::Base }, x + w / 2, y + 40, pal.text3, 1, Align::Center);
         return;
@@ -397,6 +664,7 @@ void App::drawUpNext(float x, float y, float w, float h) {
 void App::drawLyricsOf(float x, float y, float w, float h, const std::vector<LyricLine>& lyrics, bool synced, const std::string& source,
                        double at, ScrollArea& sa, bool live) {
     sa.view = { x, y, w, h };
+    if (live && drawLyrOnline(x, y, w, h)) return;   // found online: looking, a card first, Not these (lyrics_online.cpp)
     if (lyrics.empty()) {
         // .lyr-msg
         g.text("No lyrics", { css::Lg, Weight::SemiBold }, x, y + 28, pal.text2);
@@ -408,13 +676,15 @@ void App::drawLyricsOf(float x, float y, float w, float h, const std::vector<Lyr
         return;
     }
     // .lyr-bar: what they are, and for synced ones the timing control on the right
-    g.textC(std::string(synced ? "Synced" : "Plain text") + " · " + source, { css::Xs }, x, y + 14, pal.text3);
-    if (live && lyricTimingShown()) {
+    const bool onlineBar = live && lyrOnlineBar(x, y, w);   // found online, playing, not kept: Keep and Not these
+    if (!onlineBar) g.textC(std::string(synced ? "Synced" : "Plain text") + " · " + source, { css::Xs }, x, y + 14, pal.text3);
+    if (live && !onlineBar && lyricTimingShown()) {
         const Font cf{ css::Xs, Weight::SemiBold };
         const float cw = lyricSyncControl(nullptr, 0, 0, 24, cf, 0, false);   // measured first, then drawn against the right edge
         lyricSyncControl("np.sync", x + w - cw, y + 14, 24, cf, 1, true);
     }
-    const float top = y + 30, vh = h - 30;
+    const float barH = onlineBar ? 46 : 30;   // (its buttons 9 px under the tabs' line, as the found-online card)
+    const float top = y + barH, vh = h - barH;
     sa.view = { x, top, w, vh };
 
     const Font f = synced ? Font{ css::Lg + 1, Weight::Bold } : Font{ css::Base };
@@ -520,7 +790,8 @@ float App::lyricSyncControl(const char* key, float x, float cy, float h, const F
         const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
         if (hot) g.roundRect(bx, cy - h / 2, ws[i], h, h / 2, pal.text, 0.1f * alpha);
         const bool value = i == 1, moved = std::fabs(n) >= 0.05f;
-        g.textC(labels[i], f, bx + ws[i] / 2, cy, value ? (moved ? pal.accentInk : pal.text3) : pal.text2, alpha, Align::Center);
+        if (value) g.textNum(labels[i], f, bx + ws[i] / 2, cy - g.lineHeight(f) / 2.f, moved ? pal.accentInk : pal.text3, alpha, Align::Center);   // (the nudge: fixed-width digits)
+        else g.textC(labels[i], f, bx + ws[i] / 2, cy, pal.text2, alpha, Align::Center);
         bx += ws[i];
     }
     return total;

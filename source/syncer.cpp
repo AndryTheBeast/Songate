@@ -1,7 +1,8 @@
 /*
  * Songate · syncer.cpp
  * See syncer.hpp. Messages on the link, by their first byte: S let us sync, H what I have heard, I some records, E that was all,
- * X I stopped. Each is text: Ledger's own lines, so nothing here is a second format.
+ * X I stopped, W I am syncing with another device (try again soon). Each is text: Ledger's own lines, so nothing here is a second
+ * format. With several devices linked, each sync is with one of them; one that asks meanwhile is told W.
  *
  * Then measurements and covers, which are results and not records, and heavy: only now and then, not with every like. G would you
  * like to, 1 or 0: both must. Q what I have no measurements for, and my versions; R those I
@@ -9,6 +10,8 @@
  * a sync stopped here has lost nothing, and the next one sends what is still missing.
  */
 #include "syncer.hpp"
+#include "lyricsnet.hpp"
+#include "metadata.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -122,6 +125,11 @@ void Syncer::noteGone(const std::string& song) {
     wake_.notify_all();
 }
 
+void Syncer::noteLyricsGone(const std::string& path) {
+    std::lock_guard<std::mutex> g(m_);
+    lyricsGoneQueue_.push_back(path);
+}
+
 bool Syncer::begin(Job job) {
     std::lock_guard<std::mutex> g(m_);
     if (have_) return false;
@@ -139,10 +147,11 @@ Syncer::View Syncer::view() {
     return view_;
 }
 
-bool Syncer::asked() {
+std::string Syncer::asked() {
     std::lock_guard<std::mutex> g(m_);
-    const bool a = asked_;
-    asked_ = false;
+    if (asked_.empty()) return {};
+    const std::string a = asked_.front();
+    asked_.erase(asked_.begin());
     return a;
 }
 
@@ -217,8 +226,11 @@ void Syncer::saveState() {
 bool Syncer::pump(double wait) {
     const double until = seconds() + wait;
     for (;;) {
-        auto got = connect_->receive();
+        auto got = connect_->receive(peer_);
         for (auto& m : got) inbox_.push_back(std::move(m));
+        // another device asking meanwhile: told to try again soon (its other messages are for that sync, which it ends)
+        for (auto& f : connect_->receiveAll(peer_))
+            if (!f.msg.empty() && char(f.msg[0]) == 'S') connect_->send(f.peer, message('W', ""));
         if (!inbox_.empty()) return true;
         {
             std::unique_lock<std::mutex> g(m_);
@@ -230,8 +242,8 @@ bool Syncer::pump(double wait) {
 }
 
 bool Syncer::trade(const Job& job, const Ledger::Have& mine, Ledger::Have& theirs, std::vector<Ledger::Entry>& in) {
-    if (!job.answering) connect_->send(message('S', ""));
-    connect_->send(message('H', haveText(mine)));
+    if (!job.answering) connect_->send(job.peerId, message('S', ""));
+    connect_->send(job.peerId, message('H', haveText(mine)));
     bool gotHave = false, gotEnd = false, sentAll = false;
     std::vector<Ledger::Entry> out;
     size_t at = 0;
@@ -239,19 +251,19 @@ bool Syncer::trade(const Job& job, const Ledger::Have& mine, Ledger::Have& their
     double lastHeard = seconds();
     while (!gotEnd || !sentAll) {
         if (!connect_->linkedTo(job.peerId)) { fail("The link to " + job.peerName + " was lost: nothing changed"); return false; }
-        if (gotHave && !sentAll && connect_->outboxBytes() < 256 * 1024) {
+        if (gotHave && !sentAll && connect_->outboxBytes(job.peerId) < 256 * 1024) {
             // one chunk at a time, while the other way keeps flowing
             chunk.clear();
             while (at < out.size() && chunk.size() < kChunk) {
                 chunk += Ledger::packEntry(out[at++]);
             }
             if (!chunk.empty()) {
-                connect_->send(message('I', chunk));
+                connect_->send(job.peerId, message('I', chunk));
                 std::lock_guard<std::mutex> g(m_);
                 view_.sent = int(at);
             }
             if (at >= out.size()) {
-                connect_->send(message('E', std::to_string(out.size())));
+                connect_->send(job.peerId, message('E', std::to_string(out.size())));
                 sentAll = true;
             }
         }
@@ -292,6 +304,12 @@ bool Syncer::trade(const Job& job, const Ledger::Have& mine, Ledger::Have& their
             case 'X':
                 fail(job.peerName + " stopped the sync: nothing changed");
                 return false;
+            case 'W': {
+                fail(job.peerName + " is syncing with another device");
+                std::lock_guard<std::mutex> g(m_);
+                view_.busy = true;
+                return false;
+            }
             default:
                 later_.push_back(m);   // their G (they finished first), or anything for a later step
                 break;
@@ -302,10 +320,39 @@ bool Syncer::trade(const Job& job, const Ledger::Have& mine, Ledger::Have& their
 }
 
 void Syncer::work(Job job) {
+    peer_ = job.peerId;
+    {   // what this device said before the sync began here (its H): for this sync
+        std::lock_guard<std::mutex> g(m_);
+        inbox_.clear();
+        auto it = early_.find(job.peerId);
+        if (it != early_.end()) { inbox_ = std::move(it->second); early_.erase(it); }
+    }
     // the songs' ids here, off the main thread
     for (syncdata::Song& s : job.now.songs) {
         Identity::Known k;
         if (identity_->find(s.path, k)) { s.id = std::move(k.loose); s.exact = std::move(k.exact); s.size = k.size; }
+    }
+    // the lyrics Songate kept here, read here (not on the main thread); and those removed by hand since the last sync, by song
+    for (const std::string& k : job.now.lyricsKept) {
+        const size_t tab = k.find('\t');
+        if (tab == std::string::npos) continue;
+        const std::string kind = k.substr(0, tab), path = k.substr(tab + 1);
+        std::string text;
+        if (kind == "dir") text = lyrnet::readSaved(path);
+        else if (kind == "lrc") text = readSidecarLyrics(path);
+        else if (kind == "tag") { TrackInfo t; readTrackInfo(path, t, false, true); text = t.lyrics; }
+        text = syncdata::lyricsText(text);
+        if (!text.empty()) job.now.lyrics[path] = text;
+    }
+    {
+        std::vector<std::string> gone;
+        {
+            std::lock_guard<std::mutex> g(m_);
+            gone.swap(lyricsGoneQueue_);
+        }
+        for (const std::string& p : gone)
+            for (const syncdata::Song& s : job.now.songs)
+                if (s.path == p && !s.id.empty()) { job.now.lyricsGone.push_back(s.id); break; }
     }
     load();
     book_.setDevice(job.myId);
@@ -347,7 +394,7 @@ void Syncer::work(Job job) {
     }
     Ledger::Have theirs;
     std::vector<Ledger::Entry> in;
-    if (!trade(job, book_.have(), theirs, in)) { connect_->send(message('X', "")); return; }
+    if (!trade(job, book_.have(), theirs, in)) { connect_->send(job.peerId, message('X', "")); return; }
 
     Ledger merged = book_;
     merged.merge(in, theirs, job.peerName, job.myName);
@@ -392,7 +439,7 @@ void Syncer::work(Job job) {
     saveState();
     if (addOnly) remove((dir_ + "/sync-addonly.txt").c_str());
     // both, or neither: one sharing alone would wait for an answer that never comes
-    connect_->send(message('G', job.share ? "1" : "0"));
+    connect_->send(job.peerId, message('G', job.share ? "1" : "0"));
     bool theyWill = false, heard = false;
     // their answer, wherever it waits: kept by the trade if it came early, else as it arrives; the rest kept for later
     auto takeG = [&](std::vector<std::vector<uint8_t>>& from) {
@@ -453,7 +500,7 @@ void Syncer::share(const Job& job) {
         if (mix.count(s.path) && loud.count(s.path)) continue;
         if (asked.insert(s.exact).second) lacking += s.exact + "\n";
     }
-    connect_->send(message('Q', lacking));
+    connect_->send(job.peerId, message('Q', lacking));
 
     const std::string artDir = dir_ + "/art";
     std::string art = std::to_string(MetaCache::ThumbSize) + "\n";
@@ -465,7 +512,7 @@ void Syncer::share(const Job& job) {
         }
         closedir(d);
     }
-    connect_->send(message('A', art));
+    connect_->send(job.peerId, message('A', art));
 
     std::vector<std::string> sendExact, sendArt;
     int sendSize = 0;
@@ -479,7 +526,7 @@ void Syncer::share(const Job& job) {
             std::lock_guard<std::mutex> g(m_);
             if (quit_) return;
         }
-        if (connect_->outboxBytes() < 256 * 1024) {
+        if (connect_->outboxBytes(job.peerId) < 256 * 1024) {
             std::string chunk;
             while (exactAt < sendExact.size() && chunk.size() < kChunk) {
                 const std::string& x = sendExact[exactAt++];
@@ -494,7 +541,7 @@ void Syncer::share(const Job& job) {
                     break;
                 }
             }
-            if (!chunk.empty()) connect_->send(message('R', chunk));
+            if (!chunk.empty()) connect_->send(job.peerId, message('R', chunk));
             else if (artAt < sendArt.size()) {
                 const std::string& n = sendArt[artAt++];
                 const std::string raw = readAll(artDir + "/" + n);
@@ -505,11 +552,11 @@ void Syncer::share(const Job& job) {
                     m.insert(m.end(), n.begin(), n.end());
                     m.push_back(uint8_t('\n'));
                     m.insert(m.end(), small.begin(), small.end());
-                    connect_->send(std::move(m));
+                    connect_->send(job.peerId, std::move(m));
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));   // music comes first
             } else if (gotAsk && gotArt && !ended) {
-                connect_->send(message('Z', ""));
+                connect_->send(job.peerId, message('Z', ""));
                 ended = true;
             }
         }
@@ -610,8 +657,8 @@ void Syncer::run() {
                 for (auto& m : inbox_) left.push_back(std::move(m));
                 inbox_.clear();
                 for (auto& m : left) {
-                    if (!m.empty() && char(m[0]) == 'S') asked_ = true;   // they began another while this one ended: answered
-                    else if (!m.empty() && char(m[0]) == 'H') inbox_.push_back(std::move(m));   // its first words, for when it starts
+                    if (!m.empty() && char(m[0]) == 'S') asked_.push_back(peer_);   // they began another while this one ended: answered
+                    else if (!m.empty() && char(m[0]) == 'H') early_[peer_].push_back(std::move(m));   // its first words, for when it starts
                 }
             }
             continue;
@@ -627,12 +674,13 @@ void Syncer::run() {
                 fclose(f);
             }
         }
-        // idle: only "let us sync" matters
-        auto got = connect_->receive();
+        // idle: only "let us sync" matters, from any device
+        auto got = connect_->receiveAll();
         g.lock();
-        for (const auto& m : got) {
-            if (!m.empty() && char(m[0]) == 'S') asked_ = true;
-            else if (!m.empty() && char(m[0]) == 'H') inbox_.push_back(m);   // ours is not read yet: kept for when it starts
+        for (auto& f : got) {
+            if (f.msg.empty()) continue;
+            if (char(f.msg[0]) == 'S') { if (std::find(asked_.begin(), asked_.end(), f.peer) == asked_.end()) asked_.push_back(f.peer); }
+            else if (char(f.msg[0]) == 'H') early_[f.peer].push_back(std::move(f.msg));   // ours is not read yet: kept for when it starts
         }
     }
 }

@@ -5,6 +5,7 @@
  */
 #include "words.hpp"
 #include "updater.hpp"
+#include "json.hpp"
 
 #ifndef GF_WINDOWED
 #include "cfgmove.hpp"
@@ -167,134 +168,10 @@ bool swapIn(const std::string& target) {
     return true;
 }
 
-// ------------------------------------------------------------------ JSON (just what GitHub's answers need)
+// ------------------------------------------------------------------ JSON: json.hpp
 
-struct Json {
-    enum Kind { Null, Bool, Num, Str, Arr, Obj } kind = Null;
-    double num = 0;
-    bool b = false;
-    std::string str;
-    std::vector<Json> arr;
-    std::vector<std::pair<std::string, Json>> obj;
-    const Json& operator[](const char* k) const {
-        static const Json none;
-        for (const auto& [key, v] : obj) if (key == k) return v;
-        return none;
-    }
-    std::string s(const char* k) const { const Json& v = (*this)[k]; return v.kind == Str ? v.str : std::string(); }
-    int64_t i(const char* k) const { const Json& v = (*this)[k]; return v.kind == Num ? int64_t(v.num) : 0; }
-};
-
-struct JsonReader {
-    const char* p;
-    const char* end;
-    int depth = 0;
-    bool fail = false;
-    void ws() { while (p < end && (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t')) p++; }
-    static void utf8(std::string& out, uint32_t c) {
-        if (c < 0x80) out += char(c);
-        else if (c < 0x800) { out += char(0xC0 | (c >> 6)); out += char(0x80 | (c & 63)); }
-        else if (c < 0x10000) { out += char(0xE0 | (c >> 12)); out += char(0x80 | ((c >> 6) & 63)); out += char(0x80 | (c & 63)); }
-        else { out += char(0xF0 | (c >> 18)); out += char(0x80 | ((c >> 12) & 63)); out += char(0x80 | ((c >> 6) & 63)); out += char(0x80 | (c & 63)); }
-    }
-    uint32_t hex4() {
-        if (end - p < 4) { fail = true; return 0; }
-        uint32_t v = 0;
-        for (int k = 0; k < 4; k++) {
-            const char c = *p++;
-            v = v * 16 + uint32_t(c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : 0);
-        }
-        return v;
-    }
-    std::string string() {
-        std::string out;
-        p++;   // the opening quote
-        while (p < end && *p != '"') {
-            if (*p != '\\') { out += *p++; continue; }
-            if (++p >= end) break;
-            const char e = *p++;
-            switch (e) {
-            case 'n': out += '\n'; break;
-            case 't': out += '\t'; break;
-            case 'r': out += '\r'; break;
-            case 'b': out += '\b'; break;
-            case 'f': out += '\f'; break;
-            case 'u': {
-                uint32_t c = hex4();
-                if (c >= 0xD800 && c < 0xDC00 && end - p >= 6 && p[0] == '\\' && p[1] == 'u') {   // a surrogate pair
-                    p += 2;
-                    const uint32_t lo = hex4();
-                    c = 0x10000 + ((c - 0xD800) << 10) + (lo - 0xDC00);
-                }
-                utf8(out, c);
-                break;
-            }
-            default: out += e;
-            }
-        }
-        if (p >= end) fail = true; else p++;
-        return out;
-    }
-    Json value() {
-        Json v;
-        ws();
-        if (p >= end || ++depth > 64) { fail = true; return v; }
-        if (*p == '{') {
-            v.kind = Json::Obj;
-            p++;
-            ws();
-            if (p < end && *p == '}') p++;
-            else
-                while (!fail) {
-                    ws();
-                    if (p >= end || *p != '"') { fail = true; break; }
-                    std::string k = string();
-                    ws();
-                    if (p >= end || *p != ':') { fail = true; break; }
-                    p++;
-                    v.obj.emplace_back(std::move(k), value());
-                    ws();
-                    if (p < end && *p == ',') { p++; continue; }
-                    if (p < end && *p == '}') { p++; break; }
-                    fail = true;
-                }
-        } else if (*p == '[') {
-            v.kind = Json::Arr;
-            p++;
-            ws();
-            if (p < end && *p == ']') p++;
-            else
-                while (!fail) {
-                    v.arr.push_back(value());
-                    ws();
-                    if (p < end && *p == ',') { p++; continue; }
-                    if (p < end && *p == ']') { p++; break; }
-                    fail = true;
-                }
-        } else if (*p == '"') {
-            v.kind = Json::Str;
-            v.str = string();
-        } else if (end - p >= 4 && !strncmp(p, "true", 4)) { v.kind = Json::Bool; v.b = true; p += 4; }
-        else if (end - p >= 5 && !strncmp(p, "false", 5)) { v.kind = Json::Bool; p += 5; }
-        else if (end - p >= 4 && !strncmp(p, "null", 4)) { p += 4; }
-        else {
-            char* e = nullptr;
-            const std::string num(p, size_t(std::min<ptrdiff_t>(end - p, 40)));
-            v.num = strtod(num.c_str(), &e);
-            if (e == num.c_str()) { fail = true; return v; }
-            v.kind = Json::Num;
-            p += e - num.c_str();
-        }
-        depth--;
-        return v;
-    }
-};
-
-bool parseJson(const std::string& text, Json& out) {
-    JsonReader r{ text.data(), text.data() + text.size() };
-    out = r.value();
-    return !r.fail;
-}
+using json::Json;
+using json::parseJson;
 
 // ------------------------------------------------------------------ SHA-256 and CRC-32
 
@@ -1253,7 +1130,8 @@ std::string Updater::backupNow(const std::string& root, const std::string& note)
     // Left out: the downloads, and caches Gatefold makes again by itself (the overlay's covers, the tag cache)
     // (art/ is the covers cache: thousands of small files, and copying them took the console a minute and a half)
     // and the Last.fm account: a key to it never sits in a backup, a restore asks you to sign in again
-    if (!copyTree(dir_, backup, { "updates", "thumbs", "art", "tags.tsv", "lastfm-session.txt", "connect-key.txt", "connect-peers.tsv" }, bytes, files)) {
+    // (and the Subsonic account the same way: subsonic.hpp)
+    if (!copyTree(dir_, backup, { "updates", "thumbs", "art", "tags.tsv", "lastfm-session.txt", "subsonic-account.txt", "connect-key.txt", "connect-peers.tsv" }, bytes, files)) {
         removeTree(backup);
         return {};
     }
@@ -1358,14 +1236,15 @@ const std::vector<std::vector<const char*>>& Updater::factoryFiles() {
         {},                                                                           // the music folder (settings.txt)
         { "playlists.txt", "lists.txt", "playlist-icons.tsv", "bg-playlists.txt", "mixes.tsv", "automix-lists.tsv", "sync-lists.tsv" },   // playlists
         { "liked.txt", "sync-seen.tsv" },                                             // Liked (and what Connections saw: a reset here is no unlike there)
-        { "edits.tsv", "covers.tsv", "covers", "sync-seen.tsv" },                     // tag edits and chosen covers
+        { "edits.tsv", "covers.tsv", "covers", "mood-labels.tsv", "sync-seen.tsv", "tag-undo.tsv", "tag-undo" },  // tag edits, chosen covers and moods
         { "lyric-offsets.tsv" },                                                      // lyric timings
+        { "lyrics" },                                                                 // lyrics found online, kept in Songate's folder (lyricsnet.hpp)
         { "eq-presets.txt" },                                                         // saved equalizer presets
         { "stats.tsv", "bg-plays.txt" },                                              // play counts and statistics
         { "session.txt", "bg-session.txt", "bg-places.txt", "overlay-playlist.txt" }, // the queue
-        { "lastfm-session.txt", "scrobbles.tsv", "bg-scrobbles.txt" },                // the Last.fm account and what waits to be sent
+        { "lastfm-session.txt", "scrobbles.tsv", "bg-scrobbles.txt", "subsonic-account.txt", "server-downloads", "server-downloads.tsv", "server-likes.tsv", "server-playlist-icons.tsv", "server-queue.tsv" },   // the Last.fm account and what waits to be sent; the Subsonic server's, and its downloads in Songate's folder
         { "connect-key.txt", "connect-peers.tsv", "airplay-devices.tsv", "ledger.tsv", "sync-lists.tsv", "sync-seen.tsv", "sync-peers.txt", "sync-plays.tsv", "copy-peers.txt", "copied.txt", "sync-gone.txt" },   // this device's key, the devices paired with it, what was synced
-        { "art", "thumbs", "tags.tsv", "library.tsv", "loudness.tsv", "mix.tsv", "mood.tsv", "gains.bin", "identity.tsv", "updates" },   // caches
+        { "art", "thumbs", "tags.tsv", "library.tsv", "loudness.tsv", "mix.tsv", "mood.tsv", "gains.bin", "identity.tsv", "lyrics-index.tsv", "lastfm-tags.tsv", "updates", "server-cache", "server-cache.tsv" },   // caches
     };
     return files;
 }
@@ -1395,11 +1274,38 @@ void Updater::factoryReset(const std::string& configDir, unsigned mask) {
     plat::bgStart(bgEnded);
 }
 
+#ifdef GF_DEV
+bool Updater::swapFreshTest(const std::string& configDir, bool toFresh) {
+    const bool bgEnded = plat::bgEnd();   // (the background player writes into the folder while it runs)
+    const std::string aside = configDir + ".before-test", ran = configDir + ".test-run";
+    bool ok = false;
+    if (toFresh) ok = !isDir(aside) && rename(configDir.c_str(), aside.c_str()) == 0;
+    else if (isDir(aside)) {
+        if (isDir(ran)) removeTree(ran);
+        if (rename(configDir.c_str(), ran.c_str()) != 0) removeTree(configDir);
+        ok = rename(aside.c_str(), configDir.c_str()) == 0;
+    }
+    plat::bgStart(bgEnded);
+    return ok;
+}
+#endif
+
+namespace {
+/** removeTree, until Songate closes (an exit waited 11.6 s for a reset's thousands of covers: shutdown-trace.txt, 2026-11-05). */
+bool eraseTree(const std::string& p) {
+    if (Updater::stopErasing) return false;
+    if (!isDir(p)) return remove(p.c_str()) == 0;
+    bool ok = true;
+    for (const auto& n : names(p)) ok = eraseTree(join(p, n)) && ok;
+    return !Updater::stopErasing && rmdir(p.c_str()) == 0 && ok;
+}
+}  // namespace
+
 void Updater::eraseLeftovers(const std::string& configDir) {
     const std::string aside = configDir + ".erased";
-    if (isDir(aside)) removeTree(aside);
+    if (isDir(aside)) eraseTree(aside);
 #ifndef GF_WINDOWED
-    if (isDir(GFCFG_OLD ".erased")) removeTree(GFCFG_OLD ".erased");   // one BETA 1 left (a factory reset there, never launched after)
+    if (isDir(GFCFG_OLD ".erased")) eraseTree(GFCFG_OLD ".erased");   // one BETA 1 left (a factory reset there, never launched after)
 #endif
 }
 

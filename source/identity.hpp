@@ -34,6 +34,8 @@ public:
     static std::string looseKey(const std::string& artist, const std::string& albumArtist, const std::string& album, const std::string& title);
     /** Hex of the file's exact hash, "" if it cannot be read. */
     static std::string exactHash(const std::string& path, int64_t size);
+    /** Hex of a text's hash (a server's print: Listening together and Handoff compare it, never the address itself). */
+    static std::string textHash(const std::string& s);
     /** Two tracks with the same looseKey: the same song? */
     static bool sameLength(double a, double b) { return a - b <= 2 && b - a <= 2; }
 

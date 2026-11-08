@@ -28,6 +28,8 @@
 
 struct _Mix_Music;
 
+class AirSend;   // (airsend.hpp: AirPlay speakers this device plays to)
+
 class Player {
 public:
 
@@ -82,6 +84,22 @@ public:
 #ifdef GF_DEV
     /** Dev: a quiet chirp each whole second of the song, for one microphone to time real music by (tools/clicktest/analyze.py). */
     void syncChirps(bool on) { syncChirps_ = on; }
+    /** Listening together's delay, measured (micmeasure.hpp): a chirp at each of these moments on the shared clock, as this device's sound
+     *  is timed (its Timing included), over whatever plays. Replaces the ones before; {} none. */
+    void tones(std::vector<double> sharedStarts, int slot = 0) {
+        std::lock_guard<std::mutex> g(toneLock_);
+        tones_ = std::move(sharedStarts);
+        toneSlot_ = slot;
+    }
+    /** The last of those chirps' start on the shared clock (0: none). */
+    double tonesLast() {
+        std::lock_guard<std::mutex> g(toneLock_);
+        double last = 0;
+        for (double t : tones_) last = t > last ? t : last;
+        return last;
+    }
+    /** A steady_clock reading (seconds) on the shared clock: the microphone's stamps. Any thread. */
+    double sharedAt(double steady) const { return steady + syncTimeNow_.load() - syncTimeAt_.load(); }
 #endif
     /**
      * Sound from elsewhere (AirPlay): read gives 48 kHz stereo on the audio thread, and plays over nothing else: the caller stops the
@@ -147,9 +165,13 @@ public:
 
     /** True once after a track has played to its end. */
     bool takeFinished() { return finished_.exchange(false); }
+    /** AirPlay speakers (airsend.hpp): the finished mix goes to them, and this device stays quiet while one plays. nullptr: none. */
+    void setAirSend(AirSend* a) { air_.store(a, std::memory_order_release); }
 
 private:
+    std::atomic<AirSend*> air_{ nullptr };
     static void postMix(void* self, unsigned char* stream, int len);
+    static void postMixInner(void* self, unsigned char* stream, int len);
     static void musicFinished();
     static void ffHook(void* self, unsigned char* stream, int len);
     void feedRing(const float* stereo, int frames);
@@ -171,6 +193,10 @@ private:
     double syncFrames_ = 0, syncTrim_ = 0, syncSum_ = 0, syncOwed_ = 0, syncBase_ = 0;
     double syncT_ = 0, syncP_ = 0;                         // playing: this shared moment is this position
     std::atomic<double> syncDelay_{ 0 }, syncWantT_{ 0 }, syncWantP_{ 0 }, syncPause_{ 0 }, syncTimeNow_{ 0 }, syncTimeAt_{ 0 };
+    std::mutex toneLock_;
+    std::vector<double> tones_;   // tones(): taken by the audio thread with try_lock
+    double bedPhase_ = 0;          // the wake tone's phase under them (the audio thread's)
+    int toneSlot_ = 0;            // whose sweep (micmeasure.hpp: up or down)
     std::atomic<bool> syncOn_{ false }, syncWait_{ false }, syncRun_{ false }, syncReset_{ false }, syncChirps_{ false }, prepTimed_{ false };
     std::atomic<bool> syncLost_{ false }, prepExact_{ false };
     std::atomic<unsigned> syncFroze_{ 0 };

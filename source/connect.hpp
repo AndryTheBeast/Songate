@@ -10,12 +10,17 @@
  * Afterwards each remembers the other's public key, and no other device gets past the first message. A device that cannot be
  * called (a PC whose firewall said no) is asked over UDP to call out instead, so one open side is enough.
  *
+ * Links: one to every paired device here at once (BETA 3, the user, 2026-11-05: sync with several devices), each with its own
+ * queues, so a message always says which device it is for or from. Nothing changes on the wire: each link is the same two-device link.
+ *
  * connect-key.txt and connect-peers.tsv stay on this device: they are left out of backups, and never logged or reported.
  */
 #pragma once
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -66,23 +71,31 @@ public:
 
     /** The encrypted link: is it up to this device? */
     bool linkedTo(const std::string& id);
-    /** Sends one message (at most pairing::kMaxFrame bytes) over the link, in order; dropped if there is none. */
-    void send(std::vector<uint8_t> message);
-    size_t outboxBytes();
-    /** Files are moving: the link answers at once rather than on its slow beat. */
+    /** Sends one message (at most pairing::kMaxFrame bytes) to that device, in order; dropped if it is not linked. */
+    void send(const std::string& id, std::vector<uint8_t> message);
+    size_t outboxBytes(const std::string& id);
+    /** Files are moving: the links answer at once rather than on their slow beat. */
     void hurry() { hurryUntil_ = seconds_() + 2; }
-    /** Listening together's messages (they begin with a t), since the last call. */
-    std::vector<std::vector<uint8_t>> receiveTogether();
-    /** Listening together: pings go both ways over UDP while it is on. Both send, so that one open firewall is enough. */
-    void clockWanted(bool on);
+    /** A message and the device it came from. */
+    struct From {
+        std::string peer;
+        std::vector<uint8_t> msg;
+    };
+    /** Listening together's messages (they begin with a t), from every device, since the last call. */
+    std::vector<From> receiveTogether();
+    /** Listening together: pings go both ways over UDP with these devices (none: off). Both send, so that one open firewall is enough.
+     *  clock() is this device's offset to the first of them (a listener's: the starter); the starter only answers. */
+    void clockWanted(const std::vector<std::string>& ids);
     /** The other device's steady clock minus this one's, in seconds, at `at` on this one, and how fast that changes (s/s). The quick
      *  round trips of the last 30 s only. Any thread. */
     struct Clock { int samples = 0; double at = 0, offset = 0, slope = 0, rtt = 0; };
     Clock clock();
-    /** What came over the link since the last call. */
-    std::vector<std::vector<uint8_t>> receive();
-    /** The same for music files, which begin with an f: a copy lasts hours, and goes on beside a sync. */
-    std::vector<std::vector<uint8_t>> receiveFiles();
+    /** What came from that device since the last call (sync's messages). */
+    std::vector<std::vector<uint8_t>> receive(const std::string& id);
+    /** The same from every device but `except`. */
+    std::vector<From> receiveAll(const std::string& except = "");
+    /** Music files' messages, which begin with an f, from every device: a copy lasts hours, and goes on beside a sync. */
+    std::vector<From> receiveFiles();
 
     View view();
     /** What happened, in words for the screen, since the last call. */
@@ -112,10 +125,12 @@ private:
     void sendHello();
     void onFrame(Link& l, const uint8_t* p, size_t n);
     void onClock(const uint8_t* in, size_t size, uint32_t address);
-    void sendClock(bool answer, double t1, double t2);
+    void sendClock(Link& l, bool answer, double t1, double t2);
     void startHandshake(Link& l);
     void finishPairing(Link& l, const uint8_t* publicKey, const std::string& name);
-    void dropLink(const char* why);
+    void dropLink(Link& l, const char* why);
+    void sweepLinks();
+    Link* linkTo(const uint8_t* id);
     void call(const uint8_t* id, uint32_t address, int mode);
     void refreshView();
 
@@ -138,15 +153,20 @@ private:
     // asked of the worker
     bool wantCode_ = false, dropCode_ = false;
     std::string typedPeer_, typedCode_, forget_;
-    std::vector<std::vector<uint8_t>> outbox_, inbox_, filesIn_, togetherIn_;
+    // each device's queues, by its id
+    struct Box {
+        std::vector<std::vector<uint8_t>> out, in, files, together;
+        size_t outBytes = 0;
+        bool up = false;
+    };
+    std::map<std::string, Box> boxes_;
     struct ClockSample { double t, rtt, offset; };
     std::vector<ClockSample> clockSamples_;   // the worker's
     std::atomic<bool> clockOn_{ false };
+    std::vector<std::string> clockPeers_;  // listening together's devices; the first one's clock is measured
     Clock clock_;
     std::atomic<double> hurryUntil_{ 0 };
     static double seconds_();
-    size_t outboxBytes_ = 0;
-    std::string linkedId_;                 // who the link is up to, "" none
 
     // the worker's own, during a session
     std::string code_;
@@ -154,5 +174,7 @@ private:
     std::string pendingPeer_, pendingCode_;
     double pendingUntil_ = 0;
     uintptr_t udp_ = ~uintptr_t(0), listen_ = ~uintptr_t(0);
-    Link* link_ = nullptr;
+    std::vector<Link*> links_;             // one a device; a dropped one goes at the end of the loop (sweepLinks)
+    std::vector<std::string> clockPeersW_; // clockPeers_, as the worker last read it
+    bool clockPeer(const std::string& hex) const { return std::find(clockPeersW_.begin(), clockPeersW_.end(), hex) != clockPeersW_.end(); }
 };

@@ -117,8 +117,8 @@ public:
 
         if (hasNextPage) {
             const std::string pageLabel = !translatedPageLeftName.empty()
-                ? ("\uE0ED" + ult::GAP_2 + translatedPageLeftName)
-                : ("\uE0EE" + ult::GAP_2 + translatedPageRightName);
+                ? (m_leftGlyph + ult::GAP_2 + translatedPageLeftName)
+                : (m_rightGlyph + ult::GAP_2 + translatedPageRightName);
 
             const float _nextPageWidth = renderer->getTextDimensions(pageLabel, false, 23).first + gapWidth;
             updateAtomic(ult::nextPageWidth, _nextPageWidth);
@@ -141,10 +141,12 @@ public:
         const std::string currentBottomLine =
             "\uE0E1" + ult::GAP_2 + ult::BACK  + ult::GAP_1 +
             "\uE0E0" + ult::GAP_2 + ult::OK    + ult::GAP_1 +
-            (!translatedPageLeftName.empty()  ? "\uE0ED" + ult::GAP_2 + translatedPageLeftName  + ult::GAP_1 :
-             !translatedPageRightName.empty() ? "\uE0EE" + ult::GAP_2 + translatedPageRightName + ult::GAP_1 : "");
+            (!translatedPageLeftName.empty()  ? m_leftGlyph + ult::GAP_2 + translatedPageLeftName  + ult::GAP_1 :
+             !translatedPageRightName.empty() ? m_rightGlyph + ult::GAP_2 + translatedPageRightName + ult::GAP_1 : "");
 
-        renderer->drawStringWithColoredSections(currentBottomLine, false, tsl::s_footerSpecialChars,
+        // (the library's list, and L: Settings' way back to the player)
+        static const std::vector<std::string> kFooterGlyphs = { "\uE0E1", "\uE0E0", "\uE0ED", "\uE0EE", "\uE0E5", "\uE0E4", "\uE0E2" };
+        renderer->drawStringWithColoredSections(currentBottomLine, false, kFooterGlyphs,
             buttonStartX, 693, 23, tsl::bottomTextColor, tsl::buttonColor);
 
         if (!selectIsUsingFocusedColor) {
@@ -224,6 +226,11 @@ public:
     void setPageNames(std::string left, std::string right) {
         m_pageLeftName  = std::move(left);
         m_pageRightName = std::move(right);
+    }
+    /** The buttons shown beside them (D-pad Left / Right unless set: R for Settings, L back from it). */
+    void setPageGlyphs(std::string left, std::string right) {
+        m_leftGlyph  = std::move(left);
+        m_rightGlyph = std::move(right);
     }
 
     // -----------------------------------------------------------------------
@@ -315,6 +322,8 @@ private:
     tsl::elm::Element *m_contentElement = nullptr; ///< Non-owning.
     std::string        m_pageLeftName;
     std::string        m_pageRightName;
+    std::string        m_leftGlyph  = "\uE0ED";   // D-pad Left
+    std::string        m_rightGlyph = "\uE0EE";   // D-pad Right
     ScrollState        m_titleScroll;
     ScrollState        m_subScroll;
     //std::optional<Toast> m_toast;

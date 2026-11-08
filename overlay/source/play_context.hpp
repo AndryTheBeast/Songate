@@ -63,7 +63,8 @@ namespace play_ctx {
                         const std::vector<std::string>& songs,
                         u32 play_idx,
                         const std::string& queueName = "",
-                        bool automix = false);
+                        bool automix = false,
+                        bool fresh = false);   // fresh: loaded again (a playlist played or shuffled from its start), never the same queue's jump
 
     // Switch to Playlist context:
     //   • tuneClearQueue, tuneEnqueue saved[], tuneSelect(play_idx), tunePlay.

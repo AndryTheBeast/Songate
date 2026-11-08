@@ -420,7 +420,7 @@ void App::lyricDots(float x, float cy, float d, const Rgb& c, float alpha, bool 
 /** .eq: three bars bouncing while something plays. */
 void App::eqGlyph(float x, float cy, const Rgb& c) { eqGlyph(x, cy, c, isPlaying()); }
 
-void App::eqGlyph(float x, float cy, const Rgb& c, bool moving) {
+void App::eqGlyph(float x, float cy, const Rgb& c, bool moving, float alpha, float scale) {
     const float base[3] = { 0.6f, 1.f, 0.4f }, delay[3] = { -0.2f, -0.5f, -0.8f };
     for (int i = 0; i < 3; i++) {
         float s = base[i];
@@ -429,8 +429,8 @@ void App::eqGlyph(float x, float cy, const Rgb& c, bool moving) {
             ph = ph < 1 ? ph : 2 - ph;
             s = 0.25f + 0.75f * (0.5f - 0.5f * std::cos(ph * 3.14159f));
         }
-        const float h = 12 * s;
-        g.roundRect(x + i * 5, cy + 6 - h, 3, h, 1, c);
+        const float h = 12 * s * scale;
+        g.roundRect(x + i * 5 * scale, cy + 6 * scale - h, 3 * scale, h, scale, c, alpha);
     }
 }
 
@@ -555,13 +555,13 @@ void App::vslider(Id id, float cx, float top, float h, float value, float* out, 
     g.circle(cx, ky, 7, pal.text);
 }
 
-bool App::toggle(Id id, float x, float cy, bool on) {
+bool App::toggle(Id id, float x, float cy, bool on, float alpha) {
 #ifdef GF_ANDROID
     const bool hit = ui.item(id, { x - 8, cy - 20, 56, 40 }, 11);   // a finger: 56 by 40 round it, drawn the same (the user chose it, 2026-11-04)
 #else
     const bool hit = ui.item(id, { x, cy - 11, 40, 22 }, 11);
 #endif
-    g.roundRect(x, cy - 11, 40, 22, 11, on ? pal.accent : pal.text, on ? 1.f : 0.16f);
-    g.circle(on ? x + 29 : x + 11, cy, 8, on ? pal.onAccent : pal.text);
+    g.roundRect(x, cy - 11, 40, 22, 11, on ? pal.accent : pal.text, (on ? 1.f : 0.16f) * alpha);
+    g.circle(on ? x + 29 : x + 11, cy, 8, on ? pal.onAccent : pal.text, alpha);
     return hit;
 }

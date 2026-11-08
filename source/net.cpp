@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 #include <mutex>
 
 #ifndef GF_VERSION
@@ -43,6 +44,7 @@ struct Sink {
     FILE* file = nullptr;
     Progress* p = nullptr;
     std::string* date = nullptr;   // the Date header, when wanted
+    int* retry = nullptr;          // the Retry-After header's seconds, when wanted
 };
 
 size_t onData(char* data, size_t size, size_t n, void* user) {
@@ -56,6 +58,10 @@ size_t onData(char* data, size_t size, size_t n, void* user) {
 size_t onHeader(char* data, size_t size, size_t n, void* user) {
     Sink* s = static_cast<Sink*>(user);
     const size_t len = size * n;
+    static const char kRetry[] = "retry-after:";
+    bool isRetry = s->retry && len > 12;
+    for (int i = 0; isRetry && i < 12; i++) isRetry = char(data[i] | (data[i] >= 'A' && data[i] <= 'Z' ? 32 : 0)) == kRetry[i];
+    if (isRetry) *s->retry = std::max(0, atoi(std::string(data + 12, len - 12).c_str()));
     if (s->date && len > 5 && (data[0] | 32) == 'd' && (data[1] | 32) == 'a' && (data[2] | 32) == 't' && (data[3] | 32) == 'e' && data[4] == ':') {
         s->date->assign(data + 5, len - 5);
         while (!s->date->empty() && (s->date->back() == '\r' || s->date->back() == '\n' || s->date->back() == ' ')) s->date->pop_back();
@@ -90,7 +96,7 @@ std::string explain(CURLcode rc, long status) {
 }
 
 bool run(const std::string& url, Sink& sink, std::string& err, const std::string* json = nullptr, const char* secret = nullptr,
-         const std::string* form = nullptr, long* statusOut = nullptr) {
+         const std::string* form = nullptr, long* statusOut = nullptr, bool keepErrors = false) {
     std::string e;
     if (!begin(e)) { err = e; return false; }
     CURL* c = curl_easy_init();
@@ -108,17 +114,17 @@ bool run(const std::string& url, Sink& sink, std::string& err, const std::string
     }
     if (secret) headers = curl_slist_append(headers, secret);
     curl_easy_setopt(c, CURLOPT_URL, url.c_str());
-    static const std::string agent = [] {   // "Songate/2.0.0-BETA": a product token has no spaces
+    static const std::string agent = [] {   // "Songate/2.0.0-BETA (…)": a product token has no spaces; the homepage, as LRCLIB asks
         std::string s = "Songate/" GF_VERSION;
         for (char& ch : s) if (ch == ' ') ch = '-';
-        return s;
+        return s + " (https://github.com/AndryTheBeast/Songate)";
     }();
     curl_easy_setopt(c, CURLOPT_USERAGENT, agent.c_str());
     curl_easy_setopt(c, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);   // release assets redirect to GitHub's file host
     curl_easy_setopt(c, CURLOPT_MAXREDIRS, 5L);
-    if (!form) curl_easy_setopt(c, CURLOPT_FAILONERROR, 1L);   // (a form's errors are in the body)
-    if (sink.date) {
+    if (!form && !keepErrors) curl_easy_setopt(c, CURLOPT_FAILONERROR, 1L);   // (a form's errors are in the body)
+    if (sink.date || sink.retry) {
         curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, onHeader);
         curl_easy_setopt(c, CURLOPT_HEADERDATA, &sink);
     }
@@ -196,6 +202,16 @@ bool form(const std::string& url, const std::string& body, std::string& out, lon
     return run(url, s, err, nullptr, nullptr, &body, &status);
 }
 
+bool lookup(const std::string& url, std::string& out, long& status, int& retryAfter, std::string& err) {
+    out.clear();
+    status = 0;
+    retryAfter = 0;
+    Sink s;
+    s.str = &out;
+    s.retry = &retryAfter;
+    return run(url, s, err, nullptr, nullptr, nullptr, &status, true);
+}
+
 bool download(const std::string& url, const std::string& file, std::string& err, Progress* p) {
     const std::string tmp = file + ".part";
     FILE* f = fopen(tmp.c_str(), "wb");
@@ -216,6 +232,8 @@ bool download(const std::string& url, const std::string& file, std::string& err,
 #else  // the PC preview: GF_NET=<folder> stands in for GitHub
 
 #include <SDL2/SDL.h>
+#include <windows.h>
+#include <wininet.h>
 
 namespace net {
 namespace {
@@ -233,6 +251,30 @@ bool local(const std::string& url, std::string& path, std::string& err) {
 }
 
 }  // namespace
+
+/** The preview: LRCLIB's answers from <GF_NET>/lrclib/get.json and search.json, 404 when a file is not there; GF_NET_429
+ *  answers the first lookup "too many" (Retry-After 2). */
+bool lookup(const std::string& url, std::string& out, long& status, int& retryAfter, std::string& err) {
+    out.clear();
+    status = 0;
+    retryAfter = 0;
+    const char* root = getenv("GF_NET");
+    if (!root || !*root) { err = "No internet connection"; return false; }
+    static bool told429 = false;
+    if (getenv("GF_NET_429") && !told429) { told429 = true; status = 429; retryAfter = 2; return true; }
+    if (const char* d = getenv("GF_NET_DELAY")) SDL_Delay(Uint32(atoi(d)));   // a slow answer (ms): the song changed meanwhile
+    const char* kind = url.find("/api/search") != std::string::npos ? "search.json" : "get.json";
+    FILE* f = fopen((std::string(root) + "/lrclib/" + kind).c_str(), "rb");
+    if (!f) { status = 404; out = "{\"code\":404,\"name\":\"TrackNotFound\"}"; return true; }
+    char buf[4096];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0) out.append(buf, n);
+    fclose(f);
+    status = 200;
+    // (the asked URL, for tests: what was sent)
+    if (FILE* log = fopen((std::string(root) + "/lrclib/asked.txt").c_str(), "ab")) { fprintf(log, "%s\n", url.c_str()); fclose(log); }
+    return true;
+}
 
 bool begin(std::string& err) {
     const char* root = getenv("GF_NET");
@@ -295,7 +337,23 @@ bool form(const std::string& url, const std::string& body, std::string& out, lon
     return true;
 }
 
+/** A server on this PC itself (a test Subsonic server: the user's Navidrome, 2026-11-05) is asked for real, through WinINet. */
+bool live(const std::string& url, std::string& out, std::string& err) {
+    HINTERNET in = InternetOpenA("Songate preview", INTERNET_OPEN_TYPE_DIRECT, nullptr, nullptr, 0);
+    if (!in) { err = "No internet connection"; return false; }
+    HINTERNET h = InternetOpenUrlA(in, url.c_str(), nullptr, 0, INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_NO_UI, 0);
+    if (!h) { InternetCloseHandle(in); err = "Can't reach the server"; return false; }
+    char buf[16384];
+    DWORD n = 0;
+    out.clear();
+    while (InternetReadFile(h, buf, sizeof buf, &n) && n > 0) out.append(buf, n);
+    InternetCloseHandle(h);
+    InternetCloseHandle(in);
+    return true;
+}
+
 bool get(const std::string& url, std::string& out, std::string& err, Progress* p) {
+    if (url.rfind("http://127.0.0.1", 0) == 0 || url.rfind("http://localhost", 0) == 0) return live(url, out, err);
     std::string path;
     if (!local(url, path, err)) return false;
     FILE* f = fopen(path.c_str(), "rb");
@@ -311,6 +369,18 @@ bool get(const std::string& url, std::string& out, std::string& err, Progress* p
 }
 
 bool download(const std::string& url, const std::string& file, std::string& err, Progress* p) {
+    if (url.rfind("http://127.0.0.1", 0) == 0 || url.rfind("http://localhost", 0) == 0) {   // (a server on this PC: for real)
+        std::string body;
+        if (!live(url, body, err)) return false;
+        const std::string tmp = file + ".part";
+        FILE* out = fopen(tmp.c_str(), "wb");
+        if (!out) { err = "Could not write to " GF_THE_CARD; return false; }
+        fwrite(body.data(), 1, body.size(), out);
+        fclose(out);
+        if (p) p->done = p->total = int64_t(body.size());
+        if (!finish(tmp, file)) { err = "Could not write to " GF_THE_CARD; return false; }
+        return true;
+    }
     std::string path;
     if (!local(url, path, err)) return false;
     FILE* in = fopen(path.c_str(), "rb");

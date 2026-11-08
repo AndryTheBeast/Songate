@@ -9,12 +9,14 @@
  *
  * lastfm_key.inc (git-ignored; tools/lastfm-key.py makes it from lastfm.key) holds the API key and secret, scrambled. Without
  * it a build simply cannot sign in.
+ *
  */
 #pragma once
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <unordered_map>
 #include <map>
 #include <mutex>
 #include <string>
@@ -72,6 +74,7 @@ public:
     std::vector<std::pair<std::string, int64_t>> takeBackground();
     /** Lines for the app's log; no account, key or track in them. */
     std::vector<std::string> takeLog();
+
 
 private:
     struct Answer {

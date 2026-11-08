@@ -6,7 +6,6 @@
 #include "gui_playlist.hpp"
 #include "play_context.hpp"
 #include "pm/pm.hpp"
-#include "config/config.hpp"
 #include "tune_gfbg.hpp"
 
 #include <algorithm>
@@ -128,7 +127,7 @@ std::string gameName(u64 programId) {
 }
 
 // ---------------------------------------------------------------------------
-// Deferred SettingsGui rebuild — set by the "Default Focus" toggle listener
+// Deferred SettingsGui rebuild — set by the Games items' listeners (an action playlist chosen)
 // and consumed at the top of SettingsGui::update() on the next frame.
 //
 // We CANNOT call tsl::swapTo from inside a setStateChangedListener because
@@ -168,12 +167,20 @@ MainGui::~MainGui() {
     delete m_list;
 }
 
+// R alone (the player) and L alone (Settings) switch pages a frame later: the library reads the same release after the page's
+// handleInput as its own jump (R: the list's bottom, L: its top) and asks the page now in front for focus, so a page swapped in
+// at once took it (the user, 2026-11-08: "R still goes to the bottom of settings"). A frame later the jump went to the page left.
+static bool g_goSettings = false, g_goPlayer = false;
+
 // ---------------------------------------------------------------------------
 tsl::elm::Element* MainGui::createUI() {
     m_right_label = (g_player_right_dest == PlayerRightDest::Playlist) ? "Playlist"
                   : (g_player_right_dest == PlayerRightDest::Browse)   ? "Browse"
                   : "Settings";
     m_frame = new SysTuneOverlayFrame(/*pageLeft=*/"", m_right_label);
+    m_frame->setPageGlyphs("\uE0ED", m_right_label == "Settings" ? "\uE0E5" : "\uE0EE");   // (R opens Settings; the user, 2026-11-08)
+    ::jumpToTop.store(false, std::memory_order_release);      // (L, back from Settings: never the library's jump to the top too)
+    ::jumpToBottom.store(false, std::memory_order_release);
 
     m_list = new tsl::elm::List();
     m_list->addItem(m_status_bar, StatusBar::PreferredHeight(tsl::cfg::FramebufferWidth - 85));
@@ -194,7 +201,7 @@ tsl::elm::Element* MainGui::createUI() {
             tsl::swapTo<SettingsGui>();
             pushBrowserStack();
         } else {
-            tsl::swapTo<SettingsGui>();
+            return;   // Settings: R only, or a tap on the footer (the user, 2026-11-08: "disable dpad to go to settings")
         }
         triggerNavigationFeedback();
     });
@@ -209,6 +216,13 @@ tsl::elm::Element* MainGui::createUI() {
 
 // ---------------------------------------------------------------------------
 void MainGui::update() {
+    if (g_goSettings) {   // R alone, the frame before
+        g_goSettings = false;
+        ::jumpToTop.store(false, std::memory_order_release);
+        ::jumpToBottom.store(false, std::memory_order_release);
+        tsl::swapTo<SettingsGui>();
+        return;
+    }
     //static u8 tick = 0;
     //if ((tick % 15) == 0)
     m_status_bar->update();
@@ -238,7 +252,10 @@ void MainGui::update() {
         (g_player_right_dest == PlayerRightDest::Browse)   ? "Browse"   : "Settings";
     if (newLabel != m_right_label) {
         m_right_label = newLabel;
-        if (m_frame) m_frame->setPageNames("", m_right_label);
+        if (m_frame) {
+            m_frame->setPageNames("", m_right_label);
+            m_frame->setPageGlyphs("\uE0ED", m_right_label == "Settings" ? "\uE0E5" : "\uE0EE");
+        }
     }
 }
 
@@ -267,6 +284,25 @@ bool MainGui::handleInput(u64 keysDown, u64 keysHeld, const HidTouchState &touch
         }
         triggerNavigationFeedback();
         return true;
+    }
+
+    /* R alone (pressed and let go with no other button meanwhile): Settings at once (the user, 2026-11-07: "make it easier to access
+       overlay settings by changing it to the R button"; it took the D-pad's Right up to three times). R with Left or Right is still
+       the page jump below: another button while R is down cancels this. */
+    {
+        static bool rAlone = false, rWas = false;
+        const bool rNow = (keysHeld & KEY_R) != 0, others = (keysHeld & ~KEY_R & ALL_KEYS_MASK) != 0;
+        if (rNow && !rWas) rAlone = !others;
+        else if (rNow && others) rAlone = false;
+        const bool released = rWas && !rNow;
+        rWas = rNow;
+        if (released && rAlone) {
+            rAlone = false;
+            g_player_r_held.store(false, std::memory_order_release);
+            g_goSettings = true;   // (next frame: MainGui::update)
+            triggerNavigationFeedback();
+            return true;
+        }
     }
 
     if (SysTuneGui::handleInput(keysDown, keysHeld, touchPos, joyStickPosLeft, joyStickPosRight))
@@ -402,6 +438,8 @@ unsigned playlistEvents() {
 
 tsl::elm::Element* SettingsGui::createUI() {
     m_frame = new SysTuneOverlayFrame(/*pageLeft=*/"Player", /*pageRight=*/"");
+    m_frame->setPageGlyphs("\uE0E4", "\uE0EE");   // L back to the player (the user, 2026-11-08)
+    ::jumpToBottom.store(false, std::memory_order_release);   // (R that opened it: Settings starts at its top)
 
     u64 pid{}, tid{};
     pm::getCurrentPidTid(&pid, &tid);
@@ -802,6 +840,14 @@ tsl::elm::Element* EqPresetGui::createUI() {
 
 // ---------------------------------------------------------------------------
 void SettingsGui::update() {
+    if (g_goPlayer) {   // L alone, the frame before
+        g_goPlayer = false;
+        ::jumpToTop.store(false, std::memory_order_release);
+        ::jumpToBottom.store(false, std::memory_order_release);
+        setPlayerRightDest(PlayerRightDest::Settings);
+        tsl::swapTo<MainGui>();
+        return;
+    }
     if (s_eq_changed) {
         s_eq_changed = false;
         if (m_eq_preset) m_eq_preset->setValue(presetName());
@@ -893,6 +939,23 @@ bool SettingsGui::handleInput(u64 keysDown, u64 keysHeld, const HidTouchState &t
         return true;
     }
 
+    /* L alone (pressed and let go with no other button meanwhile): back to the player (the user, 2026-11-08: "when we click L it
+       should go back to the player main screen but it goes to the top of settings"), as R alone opens Settings. */
+    {
+        static bool lAlone = false, lWas = false;
+        const bool lNow = (keysHeld & KEY_L) != 0, others = (keysHeld & ~KEY_L & ALL_KEYS_MASK) != 0;
+        if (lNow && !lWas) lAlone = !others;
+        else if (lNow && others) lAlone = false;
+        const bool released = lWas && !lNow;
+        lWas = lNow;
+        if (released && lAlone) {
+            lAlone = false;
+            g_goPlayer = true;   // (next frame: SettingsGui::update)
+            triggerNavigationFeedback();
+            return true;
+        }
+    }
+
     // Y — mute/restore toggle on the focused volume slider.
     // If the slider is at any non-zero value, back it up and set to 0.
     // If it is already at 0, restore from the backup (or 100 if no backup).
@@ -922,7 +985,6 @@ bool SettingsGui::handleInput(u64 keysDown, u64 keysHeld, const HidTouchState &t
             [this](u8 v) {
                 const float fv = float(v) / 100.f;
                 tuneSetTitleVolume(fv);
-                config::set_title_volume(m_tid, fv);
             }))
             return true;
 
@@ -934,14 +996,6 @@ bool SettingsGui::handleInput(u64 keysDown, u64 keysHeld, const HidTouchState &t
     if (SysTuneGui::handleInput(keysDown, keysHeld, touchPos, joyStickPosLeft, joyStickPosRight))
         return true;
 
-    if ((keysDown & KEY_LEFT)
-        && !(keysHeld & ~KEY_LEFT & ~KEY_R & ALL_KEYS_MASK)
-        && !(ult::onTrackBar.load(std::memory_order_acquire)
-             && (ult::unlockedSlide.load(std::memory_order_acquire) || ult::allowSlide.load(std::memory_order_acquire)))) {
-        setPlayerRightDest(PlayerRightDest::Settings);
-        tsl::swapTo<MainGui>();
-        triggerNavigationFeedback();
-        return true;
-    }
+    // (D-pad Left no longer leaves Settings: L only, or a tap on the footer; the user, 2026-11-08: "and to get out of settings")
     return false;
 }

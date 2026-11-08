@@ -55,7 +55,8 @@ const std::vector<Recipe>& recipes() {
         { "long", ICON_HOURGLASS, "Long tracks", "Five minutes or more: suites, mixes, epics", 1, nullptr, {}, 0 },
         // Mood playlists (group 2: not among the recipes; New playlist › Mood playlist… opens its form)
         { "mood", PLI_MOOD, "Mood playlist", "Your library sorted by how it sounds: its energy, its beat, its key", 2, "Mood",
-          { { mood::Happy, "Happy" }, { mood::Party, "Party" }, { mood::Relaxed, "Relaxed" }, { mood::Sad, "Sad" }, { mood::Aggressive, "Aggressive" } },
+          { { mood::Happy, "Happy" }, { mood::Party, "Party" }, { mood::Relaxed, "Relaxed" }, { mood::Sad, "Sad" }, { mood::Aggressive, "Aggressive" },
+            { mood::Workout, "Workout" }, { mood::Focus, "Focus" }, { mood::Dark, "Dark" }, { mood::Epic, "Epic" } },
           mood::Happy },
     };
     return r;
@@ -173,12 +174,13 @@ const char* App::smartIcon(const std::string& spec) const {
     const Recipe* r = recipeOf(id);
     // a Mood playlist: its mood's own icon (the user, 2026-10-30: "the five should have their own"), as each recipe has; the
     // masks are the kind's (New playlist, its form)
-    if (id == "mood") {
-        static const char* const icons[mood::Count] = { PLI_SMILE, PLI_PARTY, PLI_LEAF, PLI_RAIN, PLI_FLAME };
-        const int m = atoi(arg.c_str());
-        return m >= 0 && m < mood::Count ? icons[m] : PLI_MOOD;
-    }
+    if (id == "mood") return moodIcon(atoi(arg.c_str()));
     return r ? r->icon : PLI_SMART;
+}
+
+const char* App::moodIcon(int m) {
+    static const char* const icons[mood::Count] = { PLI_SMILE, PLI_PARTY, PLI_LEAF, PLI_RAIN, PLI_FLAME, PLI_DUMBBELL, PLI_BRAIN, PLI_GHOST, PLI_MOUNTAIN };
+    return m >= 0 && m < mood::Count ? icons[m] : PLI_MOOD;
 }
 
 std::string App::smartSummary(const std::string& spec) const {
@@ -219,20 +221,31 @@ const char* App::playlistKind(int ref) const {
 /** Mood playlists' sorting (mood.hpp), built again when the analysis or the library changed: at most every 5 s while the
  *  library is analysed (the playlists reorder as it goes), at once when it is done; only while a Mood playlist exists. */
 void App::moodTick() {
+#if defined(GF_DEV) && !defined(GF_WINDOWED) && !defined(GF_AIRPLAY)
+    if (getenv("GF_MOOD_MOCK")) {   // the preview's songs are not analysed: every one Dark by its sound, for a mock-up of the menus
+        moodIdx_.sound.assign(lib.tracks.size(), static_cast<signed char>(mood::Dark));
+        moodIdx_.best = moodIdx_.sound;
+        for (size_t i = 0; i < lib.tracks.size(); i++)
+            if (auto it = moodLabels_.find(lib.tracks[i].path); it != moodLabels_.end() && it->second.is >= 0) moodIdx_.best[i] = it->second.is;
+        moodIdx_.score.assign(lib.tracks.size(), 1.f);
+        return;
+    }
+#endif
     if (moodThread_.joinable()) {   // a sort under way: taken in once it is done
         if (!moodReady_) return;
         moodThread_.join();
         moodIdx_ = std::move(moodNext_);
         moodGen_++;
     }
+    // (always, now: a song's menu shows its mood, BETA 3; the progress card only while a Mood playlist exists)
     bool any = false;
     for (const auto& p : store.playlists) if (isMoodPlaylist(p)) { any = true; break; }
-    if (!any) { moodTotal_ = moodDone_ = 0; return; }
-    if (!levels.loaded() || (levels.gen() == moodLevelsGen_ && libEpoch == moodLibEpoch_)) return;
-    const bool libNew = libEpoch != moodLibEpoch_;
-    if (!libNew && time - moodBuiltAt_ < 5 && moodDone_ + 1 < moodTotal_) return;   // (the last one: at once)
+    if (!levels.loaded() || (levels.gen() == moodLevelsGen_ && libEpoch == moodLibEpoch_ && moodInputsGen_ == moodInputsBuilt_)) return;
+    const bool libNew = libEpoch != moodLibEpoch_, choice = moodInputsGen_ != moodInputsBuilt_;
+    if (!libNew && !choice && time - moodBuiltAt_ < 5 && moodDone_ + 1 < moodTotal_) return;   // (the last one, or your choice: at once)
     moodLevelsGen_ = levels.gen();
     moodLibEpoch_ = libEpoch;
+    moodInputsBuilt_ = moodInputsGen_;
     moodBuiltAt_ = time;
     moodIn_.assign(lib.tracks.size(), mixan::Mood{});   // (invalid: not measured yet)
     int done = 0;
@@ -242,17 +255,66 @@ void App::moodTick() {
         done++;
         moodIn_[i] = l->mix.mood;
     }
-    moodDone_ = done;
-    moodTotal_ = int(lib.tracks.size());
+    moodDone_ = any ? done : 0;
+    moodTotal_ = any ? int(lib.tracks.size()) : 0;
+    // your choices, by track (hash look-ups: well under a millisecond for thousands)
+    moodLabelsIn_.assign(lib.tracks.size(), mood::Label{});
+    if (!moodLabels_.empty())
+        for (size_t i = 0; i < lib.tracks.size(); i++)
+            if (auto it = moodLabels_.find(lib.tracks[i].path); it != moodLabels_.end()) moodLabelsIn_[i] = it->second;
     moodReady_ = false;
     moodThread_ = std::thread([this] {
         cores::moveHere(cores::Files);
         std::vector<const mixan::Mood*> per(moodIn_.size(), nullptr);
         for (size_t i = 0; i < moodIn_.size(); i++)
             if (moodIn_[i].valid) per[i] = &moodIn_[i];
-        moodNext_.build(per);
+        moodNext_.build(per, &moodLabelsIn_);
         moodReady_ = true;
     });
+}
+
+std::string App::moodLabelText(const mood::Label& l) { return l.any() ? std::to_string(int(l.is)) + "," + std::to_string(unsigned(l.nots)) : std::string(); }
+
+bool App::moodLabelParse(const std::string& s, mood::Label& out) {
+    int is = -1;
+    unsigned nots = 0;
+    if (sscanf(s.c_str(), "%d,%u", &is, &nots) != 2 || is < -1 || is >= mood::Count || nots >= (1u << mood::Count)) return false;
+    out.is = static_cast<signed char>(is);
+    out.nots = uint16_t(nots);
+    return true;
+}
+
+/** mood-labels.tsv: a path, then "is,nots" (moodLabelText). Read once at launch. */
+void App::moodLabelsLoad() {
+    moodLabels_.clear();
+    FILE* f = fopen(store.path("mood-labels.tsv").c_str(), "rb");
+    if (!f) return;
+    char line[4096];
+    while (fgets(line, sizeof line, f)) {
+        std::string l = line;
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+        const size_t t = l.rfind('\t');
+        mood::Label lb;
+        if (t != std::string::npos && moodLabelParse(l.substr(t + 1), lb) && lb.any()) moodLabels_[l.substr(0, t)] = lb;
+    }
+    fclose(f);
+}
+
+void App::moodLabelsSave() {
+    std::string out;
+    for (const auto& [path, l] : moodLabels_) if (l.any()) out += path + "\t" + moodLabelText(l) + "\n";
+    store.writeFile("mood-labels.tsv", std::move(out));   // (the writer thread)
+}
+
+void App::setMoodLabel(int track, mood::Label l) {
+    if (track < 0 || track >= int(lib.tracks.size())) return;
+    const std::string& path = lib.tracks[size_t(track)].path;
+    if (l.any()) moodLabels_[path] = l;
+    else moodLabels_.erase(path);
+    moodLabelsSave();
+    moodInputsGen_++;   // sorted again at once (moodTick)
+    syncAllDue();       // and told to the other devices
+    syncChangedAt = time;
 }
 
 void App::renamePlaylist(int ref) {
@@ -291,10 +353,26 @@ void App::openPlaylistMenu(int ref) {
     ui.focusDefault();
 }
 
+void App::openBattery() {
+    if (sheet.preview) SDL_DestroyTexture(sheet.preview);
+    sheet = Sheet{};
+    sheet.page = Sheet::Battery;
+    sheet.returnFocus = ui.focusedId();
+    ui.focusDefault();
+}
+
 void App::openDevices() {
     if (sheet.preview) SDL_DestroyTexture(sheet.preview);
     sheet = Sheet{};
     sheet.page = Sheet::Devices;
+    sheet.returnFocus = ui.focusedId();
+    ui.focusDefault();
+}
+
+void App::openAirPlay() {
+    if (sheet.preview) SDL_DestroyTexture(sheet.preview);
+    sheet = Sheet{};
+    sheet.page = Sheet::AirPlay;
     sheet.returnFocus = ui.focusedId();
     ui.focusDefault();
 }
@@ -701,7 +779,7 @@ void App::drawSmartSheet() {
                                  closeSheet();
                                  renamePlaylist(ref);
                              } });
-    } else if (page == Sheet::PlIcon) {
+    } else if (page == Sheet::PlIcon || page == Sheet::SrvPlIcon) {
         const int n = int(std::size(kPlaylistIcons));
         rows.push_back({ Row::Grid });
         rows.back().h = ((n + IconCols - 1) / IconCols) * IconRowH + 4;
@@ -790,7 +868,7 @@ void App::drawSmartSheet() {
             const Job& j = jobCards[i].job;
             const std::string count = j.total > 0 ? jobCount(j) : "Working";
             const std::string pct = j.total > 0 ? std::to_string(j.done * 100 / std::max(1, j.total)) + "%" : "";
-            rows.push_back({ Row::Action, j.stop == Stoppable::Levels ? ICON_WAVE : j.stop == Stoppable::None ? ICON_REFRESH : ICON_IMAGE, j.label,
+            rows.push_back({ Row::Action, j.icon ? j.icon : j.stop == Stoppable::Levels ? ICON_WAVE : j.stop == Stoppable::None ? ICON_REFRESH : ICON_IMAGE, j.label,
                              count, pct, [this, i] {
                                  const Job& jj = jobCards[i].job;
                                  if (jj.stop != Stoppable::None) { openJobMenu(i, true); return; }
@@ -805,12 +883,15 @@ void App::drawSmartSheet() {
         const Job& j = jobCards[std::clamp(sheet.recipe, 0, JobSlots - 1)].job;
         const char* still = j.stop == Stoppable::Covers ? "Covers for what is on screen are still made"
                           : j.stop == Stoppable::Thumbs ? "The track playing still gets its cover"
+                          : j.stop == Stoppable::Lyrics ? "Search finds what is already read"
+                          : j.stop == Stoppable::Downloads ? "What is downloaded stays; the rest waits"
+                          : j.stop == Stoppable::TagWrites ? "What is written stays; the rest waits, kept in Songate meanwhile"
                                                         : "The track playing and the next ones are still measured";
         rows.push_back({ Row::Action, ICON_X, "Stop until I resume it", std::string(still) + "; Resume is in Settings", "", [this, s = j.stop] {
                              closeSheet();
                              setJobStopped(s, true);
                          } });
-        rows.push_back({ Row::Action, ICON_GEAR, "Open in Settings", std::string(j.settingsCat == SetPlayback ? "Playback" : "Library") + " · " + (j.row ? j.row : ""), "",
+        rows.push_back({ Row::Action, ICON_GEAR, "Open in Settings", std::string(j.settingsCat == SetPlayback ? "Playback" : j.settingsCat == 5 ? "Lyrics" : j.settingsCat == SetLastfm ? "Last.fm" : "Library") + " · " + (j.row ? j.row : ""), "",
                          [this, j] {
                              closeSheet();
                              showSetting(j);
@@ -895,17 +976,180 @@ void App::drawSmartSheet() {
             rows.back().h = 44;
             rows.back().on = store.eq.preset == i;
         }
-    } else if (page == Sheet::Devices) {
+    } else if (page == Sheet::SrvMenu) {   // a server track: the queue, Liked, its album's download, where it belongs
+        const Subsonic::Song s = srvMenuSong_;
+        const bool playing = srvq_.on && srvq_.pos >= 0 && srvq_.pos < int(srvq_.songs.size()) && srvq_.songs[size_t(srvq_.pos)].id == s.id;
+        if (!playing) {
+            rows.push_back({ Row::Action, ICON_NEXT, srvq_.on ? "Play next" : "Play", "", "", [this, s] {
+                                 serverQueueAdd(s, true);
+                                 toast(srvq_.songs.size() > 1 ? "Plays next" : "Playing");
+                                 closeSheet();
+                             } });
+            if (srvq_.on)
+                rows.push_back({ Row::Action, ICON_QUEUE, "Add to the end of the playlist", "", "", [this, s] {
+                                     serverQueueAdd(s, false);
+                                     toast("Added to the playlist");
+                                     closeSheet();
+                                 } });
+        }
+        rows.push_back({ Row::Action, ICON_LIST, "Add to a playlist…", "", "", [this] { sheet.page = Sheet::SrvLists; ui.focusDefault(); } });
+        {   // opened on a row of a server playlist's page: Move, and Remove from it (as a playlist of yours)
+            const auto [pid, pname] = [&] {
+                const size_t c = route.query.find('\x1f');
+                return c == std::string::npos ? std::make_pair(route.query, std::string()) : std::make_pair(route.query.substr(0, c), route.query.substr(c + 1));
+            }();
+            const SrvPage& pg = srvPage_[0];
+            const int at = srvMenuIdx_;
+            if (route.view == View::Server && route.ref == 5 && pg.key == "P:" + pid && at >= 0 && at < int(pg.songs.size()) && pg.songs[size_t(at)].id == s.id) {
+                const std::string plName = pg.name.empty() ? pname : pg.name;
+                if (pg.songs.size() > 1)
+                    rows.push_back({ Row::Action, ICON_SORT_DOWN, "Move", "", "", [this, at, pid] {
+                                         closeSheet();
+                                         grab = Grab{};
+                                         grab.kind = Grab::SrvList;
+                                         grab.pos = at;
+                                         srvGrabPl_ = pid;
+                                         ui.focus(uid("srv.plt.r", at));
+                                         ui.setPadMode(true);
+                                         toast(GF_MOVE_WORDS);
+                                     } });
+                rows.push_back({ Row::Action, ICON_X, "Remove from “" + plName + "”", "", "", [this, at, pid, plName] {
+                                     subsonic.updatePlaylist(pid, std::string(), {}, { at });
+                                     SrvPage& p = srvPage_[0];
+                                     if (p.key == "P:" + pid && at < int(p.songs.size())) p.songs.erase(p.songs.begin() + at);
+                                     serverPlaylistChanged(pid);
+                                     toast("Removed from “" + plName + "”");
+                                     closeSheet();
+                                 } });
+            }
+        }
+        const bool starred = subsonic.isStarred(s.id);
+        rows.push_back({ Row::Action, starred ? ICON_HEART_F : ICON_HEART, starred ? "Remove from Liked" : "Add to Liked", "", "", [this, s, starred] {
+                             subsonic.star(s.id, !starred);
+                             toast(starred ? "Removed from Liked" : "Added to Liked");
+                         } });
+        if (!s.albumId.empty()) {
+            const Subsonic::DlState dl = subsonic.albumDownload(s.albumId);
+            if (dl.state == 0)
+                rows.push_back({ Row::Action, ICON_DOWNLOAD, "Download the album", s.album, "", [this, s] {
+                                     subsonic.downloadAlbum(s.albumId, serverDlRoot());
+                                     toast("Downloading “" + s.album + "”");
+                                     closeSheet();
+                                 } });
+            else
+                rows.push_back({ Row::Action, ICON_X, dl.state == 1 ? "Cancel the album's download" : "Remove the album's download", s.album, "", [this, s] {
+                                     subsonic.removeDownload(s.albumId);
+                                     toast("Removed “" + s.album + "” from " GF_THIS_CARD);
+                                     closeSheet();
+                                 } });
+            rows.push_back({ Row::Action, ICON_GRID, "Go to the album", s.album, "", [this, s] { closeSheet(); openServer(2, s.albumId, s.album); } });
+        }
+        if (!s.artistId.empty())
+            rows.push_back({ Row::Action, ICON_MIC, "Go to the artist", s.artist, "", [this, s] { closeSheet(); openServer(1, s.artistId, s.artist); } });
+        if (!s.genre.empty())
+            rows.push_back({ Row::Action, ICON_TAG, "Go to the genre", s.genre, "", [this, s] { closeSheet(); openServer(3, s.genre, s.genre); } });
+        if (!s.parent.empty())
+            rows.push_back({ Row::Action, ICON_FOLDER, "Show in Folders", "", "", [this, s] { closeSheet(); openServer(4, s.parent, s.album); } });
+        {   // what it is, as Details says of yours (one line: no file here to read)
+            std::string what = s.suffix;
+            for (char& ch : what) ch = char(toupper(uint8_t(ch)));
+            if (s.bitRate > 0) what += " · " + std::to_string(s.bitRate) + " kbps";
+            if (s.year > 0) what += " · " + std::to_string(s.year);
+            if (s.duration > 0) what += " · " + fmtTime(s.duration);
+            rows.push_back({ Row::Action, ICON_INFO, "On the server", what, "", nullptr });
+        }
+    } else if (page == Sheet::SrvLists) {   // the server's playlists: New playlist…, then each (as yours: Add to a playlist…)
+        const Subsonic::Song s = srvMenuSong_;
+        rows.push_back({ Row::Action, ICON_PLUS, "New playlist…", "", "", [this, s] { closeSheet(); serverNewPlaylist({ s.id }); } });
+        if (const auto* pls = serverPlaylistList())
+            for (const auto& p : *pls)
+                rows.push_back({ Row::Action, ICON_LIST, p.name, std::to_string(p.songs) + (p.songs == 1 ? " track" : " tracks"), "", [this, s, p] {
+                                     subsonic.updatePlaylist(p.id, std::string(), { s.id }, {});
+                                     serverPlaylistChanged(p.id);
+                                     toast("Added to “" + p.name + "”");
+                                     closeSheet();
+                                 } });
+        else rows.push_back({ Row::Action, ICON_REFRESH, "Asking the server…", "", "", nullptr });
+    } else if (page == Sheet::SrvPlMenu) {   // a server playlist's menu: Rename (as yours; Delete is on its page, last)
+        const Subsonic::Playlist p = srvMenuPl_;
+        rows.push_back({ Row::Action, serverPlaylistIcon(p.id), "Icon…", "Shown in the sidebar, also when it is folded", "", [this] {
+                             sheet.page = Sheet::SrvPlIcon;
+                             ui.focusDefault();
+                         } });
+        rows.push_back({ Row::Action, ICON_TAG, "Rename", "", "", [this, p] { closeSheet(); serverRenamePlaylist(p.id, p.name); } });
+        rows.push_back({ Row::Action, ICON_X, "Delete", "", "", [this, p] { closeSheet(); serverDeletePlaylist(p.id, p.name, p.songs); } });
+    } else if (page == Sheet::Battery) {
+        const bool charging = battery.charging == 1;
+        const int speed = battery.speed();
+        const plat::BatteryInfo& bi = battery.info;
+        char t[64];
+        auto info = [&](const char* icon, const std::string& label, const std::string& sub, const std::string& value) {
+            rows.push_back({ Row::Action, icon, label, sub, value, nullptr });
+            rows.back().h = sub.empty() ? 46 : 58;
+        };
+        snprintf(t, sizeof t, "%.0f%%", battery.pct);
+        info(ICON_BOLT, battery.full() ? "Charged" : !charging ? "On battery" : speed == 3 ? "Charging fast" : speed == 2 ? "Charging" : "Charging slowly",
+             battery.full() ? "Full, and kept full while it stays plugged in" : !charging ? "No charger connected" : speed == 1 ? "The charger gives little power" : "",
+             t);
+        if (!battery.full()) {
+            info(ICON_HOURGLASS, charging ? "Time to full" : "Time left", "",
+                 battery.est.empty() ? "…" : battery.est.rfind("full in ", 0) == 0 ? battery.est.substr(8) : battery.est);   // (the row says "to full")
+        }
+        if (battery.rate != 0) { snprintf(t, sizeof t, "%+.1f %% a minute", battery.rate); info(ICON_HISTORY, "Rate", "", t); }
+        if (battery.infoOk) {
+            // the charger: what it agreed to give; else its kind (a slow one: the state's line says so)
+            const char* kind = bi.charger == 1 ? "Full power" : bi.charger == 2 ? "Low power" : bi.charger == 3 ? "Not supported" : "None";
+            std::string w = kind;
+            if (bi.charger && bi.chargerVolts * bi.chargerAmps > 0) { snprintf(t, sizeof t, "%.0f V · %.1f A · %.0f W", bi.chargerVolts, bi.chargerAmps, bi.chargerVolts * bi.chargerAmps); w = t; }
+            info(ICON_PLUG, "Charger", "", w);
+            if (bi.volts > 0) { snprintf(t, sizeof t, "%.2f V", bi.volts); info(ICON_GAUGE, "Voltage", "", t); }
+            if (bi.tempC > 0) { snprintf(t, sizeof t, "%.1f °%s", store.batteryFahrenheit ? bi.tempC * 9 / 5 + 32 : bi.tempC, store.batteryFahrenheit ? "F" : "C"); info(ICON_THERMO, "Temperature", "", t); }
+            if (bi.gauge) {
+                // − drawn from the battery, + going into it
+                snprintf(t, sizeof t, "%s%.1f W · %.2f A", bi.gaugeAmps < 0 ? "\u2212" : "+", std::fabs(bi.gaugeVolts * bi.gaugeAmps), std::fabs(bi.gaugeAmps));
+                info(ICON_BOLT, "Power", "", t);
+                if (bi.fullMah > 0) {
+                    snprintf(t, sizeof t, "%.0f of %.0f mAh", bi.capMah, bi.fullMah);
+                    info(ICON_BATTERY, "Charge left", "", t);
+                }
+            }
+            if (bi.healthPct > 0) { snprintf(t, sizeof t, "%.0f%%", bi.healthPct); info(ICON_HEART, "Health", "", t); }
+        }
+        rows.push_back({ Row::Action, ICON_GEAR, "Battery settings", "", "", [this] {
+                             closeSheet();
+                             Job j{};
+                             j.settingsCat = SetAppearance;
+                             j.row = "Percentage";
+                             showSetting(j);
+                         } });
+        rows.back().h = 46;
+    } else if (page == Sheet::Devices || page == Sheet::AirPlay) {
+        // AirPlay's rows on its own page (the title bar's AirPlay button); a phone upright has one button for both, so Devices keeps
+        // them there (the user, 2026-11-05: "In the android app it can stay in the same card in portrait")
+        const bool airHere = page == Sheet::AirPlay || css::W < css::H;
+        (void)airHere;
+        if (page == Sheet::Devices) {
         // One place for what reaches other devices: AirPlay's rows go here when it comes (the user, 2026-11-02). Action rows, with an
         // icon and their second line: as Choice rows they showed one line in a row made for two (the user, 2026-11-03: "way bigger")
         if (tog.stage != Tog::Off) {
-            rows.push_back({ Row::Group, nullptr, "Listening with " + tog.peerName });
+            rows.push_back({ Row::Group, nullptr, "Listening with " + togetherNames() });
             rows.back().h = 34;
+            if (tog.host) {   // as Settings: a row for each device, an Add for each linked one outside it
+                for (const Tog::Member& mb : tog.members) {
+                    rows.push_back({ Row::Action, ICON_LINK, mb.name, togetherStateOf(mb), "", nullptr });
+                    rows.back().h = 58;
+                }
+                for (const Connect::Paired& p : devicesLinked) {
+                    if (togMember(p.id)) continue;
+                    rows.push_back({ Row::Action, ICON_PLUS, "Add " + p.name, "Linked, not in this session", "", [this, id = p.id, name = p.name] { togetherInvite(id, name); } });
+                    rows.back().h = 58;
+                }
+            }
             if (tog.host && tog.stage == Tog::On) {
-                rows.push_back({ Row::Action, ICON_SLIDERS, "Who changes what plays", tog.onlyHost ? "Only this device: the other's controls are off" : "Both devices: Next, pause and seek from either", tog.onlyHost ? "Only me" : "Both", [this] { togetherSetOnlyHost(!tog.onlyHost); } });
+                rows.push_back({ Row::Action, ICON_SLIDERS, "Who changes what plays", tog.onlyHost ? "Only this device: the others' controls are off" : "Everyone: Next, pause and seek from any device", tog.onlyHost ? "Only me" : "Everyone", [this] { togetherSetOnlyHost(!tog.onlyHost); } });
                 rows.back().h = 58;
             }
-            rows.push_back({ Row::Action, ICON_X, "Leave", tog.linkLost ? "Waiting for it: the link dropped" : "This device stops; the other plays on by itself", "", [this] { togetherLeave(); closeSheet(); } });
+            rows.push_back({ Row::Action, ICON_X, "Leave", tog.linkLost ? "Waiting for it: the link dropped" : tog.host ? "The session ends; each of the others plays on by itself" : "This device stops; the others play on", "", [this] { togetherLeave(); closeSheet(); } });
             rows.back().h = 58;
         } else {
             for (const Connect::Paired& p : devicesLinked) {
@@ -932,14 +1176,81 @@ void App::drawSmartSheet() {
                 rows.back().h = 58;
             }
         }
+        }
+#ifdef GF_PREVIEW
+        if (airHere && getenv("GF_SPEAKER_MOCK")) {   // (the preview: how the Speakers group would look, before the sender exists)
+            struct Spk { const char* name; const char* model; bool ok; bool on; float vol; };
+            static Spk spk[4] = { { "Living Room", "Sonos One", true, true, 0.62f }, { "Kitchen", "AirPort Express", true, true, 0.45f },
+                                  { "Bedroom", "shairport-sync", true, false, 0.5f }, { "HomePod", "HomePod mini", false, false, 0.5f } };
+            bool any = false;
+            for (const Spk& k : spk) any = any || k.on;
+            rows.push_back({ Row::Group, nullptr, "Speakers" });
+            rows.back().h = 34;
+            rows.push_back({ Row::Speaker, ICON_MUSIC, "This device", any ? "Quiet while speakers play" : "Plays here", "", [] { for (Spk& k : spk) k.on = false; } });
+            rows.back().on = !any;
+            rows.back().h = 58;
+            int n = 0;
+            for (const Spk& k : spk) n += k.on;
+            for (Spk& k : spk) {
+                std::string sub = !k.ok ? std::string(k.model) + ": AirPlay 2 only, not supported" : k.on ? (n > 1 ? "Playing, in time with the others · 2.0 s behind" : "Playing · 2.0 s behind") : k.model;
+                rows.push_back({ Row::Speaker, ICON_VOL, k.name, sub, "", [&k] { k.on = !k.on; } });
+                rows.back().on = k.on;
+                rows.back().disabled = !k.ok;
+                rows.back().vol = k.vol;
+                rows.back().setVol = [&k](float v) { k.vol = v; };
+                rows.back().h = k.on ? 96 : 58;
+            }
+        }
+#endif
 #ifdef GF_AIRPLAY
-        {
+        if (airHere) {   // Speakers: this device, then the AirPlay speakers on this network (airsend.hpp); several at once, each with its volume
+            const std::vector<AirSend::Speaker> spk = airsend.speakers();
+            int playingN = 0;
+            bool any = false;
+            for (const AirSend::Speaker& k : spk) { playingN += k.playing; any = any || k.chosen; }
+            rows.push_back({ Row::Group, nullptr, "Speakers" });
+            rows.back().h = 34;
+            rows.push_back({ Row::Speaker, ICON_MUSIC, "This device", any ? "Quiet while speakers play" : "Plays here", "", [this] { airsend.chooseNone(); } });
+            rows.back().on = !any;
+            rows.back().h = 58;
+            if (spk.empty()) {
+                rows.push_back({ Row::Group, nullptr, "Looking for AirPlay speakers on this network" });
+                rows.back().h = 30;
+            }
+            for (const AirSend::Speaker& k : spk) {
+                std::string sub;
+                if (!k.supported) sub = (k.model.empty() ? std::string("This speaker") : k.model) + ": " + (k.state.empty() ? "AirPlay 2 only, not supported" : k.state);
+                else if (k.chosen && k.playing) sub = playingN > 1 ? "Playing, in time with the others · 2.0 s behind" : "Playing · 2.0 s behind";
+                else if (k.chosen) sub = k.state.empty() ? "Connecting" : k.state;
+                else sub = !k.state.empty() ? k.state : !k.model.empty() ? k.model : k.address;
+                rows.push_back({ Row::Speaker, ICON_VOL, k.name, sub, "", [this, id = k.id, on = k.chosen] { airsend.choose(id, !on); } });
+                rows.back().on = k.chosen;
+                rows.back().disabled = !k.supported;
+                rows.back().vol = k.volume;
+                rows.back().setVol = [this, id = k.id](float v) {
+                    airsend.volume(id, v);
+                    std::string all;   // remembered: it comes back as loud as it was
+                    for (const auto& [sid, sv] : airsend.volumes()) {
+                        char b[16];
+                        snprintf(b, sizeof b, "%.3f", double(sv));
+                        all += sid + "\t" + b + "\n";
+                    }
+                    store.airSpeakerVol = all;
+                    persistSoon(0.8f);
+                };
+                rows.back().h = k.chosen ? 96 : 58;
+            }
+        }
+#endif
+#ifdef GF_AIRPLAY
+        if (airHere) {
             const AirPlay::View av = airplay.view();
             rows.push_back({ Row::Group, nullptr, "AirPlay" });
             rows.back().h = 34;
             if (av.streaming) {
                 const std::string song = av.title.empty() ? "Playing here" : av.title + (av.artist.empty() ? "" : " · " + av.artist);
-                rows.push_back({ Row::Action, ICON_VOL, song, "From " + (av.peer.empty() ? std::string("an iPhone") : av.peer) + ": stop it there", "", [this] { closeSheet(); } });
+                rows.push_back({ Row::Action, ICON_VOL, song, "From " + (av.peer.empty() ? std::string("an iPhone") : av.peer) + ". Press to stop it here", "",
+                                 [this] { airplay.stopStream(); closeSheet(); } });
             } else {
                 rows.push_back({ Row::Action, ICON_VOL, store.airplayReceive ? "Receiving is on" : "Receive AirPlay", store.airplayReceive ? "Pick this device in an iPhone's AirPlay list" : "An iPhone on this network can play here", store.airplayReceive ? "On" : "Off", [this] {
                                      store.airplayReceive = !store.airplayReceive;
@@ -983,7 +1294,12 @@ void App::drawSmartSheet() {
         rows.back().h = 46;
         rows.back().on = !on && !stopAfterCurrent;
     } else if (page == Sheet::SmartForm) {
-        if (!rc->opts.empty()) { rows.push_back({ Row::Setting, nullptr, rc->label }); rows.back().h = 56; }
+        if (!rc->opts.empty()) {
+            rows.push_back({ Row::Setting, nullptr, rc->label });
+            rows.back().h = 56;
+            // nine moods do not fit one row (the user, 2026-11-05, a screenshot; then "B, the grid"): a grid of tiles with their icons
+            if (!strcmp(rc->id, "mood")) rows.back().h = 34 + 3 * 48 + 6;
+        }
         matched = smartTracks(spec);
         rows.push_back({ Row::Count });
         rows.back().h = 50;
@@ -1019,7 +1335,7 @@ void App::drawSmartSheet() {
     const float w = cardW(600), x = (css::W - w) / 2;
     const bool ask = page == Sheet::Confirm;
     const bool footer = page == Sheet::SmartForm || page == Sheet::Report || ask;
-    const bool sleep = page == Sheet::Sleep, job = page == Sheet::Job, devs = page == Sheet::Devices;
+    const bool sleep = page == Sheet::Sleep, job = page == Sheet::Job, devs = page == Sheet::Devices, airp = page == Sheet::AirPlay;
     const bool jobs = page == Sheet::Jobs;
     int running = 0;
     for (const JobCard& c : jobCards) running += c.shown > 0.01f;
@@ -1043,6 +1359,29 @@ void App::drawSmartSheet() {
         fileTitle = "Choose what to erase";
         fileSub = "Your music files and backups always stay";
     }
+    if (page == Sheet::SrvPlMenu || page == Sheet::SrvPlIcon) {   // a server playlist: its name, where it is
+        std::string kind = subsonic.view().kind;
+        kind = kind.empty() ? std::string("Your server") : std::string(1, char(toupper(uint8_t(kind[0])))) + kind.substr(1);
+        fileIcon = PLI_CLOUD;
+        fileKick = kind;
+        fileTitle = srvMenuPl_.name;
+        fileSub = page == Sheet::SrvPlIcon ? WORDS_PICK_ICON : "More for this playlist";
+        fileIcon = serverPlaylistIcon(srvMenuPl_.id);
+    }
+    if (page == Sheet::SrvMenu || page == Sheet::SrvLists) {   // a server track: its title, artist and album, where it is from
+        std::string kind = subsonic.view().kind;
+        kind = kind.empty() ? std::string("Your server") : std::string(1, char(toupper(uint8_t(kind[0])))) + kind.substr(1);
+        fileIcon = PLI_CLOUD;
+        fileKick = kind;
+        fileTitle = srvMenuSong_.title;
+        fileSub = srvMenuSong_.artist + (srvMenuSong_.album.empty() ? "" : " · " + srvMenuSong_.album);
+    }
+    if (page == Sheet::Battery) {
+        fileIcon = ICON_BOLT;
+        fileKick = "Battery";
+        fileTitle = battery.full() ? "Charged" : battery.charging == 1 ? "Charging" : "On battery";
+        fileSub = "Everything about it, every 10 seconds";
+    }
     const bool supPage = page == Sheet::Report || page == Sheet::Crashes;
     if (page == Sheet::Report) reportHeader(fileIcon, fileKick, fileTitle, fileSub);
     if (page == Sheet::Crashes) {
@@ -1051,14 +1390,15 @@ void App::drawSmartSheet() {
         fileTitle = "Crash reports";
         fileSub = "Atmosphère's, newest first";
     }
-    const bool ownHead = filePage || relPage || facPage || supPage;   // pages that say their own header
-    const std::string kick = ownHead ? fileKick : plp ? playlistKind(sheet.recipe) : ask ? sheet.askKicker : eqp ? "Equalizer" : actl ? "Background player" : lacts ? "Games" : rc ? kGroups[rc->group] : plFile ? "Playlist file" : devs ? "Devices" : sleep ? "Sleep timer" : job || jobs ? "In the background" : page == Sheet::Smart ? "New playlist" : "Playlists";
+    const bool ownHead = filePage || relPage || facPage || supPage || page == Sheet::Battery || page == Sheet::SrvMenu || page == Sheet::SrvLists || page == Sheet::SrvPlMenu || page == Sheet::SrvPlIcon;   // pages that say their own header
+    const std::string kick = ownHead ? fileKick : plp ? playlistKind(sheet.recipe) : ask ? sheet.askKicker : eqp ? "Equalizer" : actl ? "Background player" : lacts ? "Games" : rc ? kGroups[rc->group] : plFile ? "Playlist file" : devs ? "Devices" : airp ? "AirPlay" : sleep ? "Sleep timer" : job || jobs ? "In the background" : page == Sheet::Smart ? "New playlist" : "Playlists";
     const std::string title = ownHead ? fileTitle : plp ? plp->name : ask ? sheet.askTitle
                             : eqp ? "Preset"
                             : actl ? evNames[std::clamp(sheet.recipe, 0, 3)]
                             : lacts ? sheet.name
                             : rc ? rc->title
                             : devs ? "Play with other devices"
+                            : airp ? "Play on speakers"
                             : sleep ? (left > 0 ? "Pauses in " + fmtTime(std::ceil(left)) : stopAfterCurrent ? "Stops after this track" : "Pause the music in…")
                             : plFile ? plName
                             : job ? jb.label
@@ -1069,7 +1409,8 @@ void App::drawSmartSheet() {
                           : actl ? "The playlist it plays, faded in"
                           : lacts ? "The game events that play it; off, they do what they usually do"
                           : rc ? rc->desc
-                          : devs ? "Together, or handed over"
+                          : devs ? (css::W < css::H ? "Together, handed over, or on speakers" : "Together, or handed over")
+                          : airp ? "Or let an iPhone play here"
                           : sleep ? "It fades out over its last 10 seconds, then pauses where you were"
                           : plFile ? std::to_string(sheet.fileTracks.size()) + (sheet.fileTracks.size() == 1 ? " track" : " tracks") +
                                          (sheet.fileMissing ? " · " + std::to_string(sheet.fileMissing) + " not in your library" : std::string())
@@ -1108,6 +1449,7 @@ void App::drawSmartSheet() {
     if (narrowCard && page != Sheet::Jobs)
         for (size_t i = 0; i < rows.size(); i++) {
             Row& r = rows[i];
+            if (r.kind == Row::Setting && rc && !strcmp(rc->id, "mood")) continue;   // (its own layout, already its own height)
             if (r.kind == Row::Setting) {
                 float segW = 6;
                 if (r.pick) for (const auto& o : r.opts) segW += g.measure(o, { css::Sm, Weight::SemiBold }) + 26;
@@ -1147,10 +1489,12 @@ void App::drawSmartSheet() {
     const float hx = x + 24, hy = y + 24;
     g.roundRect(hx, hy, 64, 64, 14, pal.accent, 0.16f);
     g.roundStroke(hx, hy, 64, 64, 14, 1, pal.accent, 0.3f);
+    SDL_Texture* srvArt = (page == Sheet::SrvMenu || page == Sheet::SrvLists) && !srvMenuSong_.cover.empty() ? serverCover(srvMenuSong_.cover) : nullptr;
     if (filePage && sheet.preview) g.image(sheet.preview, hx, hy, 64, 64, 14);   // an image shows itself
+    else if (srvArt) g.image(srvArt, hx, hy, 64, 64, 14);   // a server track: its cover, as yours show theirs (the user, 2026-11-07)
     else if (ownHead) g.icon(fileIcon, hx + 32, hy + 32, 28, pal.accentInk);
     else
-    g.icon(plp ? playlistIcon(sheet.recipe) : ask && sheet.askIcon ? sheet.askIcon : eqp ? ICON_EQ : actl || lacts ? ICON_GAME : rc ? rc->icon : plFile ? ICON_LIST : devs ? ICON_LINK : sleep ? ICON_MOON : jobs ? ICON_REFRESH : job ? (jb.stop == Stoppable::Levels ? ICON_WAVE : ICON_IMAGE) : page == Sheet::Smart ? PLI_SMART : ICON_LIST,
+    g.icon(plp ? playlistIcon(sheet.recipe) : ask && sheet.askIcon ? sheet.askIcon : eqp ? ICON_EQ : actl || lacts ? ICON_GAME : rc ? rc->icon : plFile ? ICON_LIST : devs ? ICON_LINK : airp ? ICON_AIRPLAY : sleep ? ICON_MOON : jobs ? ICON_REFRESH : job ? (jb.icon ? jb.icon : jb.stop == Stoppable::Levels ? ICON_WAVE : ICON_IMAGE) : page == Sheet::Smart ? PLI_SMART : ICON_LIST,
            hx + 32, hy + 32, 28, pal.accentInk);
     kicker(kick, hx + 64 + 16, hy + 8, pal.accentInk);
     float ty = hy + 18;
@@ -1215,9 +1559,11 @@ void App::drawSmartSheet() {
         }
         case Row::Grid: {
             // The playlist's icons: tiles like the Settings category tiles, the one in use in the accent and focused first
-            const int ref = sheet.recipe;
-            FolderPlaylist& p = store.playlists[size_t(ref)];
-            const char* now = playlistIcon(ref);
+            const bool srvIcon = page == Sheet::SrvPlIcon;   // a server playlist's: kept by its id (the cloud, none chosen)
+            const int ref = srvIcon ? 0 : sheet.recipe;
+            static FolderPlaylist none;
+            FolderPlaylist& p = srvIcon || store.playlists.empty() ? none : store.playlists[size_t(ref)];
+            const char* now = srvIcon ? serverPlaylistIcon(srvMenuPl_.id) : playlistIcon(ref);
             const float gap = (w - 48 - IconCols * IconTile) / (IconCols - 1);
             const int n = int(std::size(kPlaylistIcons));
             for (int k = 0; k < n; k++) {
@@ -1231,6 +1577,11 @@ void App::drawSmartSheet() {
                     if (on) g.roundStroke(tx, ty, IconTile, IconTile, 14, 1.5f, pal.accent, 0.6f);
                     g.icon(kPlaylistIcons[k].svg, tx + IconTile / 2, ty + IconTile / 2, 24, on ? pal.accentInk : hot ? pal.text : pal.text2);
                 }
+                if (hit && srvIcon) {
+                    setServerPlaylistIcon(srvMenuPl_.id, kPlaylistIcons[k].svg == PLI_CLOUD ? std::string() : kPlaylistIcons[k].key);
+                    closeSheet();
+                    break;
+                }
                 if (hit) {
                     // its kind's own icon is kept as "none chosen", so it follows the kind (a smart recipe's)
                     const char* def = p.smart() ? smartIcon(p.path) : p.folder() ? ICON_FOLDER : ICON_LIST;
@@ -1243,6 +1594,30 @@ void App::drawSmartSheet() {
             break;
         }
         case Row::Setting: {
+            if (rc && !strcmp(rc->id, "mood") && !r.pick) {   // the moods: their name above, then a grid of tiles with their icons
+                g.textC(r.label, { css::Base, Weight::SemiBold }, x + 24, ry + 18, pal.text2);
+                int cur = 0;
+                for (size_t k = 0; k < rc->opts.size(); k++) if (std::to_string(rc->opts[k].first) == sheet.arg) cur = int(k);
+                int pick = -1;
+                {
+                    const float gap = 8, tw = (w - 48 - 2 * gap) / 3, th = 40;
+                    for (size_t k = 0; k < rc->opts.size(); k++) {
+                        const float tx = x + 24 + float(k % 3) * (tw + gap), ty = ry + 34 + float(k / 3) * 48;
+                        const Id id = uid("sp.mood", int(k));
+                        const bool on = int(k) == cur, hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
+                        if (ui.item(id, { tx, ty, tw, th }, 10, on ? DefaultFocus : 0)) pick = int(k);
+                        g.roundRect(tx, ty, tw, th, 10, on ? pal.accent : pal.text, on ? 0.2f : hot ? 0.1f : 0.05f);
+                        if (on) g.roundStroke(tx, ty, tw, th, 10, 1, pal.accent, 0.6f);
+                        g.icon(moodIcon(rc->opts[k].first), tx + 22, ty + th / 2, 18, on ? pal.accentInk : pal.text2);
+                        g.textC(rc->opts[k].second, { css::Sm, Weight::SemiBold }, tx + 40, ty + th / 2, on ? pal.text : pal.text2, 1, Align::Left, int(tw - 48));
+                    }
+                }
+                if (pick >= 0) {
+                    sheet.arg = std::to_string(rc->opts[size_t(pick)].first);
+                    if (!sheet.nameTouched) sheet.name = defaultName(*rc, sheet.arg);
+                }
+                break;
+            }
             const bool stacked = rowStacked[i];
             const float segY = stacked ? ry + r.h - 26 : ry + r.h / 2, segMax = stacked ? w - 48 : 0;
             g.textC(r.label, { css::Base, Weight::SemiBold }, x + 24, stacked ? ry + 20 : ry + r.h / 2, pal.text2);
@@ -1288,6 +1663,38 @@ void App::drawSmartSheet() {
                 g.circle(x + 28, ry + r.h / 2, 2, pal.text3);
             }
             break;
+        case Row::Speaker: {
+            // a place to play on: the top line chooses it (a check), its volume below while it plays
+            const float topH = 58;
+            const bool hit = !r.disabled && ui.item(id, { x + 12, ry, w - 24, topH }, 10, first ? DefaultFocus : 0);
+            if (!r.disabled) first = false;
+            if (visible) {
+                const float a = r.disabled ? 0.45f : 1.f;
+                const bool hot = !r.disabled && (ui.pressed(id) || (ui.focused(id) && ui.showFocusRing()));
+                if (hot) g.roundRect(x + 12, ry, w - 24, topH, 10, pal.text, ui.pressed(id) ? 0.11f : 0.065f);
+                g.icon(r.icon, x + 33, ry + topH / 2, 20, r.on ? pal.accentInk : pal.text2, a);
+                const int tw = int(w - 56 - 24 - 40);
+                g.text(r.label, { css::Base, Weight::SemiBold }, x + 56, ry + topH / 2 - 19, pal.text, a, Align::Left, tw);
+                g.text(r.sub, { css::Sm }, x + 56, ry + topH / 2 + 2, pal.text3, a, Align::Left, tw);
+                // its check: a ring, filled in the accent while it plays there
+                const float cx = x + w - 24 - 12, cy = ry + topH / 2;
+                if (r.on) {
+                    g.circle(cx, cy, 12, pal.accent);
+                    g.icon(ICON_CHECK, cx, cy, 16, pal.onAccent);
+                } else if (!r.disabled) {
+                    g.roundStroke(cx - 11, cy - 11, 22, 22, 11, 1.5f, pal.text, 0.35f);
+                }
+            }
+            if (hit && r.act) r.act();
+            if (r.on && r.vol >= 0) {   // its own volume
+                const float sy = ry + topH + 16, sx = x + 56, sw2 = w - 56 - 24 - 52;
+                float nv = r.vol;
+                slider(uid("sp.spkvol", int(i)), sx, sy, sw2, r.vol, &nv);
+                if (nv != r.vol && r.setVol) r.setVol(nv);
+                if (visible) g.textNum(std::to_string(int(std::lround(nv * 100))) + "%", { css::Sm }, x + w - 24, sy - g.lineHeight({ css::Sm }) / 2.f, pal.text2, 1, Align::Right);
+            }
+            break;
+        }
         case Row::Toggle: {
             // A part to erase (the factory reset): the whole row switches it, as Settings' switch rows
             const bool hit = ui.item(id, { x + 12, ry, w - 24, r.h }, 10, first ? DefaultFocus : 0);

@@ -7,6 +7,7 @@
 #include <switch.h>
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -16,6 +17,7 @@
 #include "gfbg.h"
 
 namespace plat {
+namespace { I2cSession gaugeSession{}; bool gaugeOpen = false; }   // the battery's fuel gauge (batteryInfo)
 
 static_assert(u64(BtnA) == u64(HidNpadButton_A) && u64(BtnB) == u64(HidNpadButton_B) && u64(BtnX) == u64(HidNpadButton_X) && u64(BtnY) == u64(HidNpadButton_Y));
 static_assert(u64(BtnL) == u64(HidNpadButton_L) && u64(BtnR) == u64(HidNpadButton_R) && u64(BtnZL) == u64(HidNpadButton_ZL) && u64(BtnZR) == u64(HidNpadButton_ZR));
@@ -101,11 +103,15 @@ void init() {
     romfsInit();
     plInitialize(PlServiceType_User);
     psmInitialize();
+    if (R_SUCCEEDED(i2cInitialize())) gaugeOpen = R_SUCCEEDED(i2cOpenSession(&gaugeSession, I2cDevice_Max17050));
     lblInitialize();   // Dim the screen: the handheld backlight (failing is fine: a veil instead)
 }
 
 void quit() {
     lblExit();
+    if (gaugeOpen) i2csessionClose(&gaugeSession);
+    gaugeOpen = false;
+    i2cExit();
     psmExit();
     plExit();
     romfsExit();
@@ -159,7 +165,8 @@ Stick stick(int which) {
 TextResult askText(const char* header, const char* guide, const char* initial, char* out, size_t size) {
     SwkbdConfig kbd;
     if (R_FAILED(swkbdCreate(&kbd, 0))) return TextResult::Unavailable;
-    swkbdConfigMakePresetDefault(&kbd);
+    if (textSecret().load()) swkbdConfigMakePresetPassword(&kbd);   // (a password: hidden as typed)
+    else swkbdConfigMakePresetDefault(&kbd);
     swkbdConfigSetGuideText(&kbd, guide);
     swkbdConfigSetHeaderText(&kbd, header);
     if (initial) swkbdConfigSetInitialText(&kbd, initial);
@@ -196,6 +203,85 @@ void restoreBacklight(float saved) {
     lblApplyCurrentBrightnessSettingToBacklight();
 }
 
+namespace {
+GpioPadSession volUp_{}, volDown_{};
+int volState_ = 0;   // 0 not tried, 1 open, -1 could not
+std::string volErr_;
+}
+
+bool volumeKeys(bool& up, bool& down, std::string* err) {
+    up = down = false;
+    if (volState_ == 0) {
+        char e[96];
+        Result rc = gpioInitialize();
+        if (R_FAILED(rc)) { snprintf(e, sizeof e, "gpio: 0x%x", rc); volErr_ = e; volState_ = -1; }
+        else if (R_FAILED(rc = gpioOpenSession(&volUp_, GpioPadName_ButtonVolUp))) { snprintf(e, sizeof e, "volume up pad: 0x%x", rc); volErr_ = e; volState_ = -1; }
+        else if (R_FAILED(rc = gpioOpenSession(&volDown_, GpioPadName_ButtonVolDown))) { snprintf(e, sizeof e, "volume down pad: 0x%x", rc); volErr_ = e; volState_ = -1; }
+        else volState_ = 1;
+    }
+    if (volState_ < 0) { if (err) *err = volErr_; return false; }
+    GpioValue a = GpioValue_High, b = GpioValue_High;
+    if (R_FAILED(gpioPadGetValue(&volUp_, &a)) || R_FAILED(gpioPadGetValue(&volDown_, &b))) { if (err) *err = "a pad would not read"; return false; }
+    up = a == GpioValue_Low;   // (pressed pulls the line low)
+    down = b == GpioValue_Low;
+    return true;
+}
+
+bool backlightOff(bool off) { return R_SUCCEEDED(off ? lblSwitchBacklightOff(0) : lblSwitchBacklightOn(0)); }
+int disconnectControllers() {   // (attached Joy-Con are the Handheld pad: never touched)
+    int n = 0;
+    for (int i = 0; i < 8; ++i) {
+        const HidNpadIdType id = HidNpadIdType(HidNpadIdType_No1 + i);
+        if (hidGetNpadStyleSet(id) != 0 && R_SUCCEEDED(hidDisconnectNpad(id))) ++n;
+    }
+    return n;
+}
+namespace {
+AppletHookCookie captureCookie;
+int capturePresses_ = 0;
+void onCapture(AppletHookType hook, void*) { if (hook == AppletHookType_OnCaptureButtonShortPressed) ++capturePresses_; }
+}
+bool takeCapture(bool on) {   // (an application only, 3.0.0+; a long press still records, the system's)
+    static bool taken = false;
+    if (on == taken) return true;
+    if (on) {
+        if (R_FAILED(appletSetRequiresCaptureButtonShortPressedMessage(true))) return false;
+        appletHook(&captureCookie, onCapture, nullptr);
+    } else {
+        appletSetRequiresCaptureButtonShortPressedMessage(false);
+        appletUnhook(&captureCookie);
+    }
+    capturePresses_ = 0;
+    taken = on;
+    return true;
+}
+int capturePresses() { const int n = capturePresses_; capturePresses_ = 0; return n; }
+bool blockHome(bool on) {   // (an application only: run from the album, HOME stays the system's)
+    static bool blocked = false;
+    if (on == blocked) return true;
+    const AppletType t = appletGetAppletType();
+    if (t != AppletType_Application && t != AppletType_SystemApplication) return false;
+    // (held back, HOME's presses reach no app: no message, no HID state; tried on HOS 23, 2026-11-08)
+    if (R_FAILED(on ? appletBeginBlockingHomeButtonShortAndLongPressed(0) : appletEndBlockingHomeButtonShortAndLongPressed())) return false;
+    blocked = on;
+    return true;
+}
+
+namespace { int audState_ = 0; }   // 0 not tried, 1 open, -1 could not
+bool outputVolume(int& level) {
+    if (audState_ == 0) audState_ = R_SUCCEEDED(audctlInitialize()) ? 1 : -1;
+    AudioTarget t = AudioTarget_Invalid;
+    s32 v = 0;
+    if (audState_ < 0 || R_FAILED(audctlGetActiveOutputTarget(&t)) || R_FAILED(audctlGetTargetVolume(&v, t))) return false;
+    level = int(v);
+    return true;
+}
+bool setOutputVolume(int level) {
+    AudioTarget t = AudioTarget_Invalid;
+    if (audState_ <= 0 || R_FAILED(audctlGetActiveOutputTarget(&t))) return false;
+    return R_SUCCEEDED(audctlSetTargetVolume(t, s32(level)));
+}
+
 bool batteryLevel(unsigned& percent) {
     u32 p = 0;
     if (R_FAILED(psmGetBatteryChargePercentage(&p))) return false;
@@ -207,6 +293,71 @@ bool batteryRaw(double& percent, bool& charging) {
     PsmChargerType ct = PsmChargerType_Unconnected;
     if (R_FAILED(psmGetRawBatteryChargePercentage(&percent)) || R_FAILED(psmGetChargerType(&ct))) return false;
     charging = ct != PsmChargerType_Unconnected;
+    return true;
+}
+
+namespace {
+// The battery's fuel gauge, a MAX17050 on I2C, as Status Monitor and hekate read it: a 5 mΩ sense resistor and a current gain of 2,
+// so current is 0.15625 mA a step, charge 0.5 mAh, voltage 78.125 µV, time 5.625 s
+bool readGauge(u8 reg, u16& out) {
+    if (!gaugeOpen) return false;
+    struct { u8 send, sendLength, sendData, receive, receiveLength; } cmd = {
+        u8(0 | (I2cTransactionOption_Start << 6)), 1, reg, u8(1 | (I2cTransactionOption_All << 6)), 2 };
+    u16 v = 0;
+    if (R_FAILED(i2csessionExecuteCommandList(&gaugeSession, &v, sizeof v, &cmd, sizeof cmd))) return false;
+    out = v;
+    return true;
+}
+void gaugeInfo(BatteryInfo& o) {
+    u16 cur = 0, vcell = 0, rep = 0, full = 0, tte = 0, ttf = 0;
+    if (!readGauge(0x0B, cur) || !readGauge(0x19, vcell)) return;   // AvgCurrent, AvgVCELL
+    const double amps = int16_t(cur) * 0.15625 / 1000.0, volts = vcell * 78.125e-6;
+    if (volts < 3.0 || volts > 4.6 || std::fabs(amps) > 8) return;   // not what a Switch's battery reads: shown as unknown
+    o.gauge = true;
+    o.gaugeVolts = volts;
+    o.gaugeAmps = amps;
+    if (readGauge(0x05, rep) && readGauge(0x10, full)) {   // RepCap, FullCAP
+        const double r = rep * 0.5, f = full * 0.5;
+        if (f >= 1500 && f <= 6000 && r <= f * 1.05) { o.capMah = r; o.fullMah = f; }
+    }
+    if (readGauge(0x11, tte) && tte != 0xFFFF && tte > 0) o.tteMin = int(tte * 5.625 / 60);   // TTE
+    if (readGauge(0x20, ttf) && ttf != 0xFFFF && ttf > 0) o.ttfMin = int(ttf * 5.625 / 60);   // TTF
+}
+}  // namespace
+
+bool batteryInfo(BatteryInfo& o) {
+    PsmChargerType ct = PsmChargerType_Unconnected;
+    if (R_FAILED(psmGetChargerType(&ct))) return false;
+    o = BatteryInfo{};
+    o.charger = int(ct);
+    if (hosversionAtLeast(17, 0, 0)) {   // the fields' layout from 17.0.0 (libnx: PsmBatteryChargeInfoFields)
+        PsmBatteryChargeInfoFields f{};
+        if (R_SUCCEEDED(psmGetBatteryChargeInfoFields(&f))) {
+            o.fast = f.fast_battery_charging;
+            o.volts = f.battery_charge_milli_voltage / 1000.0;
+            o.tempC = f.temperature_celcius / 1000.0;
+            o.healthPct = f.battery_age_percentage / 1000.0;
+            // The charger's agreed voltage and current: libnx's places (0x30, 0x34) read "0 V, 15.0 A" on HOS 22 and 23 (the user's
+            // console, 2026-11-05), the voltage a word later. So: the first word from 0x2C on that is a USB-C voltage (4.5 to 21 V)
+            // with a current after it (0.05 to 6 A); fast charging is the byte after them.
+            u32 w[sizeof f / 4];
+            memcpy(w, &f, sizeof w);
+            for (size_t i = 0x2C / 4; i + 1 < 0x48 / 4; i++) {
+                if (w[i] >= 4500 && w[i] <= 21000 && w[i + 1] >= 50 && w[i + 1] <= 6000) {
+                    o.chargerVolts = w[i] / 1000.0;
+                    o.chargerAmps = w[i + 1] / 1000.0;
+                    o.fast = reinterpret_cast<const u8*>(w)[(i + 2) * 4] != 0;
+                    break;
+                }
+            }
+            char hex[16];
+            for (size_t i = 0x28 / 4; i < 0x44 / 4; i++) { snprintf(hex, sizeof hex, "%s%X", o.raw.empty() ? "" : " ", unsigned(w[i])); o.raw += hex; }
+            gaugeInfo(o);
+        }
+    } else {
+        double age = 0;
+        if (R_SUCCEEDED(psmGetBatteryAgePercentage(&age))) o.healthPct = age;
+    }
     return true;
 }
 

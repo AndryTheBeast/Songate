@@ -13,6 +13,25 @@
 #include <ctime>
 
 #include "app.hpp"
+
+/** Settings › Library › Subsonic server's Sign in: its address, your user, your password (hidden as typed), one after another. Only a
+ *  token made from the password is kept (subsonic.hpp); the password itself is wiped here. */
+void App::subsonicSignIn() {
+    const Subsonic::View v = subsonic.view();
+    char server[256] = {}, user[128] = {}, pw[256] = {};
+    plat::TextResult r = plat::askText("Subsonic server", "Its address, as http://nas.local:4533", v.server.c_str(), server, sizeof server);
+    if (r == plat::TextResult::Unavailable) { toast("The keyboard is not available in applet mode"); return; }
+    if (r != plat::TextResult::Done || !*server) return;
+    if (plat::askText("Subsonic server", "Your username on it", v.user.c_str(), user, sizeof user) != plat::TextResult::Done || !*user) return;
+    plat::textSecret() = true;
+    r = plat::askText("Subsonic server", "Your password: only a token made from it is kept", "", pw, sizeof pw);
+    plat::textSecret() = false;
+    std::string p = pw;
+    volatile char* w = pw;
+    for (size_t i = 0; i < sizeof pw; i++) w[i] = 0;
+    if (r != plat::TextResult::Done || p.empty()) return;
+    subsonic.signIn(server, user, p);   // (p is wiped there)
+}
 #include "icons.inc"
 extern "C" {
 #include "qrcodegen.h"
@@ -22,8 +41,9 @@ void App::allowLastfm() {
     confirm(ICON_MUSIC, "Last.fm", "Scrobble to Last.fm?", "Last.fm, an account of your own",
             "Allow Songate to use Last.fm?",
             "Once you sign in, Songate sends Last.fm the artist, title, album, track number and length of what you play, and when you "
-            "played it. Only tracks with tags, never your files' names. Last.fm sees " GF_YOUR_CONSOLE "'s IP address and shows your "
-            "plays on your profile. You can turn this off at any time.",
+            "played it. For Mood playlists it also asks for each song's tags, by its artist and title, once. Only tracks with tags, never "
+            "your files' names. Last.fm sees " GF_YOUR_CONSOLE "'s IP address and shows your plays on your profile. You can turn this off "
+            "at any time.",
             "Allow", [this] {
                 store.lastfm = true;
                 persistSoon(0.3f);
@@ -60,7 +80,39 @@ void App::lastfmTick() {
         SDL_DestroyTexture(lfmQr);
         lfmQr = nullptr;
     }
-    if (now.track >= 0 && now.track < int(lib.tracks.size())) {
+    // listening together: only the device that started it tells Last.fm (the user, 2026-11-07: "only the host send info to last.fm");
+    // a song heard here in a session is never counted here, also when the session ends part way through it
+    if (togetherGuest()) lfmSaid = lfmDone = true;
+    if (srvq_.on && srvq_.pos >= 0 && srvq_.pos < int(srvq_.songs.size())) {   // a server's song: its tags (the user, 2026-11-07: "Last.fm
+        // scrobbing is not working while streaming server music"; it counted nothing, or the last song of yours)
+        const Subsonic::Song& so = srvq_.songs[size_t(srvq_.pos)];
+        auto songOf = [&](int64_t when, Lastfm::Song& out) {
+            if (so.title.empty() || so.artist.empty()) return false;
+            out.artist = so.artist;
+            out.title = so.title;
+            out.album = so.album;
+            out.trackNo = so.track;
+            out.duration = int((now.info.duration > 0 ? now.info.duration : so.duration) + 0.5);
+            out.when = when;
+            return true;
+        };
+        const bool loaded = player.loaded() && srvq_.waitFor.empty();
+        if (!lfmSaid && isPlaying() && loaded) {
+            lfmSaid = true;
+            Lastfm::Song s;
+            if (lastfm.announcing() && songOf(0, s)) lastfm.nowPlaying(std::move(s));
+        }
+        if (isPlaying() && loaded && !lfmDone) {
+            if (lfmHeard <= 0) lfmBegan = int64_t(std::time(nullptr));
+            lfmHeard += dt;
+            const double need = Lastfm::threshold(now.info.duration > 0 ? now.info.duration : so.duration);
+            if (need > 0 && lfmHeard >= need) {
+                lfmDone = true;
+                Lastfm::Song s;
+                if (lastfm.keeping() && songOf(lfmBegan, s)) lastfm.scrobble(std::move(s));
+            }
+        }
+    } else if (now.track >= 0 && now.track < int(lib.tracks.size())) {
         const Track& t = lib.tracks[size_t(now.track)];
         const double dur = now.info.duration > 0 ? now.info.duration : t.duration;
         if (!lfmSaid && isPlaying() && !now.loading && t.tagged) {

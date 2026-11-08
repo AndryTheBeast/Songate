@@ -51,7 +51,8 @@ struct Library {
     /** The folders that exist (a FAT card's spelling counts once), and every audio file below them: the folder
      *  walk, slow on an SD card, so it can run on a thread (it touches no member). */
     static std::vector<std::string> validRoots(const std::vector<std::string>& candidateRoots);
-    static std::vector<std::string> listFiles(const std::vector<std::string>& roots);
+    /** lrcs (if asked): the .lrc files found on the way. */
+    static std::vector<std::string> listFiles(const std::vector<std::string>& roots, std::vector<std::string>* lrcs = nullptr);
     /** The library from a list of files (a walk's, or the one remembered from the last run). */
     void build(const std::vector<std::string>& roots, const std::vector<std::string>& files);
     int folderByPath(const std::string& path) const;

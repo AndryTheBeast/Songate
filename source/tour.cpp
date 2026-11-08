@@ -94,10 +94,16 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           "button opens the track menu, with everything else you can do to the track.",
           page(View::Now), { { "np.like" }, { "np.album" }, { "np.artist" }, { "np.folder" }, { "np.more" } } },
         { 1, 1, ICON_LIST, "Up next, Lyrics and Palette",
-          "Up next shows what plays after this track. Lyrics shows the words: synced lyrics follow the music, and tapping "
-          "a line jumps to it. If they run early or late, Earlier and Later fix them for this track. Palette shows the "
-          "colours taken from the cover.",
+          "Up next shows what plays after this track. Lyrics shows the words, from an .lrc file beside the song or its "
+          "tags: synced lyrics follow the music, and tapping a line jumps to it. If they run early or late, Earlier and "
+          "Later fix them for this track. Palette shows the colours taken from the cover.",
           page(View::Now), { { "np.tab" }, { "np.tab", 1 }, { "np.tab", 2 } } },
+        // ---- BETA 3 (the user, 2026-11-08: "update the tour (all three of them) with every new feature"; texts approved first:
+        // docs/next-session/tour-beta3-draft.md)
+        { 2, 1, ICON_QUOTE, "Lyrics found online",
+          "A song with no lyrics can find them online, once you allow it here. Play them at once, or see them on a card "
+          "first. Keep saves them beside the song or in Songate's folder; Not these tries the next match.",
+          settings(5), { { "set.lyronline" }, { "set.lyrway", 0, 2 } } },
         { 0, 1, ICON_PLAY, "The player bar",
           "The controls are always here. The first button sets the order: Default, Repeat list, Repeat track or Shuffle. "
           "The last one stops the music after this track. " GF_ON_THE_PADS "{X} plays and pauses, {L} and {R} skip, and "
@@ -116,14 +122,22 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           "15 to 90 minutes, or the end of the track. The music fades out over its last ten seconds and pauses where you "
           GF_SLEEP_WORDS "Then a card counts down and puts " GF_THE_CONSOLE " to sleep, unless you stay awake.",
           settings(App::SetPlayback), { { "set.sleepcon", 0, 4 } } },
+#ifdef __SWITCH__
+        { 1, 1, ICON_LOCK, "Pocket lock",
+          "Lock, under the cover, turns the screen off and ignores every button and touch while the music plays on, so "
+          "nothing changes in a pocket. Hold Volume − to unlock. Settings › Controls › Pocket lock picks Volume +, or "
+          "Capture pressed twice, and how long to hold.",
+          page(View::Now), { { "np.pocket" } } },
+#endif
         { 0, 1, ICON_PLUS, "The track menu",
           "Every track has a menu: " GF_TOUR_MENU ". For example, Play next slots "
           "it in right after the current track, and Add to a playlist… files it away.",
           page(View::Queue), { { "@main" } } },
         { 2, 1, ICON_TAG, "Tags, covers and details",
           "The track menu also edits its tags (title, artist, album, genre, year…) and changes its cover with any image on "
-          GF_THE_CARD ", for one track or the whole album. Songate keeps your changes apart: your files are never "
-          "touched, and Undo puts them back. Details shows its plays and its loudness.",
+          GF_THE_CARD ", for one track or the whole album. Songate asks each time: keep the change in Songate, or write "
+          "it into the file too. What the file held is kept, so Restore the file's original tags puts it back. Details "
+          "shows its plays and its loudness.",
           page(View::Queue), { { "@main" } } },
         // ---- Library
         { 0, 2, ICON_GRID, "The sidebar",
@@ -131,7 +145,7 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           "Folders and Library each show it a different way. Settings › Appearance › Sidebar can reorder these tabs, "
           "hide some, or add dividing lines.",
           nullptr, { { "nav.now" }, { "nav.queue" }, { "nav.albums" }, { "nav.artists" }, { "nav.genres" }, { "nav.folders" }, { "nav.library" } } },
-        { 1, 2, ICON_V_GRID, "Albums",
+        { 1, 2, ICON_ALBUMS, "Albums",
           "Every album, with its cover. The button at the top right sorts them by artist, title, year or folder. Press "
           "{A} on an album to open it: play it, shuffle it or add it to the queue.",
           page(View::Albums), { { "@main" } } },
@@ -144,6 +158,14 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           "on the right jump through it.",
           [](App& a) { a.store.libTab = 1; a.navigate(View::Library, -1, {}, false); },
           { { "lib.tab", 0, 3 }, { "trk.filter" }, { "trk.sort" }, { "trk.dir" } } },
+        { 1, 2, ICON_LINK, "Your server",
+          "Songate also plays the music on your own server: Navidrome, Airsonic or any server with the Subsonic API. Sign "
+          "in once here, and its albums, artists, playlists and folders appear beside yours, apart or mixed in.",
+          settings(App::SetLibrary), { { "set.subin" }, { "set.subout" } } },   // (signed out: Sign in; signed in: Sign out)
+        { 1, 2, ICON_GRID, "Local and Server",
+          "This switch moves the whole app between your music and the server's: the sidebar, the Library and the "
+          "Playlists page follow it. A server song can be downloaded, to play without the server.",
+          page(View::Library), { { "lib.source", 0, 2 } } },   // (shown while signed in to a server)
         { 2, 2, ICON_V_LIST, "Four ways to list",
           "Every list of tracks can show them by album, with covers, as tiles, or as a plain list, and remembers which. "
           "Try them on Liked or any playlist: the view you pick there stays with that page.",
@@ -154,8 +176,9 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           [](App& a) { a.navigate(View::Folders, a.lib.rootFolders.empty() ? -1 : a.lib.rootFolders[0], {}, false); },
           { { "fo.play" }, { "fo.shuffle" }, { "fo.addpl" }, { "fo.addall" } } },
         { 1, 2, ICON_SEARCH, "Search",
-          "Press {Y} or " GF_TAP " here to search your artists, albums and tracks. For example, \"live\" finds every live "
-          "recording.",
+          "Press {Y} or " GF_TAP " here to search your artists, albums and tracks, and the words of your songs: In the "
+          "lyrics lists each song that sings them, and a synced line plays from that moment. For example, \"live\" finds "
+          "every live recording.",
           nullptr, { { "tb.search" } } },
         { 2, 2, ICON_HISTORY, "Play statistics",
           "A track counts as played after a minute, or nearly all of a shorter one, " GF_PLAYED_WHERE ". Plays, the last play and the date added show in Details, and smart playlists like Most played and "
@@ -193,10 +216,14 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           "their order is the point.",
           page(View::Queue), { { "nav.playlists" } } },
         { 1, 3, PLI_MOOD, "Mood playlists",
-          "A Mood playlist sorts your library by how it sounds: Happy, Party, Relaxed, Sad or Aggressive. Songate "
-          "measures each song on " GF_THE_CONSOLE ", so the list fills in as it goes. For example: + › Mood playlist…, then "
-          "Relaxed for a quiet evening.",
+          "A Mood playlist sorts your library by how it sounds: Happy, Party, Relaxed, Sad, Aggressive, Workout, Focus, "
+          "Dark or Epic. Songate measures each song on " GF_THE_CONSOLE ", so the list fills in as it goes. For example: + › "
+          "Mood playlist…, then Relaxed for a quiet evening.",
           page(View::Queue), { { "nav.newpl" } } },
+        { 2, 3, PLI_MOOD, "Your moods",
+          "Disagree with a song's mood? Its menu's Mood row sets yours, or says which mood it is not. Songs that sound "
+          "like it follow your choice, and your other devices learn it too.",
+          page(View::Queue), { { "@main" } } },
         { 1, 3, ICON_HEART, "Playlist pages",
           "Liked and every playlist have a page like this. Play or shuffle it, export it as an .m3u8 file that other "
           "players can read" GF_GAMES_WORDS ". You can also give it an icon, rename it "
@@ -274,11 +301,12 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
         { 0, 7, ICON_GAME, "The overlay",
           "While a game is running, open Ultrahand ({L} + {BTN-DOWN} + a click of the right stick {RS}, unless you changed it) and choose "
           "Songate. From there you control the music, the queue, game actions, the equalizer, the sleep timer and the "
-          "volume without leaving the game.",
+          "volume without leaving the game. {R} opens the overlay's settings, {L} comes back.",
           nullptr, {} },
         { 2, 7, ICON_FOLDER, "Browsing in the overlay",
           "The overlay's Browse opens your folders, or your playlists by kind: Normal, Smart, Mood and Automix, each with "
-          "Songate's own icons. Play from any track, add one or all to the queue, all without leaving the game.",
+          "Songate's own icons. {Y} plays a playlist from its start, {X} shuffles it; while an Automix playlist plays, "
+          "its sparkle shows on the main screen.",
           nullptr, {} },
 #endif
         // ---- Devices (session 11, the user: "update the in-app tour with the new features"; the texts approved by the user first)
@@ -305,8 +333,9 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           "one. Even when the two devices hold different files of one song, Songate lines them up by itself.",
           settings(App::SetDevices), { { "set.tgout", 0, 3 }, { "set.tgnudge" } } },
         { 1, 8, ICON_QUEUE, "Handoff",
-          "Handoff moves your queue and your place in the song to the other device, and this one pauses. Undo the handoff "
-          "brings your own queue back for two minutes.",
+          "Handoff moves your queue and your place in the song to the other device, and this one pauses. Songs from your "
+          "server go too: the other device plays its own copy, or the server's. Undo the handoff brings your own queue "
+          "back for two minutes.",
           settings(App::SetDevices), {} },
 #ifdef GF_AIRPLAY
         { 0, 8, ICON_VOL, "AirPlay",
@@ -434,7 +463,7 @@ void App::tourCheck() {
     if (level < 0 || done) return;
     if (!started) {
         static const double wait = getenv("GF_TOURCHECK_WAIT") ? atof(getenv("GF_TOURCHECK_WAIT")) : 3;   // a script's setup first
-        if (lib.tracks.empty() || time < wait) return;
+        if ((lib.tracks.empty() && serverAlbums_.empty()) || time < wait) return;
         started = true;
         startTour();
         tourLevel = level;

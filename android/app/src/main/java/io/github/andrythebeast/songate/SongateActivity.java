@@ -23,6 +23,7 @@ import android.provider.Settings;
 import android.util.Log;
 import android.view.DisplayCutout;
 import android.view.RoundedCorner;
+import android.view.View;
 import android.view.WindowInsets;
 
 import org.libsdl.app.SDLActivity;
@@ -63,7 +64,18 @@ public class SongateActivity extends SDLActivity {
         });
     }
 
-    private static native void nativeEdges(float[] boxes, float cornerRadius);
+    private static native void nativeEdges(float[] boxes, float cornerRadius, int width, int height);
+
+    /** A turn: the cutouts again, now and once the window has its new size (the user, 2026-11-05: "sometimes when switch from
+     *  landscape to portrait the app shows a left side black bar": the sideways cutout kept for the upright screen). */
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        final View decor = getWindow().getDecorView();
+        decor.requestApplyInsets();
+        decor.postDelayed(decor::requestApplyInsets, 300);
+        decor.postDelayed(decor::requestApplyInsets, 1000);
+    }
     private static native void nativeLeave();
 
     /** Swiped away from the recent apps while music plays: the music goes on (the user, 2026-11-03: "Keep playing"), the app with
@@ -108,8 +120,15 @@ public class SongateActivity extends SDLActivity {
                 if (c != null) radius = Math.max(radius, c.getRadius());
             }
         }
+        // the window size these boxes are for: the app uses them only while its own is turned the same way
+        int width = getWindow().getDecorView().getWidth(), height = getWindow().getDecorView().getHeight();
+        if (Build.VERSION.SDK_INT >= 30) {
+            Rect b = getWindowManager().getCurrentWindowMetrics().getBounds();
+            width = b.width();
+            height = b.height();
+        }
         try {
-            nativeEdges(boxes, radius);
+            nativeEdges(boxes, radius, width, height);
         } catch (UnsatisfiedLinkError e) {   // before libmain is loaded: the next layout reports them
         }
     }

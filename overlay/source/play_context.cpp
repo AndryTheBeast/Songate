@@ -202,7 +202,8 @@ bool switchToFolder(const std::string& folder_path,
                     const std::vector<std::string>& songs,
                     u32 play_idx,
                     const std::string& queueName,
-                    bool automix) {
+                    bool automix,
+                    bool fresh) {
     const u32 idx = songs.empty() ? 0u
                   : std::min(play_idx, static_cast<u32>(songs.size() - 1));
 
@@ -220,7 +221,7 @@ bool switchToFolder(const std::string& folder_path,
     // hold a single startup file rather than the full folder, so a mismatch
     // means we must fall through to a full reload instead of seeking within
     // a truncated queue.
-    if (g_source == Source::Folder && g_folder_path == folder_path) {
+    if (!fresh && g_source == Source::Folder && g_folder_path == folder_path) {
         u32 ipc_count = 0;
         tuneGetPlaylistSize(&ipc_count);
         if (ipc_count == static_cast<u32>(songs.size())) {

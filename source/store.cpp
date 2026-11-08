@@ -27,7 +27,7 @@ namespace {
  * since it was last written is skipped.
  */
 struct Writer {
-    struct Job { std::string path, data; bool atomic = false; };
+    struct Job { std::string path, data; bool atomic = false, erase = false; };   // erase: the file removed, not written
     std::mutex m;
     std::condition_variable wake, done;
     std::deque<Job> jobs;
@@ -35,12 +35,12 @@ struct Writer {
     bool busy = false, started = false, quit = false;
     std::thread thread;   // kept, never detached: libnx has no pthread_detach (detach() throws and aborts)
 
-    void put(const std::string& path, std::string data, bool atomic) {
+    void put(const std::string& path, std::string data, bool atomic, bool erase = false) {
         std::lock_guard<std::mutex> g(m);
         const bool queued = std::any_of(jobs.begin(), jobs.end(), [&](const Job& j) { return j.path == path; });
-        if (auto w = written.find(path); !queued && w != written.end() && w->second == data) return;
-        if (queued) { for (Job& j : jobs) if (j.path == path) j.data = std::move(data); }
-        else jobs.push_back({ path, std::move(data), atomic });
+        if (auto w = written.find(path); !erase && !queued && w != written.end() && w->second == data) return;
+        if (queued) { for (Job& j : jobs) if (j.path == path) { j.data = std::move(data); j.erase = erase; } }
+        else jobs.push_back({ path, std::move(data), atomic, erase });
         if (!started) {
             started = true;
             thread = std::thread([this] { cores::moveHere(cores::Files); run(); });
@@ -77,6 +77,12 @@ struct Writer {
                 j = std::move(jobs.front());
                 jobs.pop_front();
                 busy = true;
+            }
+            if (j.erase) {   // (after any write of it queued before: they are in order)
+                remove(j.path.c_str());
+                std::lock_guard<std::mutex> g(m);
+                written.erase(j.path);
+                continue;
             }
             // Atomic ones are written next to the old file and renamed over it, so a power cut mid-write loses nothing.
             // A write that did not go through whole (a full SD card) never replaces the old file, and is not remembered
@@ -148,6 +154,8 @@ std::vector<std::string> readLines(const std::string& file) {
 void Store::load() {
     bool filesTabKnown = false;   // a settings.txt from before Files: its hiddenTabs knows nothing of bit 6
     bool linesKnown = false;      // ... and one from before placed lines: Files had a line of its own above it
+    bool lyricsKindKnown = false; // ... and one from before lyrics were shared: their switch starts on (the user, 2026-11-04)
+    bool moodsKindKnown = false;  // ... and mood choices, the same (BETA 3)
     for (const auto& l : readLines(path("settings.txt"))) {
         const size_t eq = l.find('=');
         if (eq == std::string::npos) continue;
@@ -164,6 +172,9 @@ void Store::load() {
         else if (k == "canvasLyrics") canvasLyrics = v == "1";
         else if (k == "lyricTiming") lyricTiming = v == "1";
         else if (k == "lyricTimingFor") lyricTimingFor = std::clamp(atoi(v.c_str()), 0, 2);
+        else if (k == "lyricsOnline") lyricsOnline = v == "1";
+        else if (k == "lyricsOnlineWay") lyricsOnlineWay = std::clamp(atoi(v.c_str()), 0, 1);
+        else if (k == "lyricsSaveTo") lyricsSaveTo = std::clamp(atoi(v.c_str()), 0, 2);
         else if (k == "resume") resume = v == "1";
         else if (k == "background") background = v == "1";
 #ifdef GF_WINDOWED
@@ -173,7 +184,7 @@ void Store::load() {
         else if (k == "viewFolders") viewFolders = std::clamp(atoi(v.c_str()), 0, 3);
         else if (k == "viewTracks") viewTracks = std::clamp(atoi(v.c_str()), 0, 3);
         else if (k == "viewGenre") viewGenre = std::clamp(atoi(v.c_str()), 0, 3);
-        else if (k == "libTab") libTab = std::clamp(atoi(v.c_str()), 0, 2);
+        else if (k == "libTab") libTab = std::clamp(atoi(v.c_str()), 0, 4);
         else if (k == "tracksSort") tracksSort = std::clamp(atoi(v.c_str()), 0, 5);
         else if (k == "tracksDesc") tracksDesc = v == "1";
         else if (k == "hiddenTabs") hiddenTabs = unsigned(atoi(v.c_str())) & 127u;
@@ -192,6 +203,7 @@ void Store::load() {
         else if (k == "vizSmoothing") vizSmoothing = std::clamp(float(atof(v.c_str())), 0.f, 1.f);
         else if (k == "vizBands") vizBands = std::clamp(atoi(v.c_str()), 16, 96);
         else if (k == "vizPeaks") vizPeaks = v == "1";
+        else if (k == "seekWave") seekWave = v == "1";
         else if (k == "canvasPulse") canvasPulse = v == "1";
         else if (k == "canvasBars") canvasBars = std::clamp(atoi(v.c_str()), 16, 128);
         else if (k == "canvasIdleAfter") canvasIdleAfter = std::clamp(float(atof(v.c_str())), 1.f, 30.f);
@@ -209,11 +221,40 @@ void Store::load() {
         else if (k == "levelTarget") levelTarget = std::clamp(atoi(v.c_str()), -23, -6);
         else if (k == "batteryPercent") batteryPercent = v == "1";
         else if (k == "batteryEstimate") batteryEstimate = v == "1";
+        else if (k == "batteryWatts") batteryWatts = v == "1";
+        else if (k == "batteryTemp") batteryTemp = v == "1";
+        else if (k == "batteryVolts") batteryVolts = v == "1";
+        else if (k == "batteryHealth") batteryHealth = v == "1";
+        else if (k == "batteryPower") batteryPower = v == "1";
+        else if (k == "batteryFahrenheit") batteryFahrenheit = v == "1";
+        else if (k == "batteryOrder") {   // one digit each; what is missing goes at the end
+            std::vector<int> o;
+            for (char c : v)
+                if (c >= '0' && c <= '6' && std::find(o.begin(), o.end(), c - '0') == o.end()) o.push_back(c - '0');
+            for (int i = 0; i < 7; i++)
+                if (std::find(o.begin(), o.end(), i) == o.end()) o.push_back(i);
+            batteryOrder = o;
+        }
+        else if (k == "batteryCol") { for (size_t i = 0; i < size_t(BatteryStates) && i < v.size(); i++) batteryCol[i] = std::clamp(v[i] - 'a', 0, BatteryColours - 1); }
+        else if (k == "batteryOutline") batteryOutline = std::clamp(atoi(v.c_str()), -1, BatteryColours - 1);
+        else if (k == "batteryLook") { for (size_t i = 0; i < size_t(BatteryStates) && i < v.size(); i++) batteryLook[i] = std::clamp(v[i] - 'a', 0, BatteryLooks - 1); }
+        else if (k == "batteryLowAt") batteryLowAt = std::clamp(atoi(v.c_str()), 5, 50);
+        else if (k == "batteryAnimPace") batteryAnimPace = std::clamp(atoi(v.c_str()), 0, 2);
         else if (k == "dimAfter") dimAfter = std::clamp(atoi(v.c_str()), 0, 60);
         else if (k == "sleepConsole") sleepConsole = std::clamp(atoi(v.c_str()), 0, 300);
         else if (k == "stopCovers") stopCovers = v == "1";
         else if (k == "stopThumbs") stopThumbs = v == "1";
         else if (k == "stopLevels") stopLevels = v == "1";
+        else if (k == "stopLyrics") stopLyrics = v == "1";
+        else if (k == "stopDownloads") stopDownloads = v == "1";
+        else if (k == "stopTagWrites") stopTagWrites = v == "1";
+        else if (k == "pocketButton") pocketButton = v == "1";
+        else if (k == "pocketHint") pocketHint = v == "1";
+        else if (k == "pocketPads") pocketPads = v == "1";
+        else if (k == "pocketKey") { pocketKey = std::clamp(atoi(v.c_str()), 0, 3); if (pocketKey == 2) pocketKey = 0; }   // (Either: out, the user 2026-11-08)
+        else if (k == "pocketHow") pocketHow = std::clamp(atoi(v.c_str()), 0, 1);
+        else if (k == "pocketHold") pocketHold = std::clamp(atoi(v.c_str()), 1, 3);
+        else if (k == "tagWrite") tagWrite = std::clamp(atoi(v.c_str()), 0, 2);
         else if (k == "crossfade") crossfade = std::clamp(float(atof(v.c_str())), 0.f, 12.f);
         else if (k == "xfadeNotInAlbum") xfadeNotInAlbum = v == "1";
         else if (k == "eqOn") this->eq.on = uint8_t(v == "1");
@@ -260,24 +301,38 @@ void Store::load() {
         else if (k == "edgeExtra") edgeExtra = std::clamp(float(atof(v.c_str())), 0.f, 1.f);
         else if (k == "edgeCorners") edgeCorners = v == "1";
         else if (k == "uiSize") uiSize = std::clamp(atoi(v.c_str()), 0, 2);
+        else if (k == "serverPlace") serverPlace = std::clamp(atoi(v.c_str()), 0, 1);
+        else if (k == "serverTab") serverTab = std::clamp(atoi(v.c_str()), 0, 4);
+        else if (k == "libSource") libSource = std::clamp(atoi(v.c_str()), 0, 1);
+        else if (k == "plSource") plSource = std::clamp(atoi(v.c_str()), 0, 1);
+        else if (k == "serverDlPlace") serverDlPlace = std::clamp(atoi(v.c_str()), 0, 1);
         else if (k == "lastfmScrobble") lastfmScrobble = v == "1";
         else if (k == "lastfmNow") lastfmNow = v == "1";
         else if (k == "connections") connections = v == "1";
         else if (k == "connectAim") connectAim = v;
-        else if (k == "syncKinds") syncKinds = unsigned(atoi(v.c_str())) & 15u;
+        else if (k == "syncKinds") syncKinds = unsigned(atoi(v.c_str())) & 111u;
+        else if (k == "syncLyricsKnown") lyricsKindKnown = true;
+        else if (k == "syncMoodsKnown") moodsKindKnown = true;
         else if (k == "syncHand") syncAuto = v != "1";
         else if (k == "syncResults") syncResults = v == "1";
         else if (k == "syncFiles") syncFiles = v == "1";
         else if (k == "togetherOutput") togetherOutput = std::clamp(atoi(v.c_str()), 0, 2);
         else if (k == "handoffFrom") handoffFrom = v;
         else if (k == "airplayReceive") airplayReceive = v == "1";
-        else if (k == "togetherDelay0") togetherDelay[0] = std::clamp(atoi(v.c_str()), -300, 300);
-        else if (k == "togetherDelay1") togetherDelay[1] = std::clamp(atoi(v.c_str()), -300, 300);
-        else if (k == "togetherDelay2") togetherDelay[2] = std::clamp(atoi(v.c_str()), -300, 300);
+        else if (k == "airSpeakerVol") {   // (lines joined with '|' in the file)
+            airSpeakerVol = v;
+            for (char& c : airSpeakerVol) if (c == '|') c = '\n';
+        }
+        else if (k == "togetherDelay0") togetherDelay[0] = std::clamp(atoi(v.c_str()), -kTimingMax, kTimingMax);
+        else if (k == "togetherDelay1") togetherDelay[1] = std::clamp(atoi(v.c_str()), -kTimingMax, kTimingMax);
+        else if (k == "togetherDelay2") togetherDelay[2] = std::clamp(atoi(v.c_str()), -kTimingMax, kTimingMax);
+        else if (k == "togetherMeasured") for (int i = 0; i < 3 && i < int(v.size()); i++) togetherMeasured[i] = v[size_t(i)] == '1';
         else if (k == "syncDeletes") syncDeletes = v == "1";
         else if (k == "syncDeleteFrom") syncDeleteFrom = strtoull(v.c_str(), nullptr, 10);
     }
     if (!filesTabKnown) hiddenTabs |= 64u;   // Files stays hidden until Settings → Appearance shows it
+    if (!lyricsKindKnown) syncKinds |= 32u;   // syncdata::KindLyrics: on, as the others came
+    if (!moodsKindKnown) syncKinds |= 64u;    // syncdata::KindMoods: the same (the user, 2026-11-05: "Yes, with a switch")
     if (!linesKnown && std::none_of(tabOrder.begin(), tabOrder.end(), isLine)) {   // the line Files had, now one of yours
         auto f = std::find(tabOrder.begin(), tabOrder.end(), int(TabFiles));
         tabOrder.insert(f, TabLine);
@@ -439,8 +494,8 @@ void Store::save() const {
     std::string f;
     appendf(f, "volume=%.3f\norder=%d\nsidebarCollapsed=%d\nmotion=%d\nspectrum=%d\ncanvasLayout=%d\ncanvasLyrics=%d\n", volume, int(order),
             sidebarCollapsed, motion, showSpectrum, canvasLayout, canvasLyrics);
-    appendf(f, "vizSensitivity=%.3f\nvizSmoothing=%.3f\nvizBands=%d\nvizPeaks=%d\ncoverPulse=%.3f\n", vizSensitivity, vizSmoothing, vizBands,
-            vizPeaks, coverPulse);
+    appendf(f, "vizSensitivity=%.3f\nvizSmoothing=%.3f\nvizBands=%d\nvizPeaks=%d\ncoverPulse=%.3f\nseekWave=%d\n", vizSensitivity, vizSmoothing, vizBands,
+            vizPeaks, coverPulse, seekWave);
     appendf(f, "canvasPulse=%d\nhiddenTabs=%u\n", canvasPulse, hiddenTabs);
     appendf(f, "canvasBars=%d\ncanvasIdleAfter=%.2f\ncanvasVizTime=%.2f\n", canvasBars, double(canvasIdleAfter), double(canvasVizTime));
     appendf(f, "canvasFloat=%d\ncanvasZoom=%d\nresume=%d\ntheme=%d\ncanvasAutoMinimal=%d\n", canvasFloat, canvasZoom, resume, theme,
@@ -461,8 +516,22 @@ void Store::save() const {
     if (heldOrder >= 0) appendf(f, "heldOrder=%d\n", heldOrder);
     appendf(f, "mixAnimNow=%d\nmixAnimCanvas=%d\nmixHint=%d\n", mixAnimNow, mixAnimCanvas, mixHint);
     appendf(f, "batteryPercent=%d\nbatteryEstimate=%d\n", batteryPercent, batteryEstimate);
-    appendf(f, "stopCovers=%d\nstopThumbs=%d\nstopLevels=%d\n", stopCovers, stopThumbs, stopLevels);
+    appendf(f, "batteryWatts=%d\nbatteryTemp=%d\nbatteryVolts=%d\nbatteryHealth=%d\nbatteryFahrenheit=%d\nbatteryLowAt=%d\nbatteryAnimPace=%d\nbatteryPower=%d\n",
+            batteryWatts, batteryTemp, batteryVolts, batteryHealth, batteryFahrenheit, batteryLowAt, batteryAnimPace, batteryPower);
+    {   // (a letter each for the states' colours and animations: there are more than ten colours)
+        std::string o, c, l;
+        for (int i : batteryOrder) o += char('0' + i);
+        for (int i = 0; i < BatteryStates; i++) { c += char('a' + batteryCol[i]); l += char('a' + batteryLook[i]); }
+        appendf(f, "batteryOrder=%s\nbatteryCol=%s\nbatteryLook=%s\nbatteryOutline=%d\n", o.c_str(), c.c_str(), l.c_str(), batteryOutline);
+    }
+    appendf(f, "stopCovers=%d\nstopThumbs=%d\nstopLevels=%d\nstopLyrics=%d\nstopDownloads=%d\n", stopCovers, stopThumbs, stopLevels, stopLyrics,
+            stopDownloads);
+    appendf(f, "stopTagWrites=%d\ntagWrite=%d\n", stopTagWrites ? 1 : 0, tagWrite);
+    appendf(f, "pocketButton=%d\npocketHint=%d\npocketKey=%d\npocketHow=%d\npocketHold=%d\n", pocketButton ? 1 : 0, pocketHint ? 1 : 0, pocketKey,
+            pocketHow, pocketHold);
+    appendf(f, "pocketPads=%d\n", pocketPads ? 1 : 0);
     appendf(f, "lyricTiming=%d\nlyricTimingFor=%d\n", lyricTiming, lyricTimingFor);
+    appendf(f, "lyricsOnline=%d\nlyricsOnlineWay=%d\nlyricsSaveTo=%d\n", lyricsOnline, lyricsOnlineWay, lyricsSaveTo);
     appendf(f, "levelMode=%d\nlevelTarget=%d\n", levelMode, levelTarget);
     appendf(f, "crossfade=%.1f\nxfadeNotInAlbum=%d\n", double(crossfade), xfadeNotInAlbum);
     appendf(f, "eqEdited=%d\n", eq.edited);
@@ -487,9 +556,17 @@ void Store::save() const {
     appendf(f, "updates=%d\nupdateAtStart=%d\nbetas=%d\nreports=%d\n", updates, updateAtStart, betas ? 1 : 0, reports ? 1 : 0);
     appendf(f, "lastfm=%d\nlastfmScrobble=%d\nlastfmNow=%d\nopeningSound=%d\nopening=%d\n", lastfm ? 1 : 0, lastfmScrobble ? 1 : 0, lastfmNow ? 1 : 0, openingSound ? 1 : 0,
             opening ? 1 : 0);
-    appendf(f, "edgeMode=%d\nedgeExtra=%.3f\nedgeCorners=%d\nuiSize=%d\n", edgeMode, edgeExtra, edgeCorners ? 1 : 0, uiSize);
+    appendf(f, "edgeMode=%d\nedgeExtra=%.3f\nedgeCorners=%d\nuiSize=%d\nserverPlace=%d\nserverTab=%d\nlibSource=%d\nserverDlPlace=%d\nplSource=%d\n", edgeMode, edgeExtra, edgeCorners ? 1 : 0, uiSize, serverPlace, serverTab, libSource, serverDlPlace,
+            plSource);
     appendf(f, "handoffFrom=%s\nairplayReceive=%d\n", handoffFrom.c_str(), airplayReceive ? 1 : 0);
+    {
+        std::string v = airSpeakerVol;
+        for (char& c : v) if (c == '\n' || c == '\r') c = '|';
+        appendf(f, "airSpeakerVol=%s\n", v.c_str());
+    }
     appendf(f, "togetherOutput=%d\ntogetherDelay0=%d\ntogetherDelay1=%d\ntogetherDelay2=%d\n", togetherOutput, togetherDelay[0], togetherDelay[1], togetherDelay[2]);
+    appendf(f, "togetherMeasured=%d%d%d\n", int(togetherMeasured[0]), int(togetherMeasured[1]), int(togetherMeasured[2]));
+    appendf(f, "syncLyricsKnown=1\nsyncMoodsKnown=1\n");
     appendf(f, "connections=%d\nconnectAim=%s\nsyncKinds=%u\nsyncHand=%d\nsyncResults=%d\nsyncFiles=%d\nsyncDeletes=%d\nsyncDeleteFrom=%llu\n", connections ? 1 : 0, connectAim.c_str(), syncKinds, syncAuto ? 0 : 1, syncResults ? 1 : 0, syncFiles ? 1 : 0, syncDeletes ? 1 : 0, (unsigned long long)syncDeleteFrom);
     if (!updateToasted.empty()) appendf(f, "updateToasted=%s\n", updateToasted.c_str());
     writer().put(path("settings.txt"), std::move(f), true);
@@ -524,6 +601,8 @@ void Store::writeFile(const char* file, std::string data) const {
     makeDirs();
     writer().put(path(file), std::move(data), true);
 }
+
+void Store::removeFile(const char* file) const { writer().put(path(file), std::string(), false, true); }
 
 bool Store::loadSession(Session& s) const {
     s = Session{};

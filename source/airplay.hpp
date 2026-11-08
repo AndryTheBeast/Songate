@@ -51,6 +51,12 @@ public:
     std::vector<uint8_t> takeCover();
     /** Audio thread: up to `frames` of 48 kHz stereo; silence is the caller's for the rest. */
     int read(int16_t* out, int frames);
+    /** How far ahead this device's sound comes out, in seconds (listening together's measured delay): with a sender's clock, each sample
+     *  is played that much later, so several devices played to at once line up. Main thread. */
+    void setAhead(double seconds) { ahead_.store(seconds, std::memory_order_relaxed); }
+    /** The sheet's Stop: the stream playing here ends; its sender sees the connection close (a Songate pauses there, as an iPhone
+     *  stops sending). Main thread. */
+    void stopStream() { stopNow_.store(true, std::memory_order_release); }
 
 private:
     struct Impl;
@@ -72,6 +78,16 @@ private:
     std::atomic<unsigned> written_{ 0 }, read_{ 0 };
     std::atomic<bool> primed_{ false }, clear_{ false };
     double lastRead_ = 0;   // the audio thread's: when it last asked, to see that Songate was away (HOME) meanwhile
+    // The sender's clock (BETA 3: several devices played to at once play together; iOS sends it too): its time against this device's
+    // (from timing questions), its sync (which RTP time is heard at which of its times), and which RTP time each stretch of the ring
+    // holds. Without them, the old way: the sound starts once a second of it waits.
+    std::atomic<bool> stopNow_{ false };
+    std::atomic<bool> haveClock_{ false }, haveSync_{ false };
+    std::atomic<double> clockOffset_{ 0 }, syncNtp_{ 0 }, ahead_{ 0 };
+    std::atomic<uint32_t> syncRtp_{ 0 };
+    static constexpr int MapN = 64;
+    std::atomic<unsigned> mapPos_[MapN]{}, mapAt_{ 0 };
+    std::atomic<uint32_t> mapRtp_[MapN]{};
     friend struct Impl;
 };
 #endif

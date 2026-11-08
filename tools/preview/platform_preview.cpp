@@ -63,9 +63,22 @@ bool dimBacklight(float& saved) {
     return true;
 }
 void restoreBacklight(float saved) { lblSetCurrentBrightnessSetting(saved); }
+bool volumeKeys(bool& up, bool& down, std::string* err) { up = down = false; if (err) *err = "the Switch only"; return false; }
+bool backlightOff(bool) { return false; }
+bool blockHome(bool) { return false; }
+bool takeCapture(bool) { return false; }
+int capturePresses() { return 0; }
+int disconnectControllers() { return 0; }
+bool outputVolume(int&) { return false; }
+bool setOutputVolume(int) { return false; }
 bool batteryLevel(unsigned& percent) {
     u32 p = 0;
     psmGetBatteryChargePercentage(&p);
+    if (getenv("GF_BATTERY_MOCK")) {   // (as the raw charge, which hostshim gives for each state)
+        double raw = 0;
+        psmGetRawBatteryChargePercentage(&raw);
+        p = u32(raw);
+    }
     percent = p;
     return true;
 }
@@ -76,6 +89,31 @@ bool batteryRaw(double& percent, bool& charging) {
     charging = ct != PsmChargerType_Unconnected;
     return true;
 }
+// GF_BATTERY_MOCK: low, slow, normal, fast or full: the battery card and the animations in each state (hostshim's psm stand-ins too)
+bool batteryInfo(BatteryInfo& o) {
+    const char* m = getenv("GF_BATTERY_MOCK");
+    o = BatteryInfo{};
+    o.volts = 3.92;
+    o.tempC = 31.4;
+    o.healthPct = 92.6;
+    if (!m) return true;
+    const std::string k = m;
+    if (k == "slow") { o.charger = 2; o.chargerVolts = 5; o.chargerAmps = 0.5; o.volts = 3.88; }
+    else if (k == "normal") { o.charger = 1; o.chargerVolts = 15; o.chargerAmps = 1.2; o.volts = 4.01; o.tempC = 33.8; }
+    else if (k == "fast" || k == "full") { o.charger = 1; o.fast = true; o.chargerVolts = 15; o.chargerAmps = 2.6; o.volts = k == "full" ? 4.35 : 4.08; o.tempC = 36.1; }
+    else if (k == "low") { o.volts = 3.55; o.tempC = 29.0; }
+    // the fuel gauge: what each state would read
+    o.gauge = true;
+    o.gaugeVolts = o.volts;
+    o.gaugeAmps = k == "low" ? -1.35 : k == "slow" ? 0.42 : k == "normal" ? 1.25 : k == "fast" ? 2.3 : k == "full" ? 0.03 : -1.6;
+    const double pct = k == "low" ? 0.124 : k == "full" ? 1 : k == "slow" ? 0.412 : k == "normal" ? 0.587 : k == "fast" ? 0.631 : 0.76;
+    o.fullMah = 3990;
+    o.capMah = 3990 * pct;
+    if (o.gaugeAmps < 0) o.tteMin = int(o.capMah / (-o.gaugeAmps * 1000) * 60);
+    else if (k != "full") o.ttfMin = int((o.fullMah - o.capMah) / (o.gaugeAmps * 1000) * 60 * 1.15);
+    return true;
+}
+
 void sysInfo(std::string& firmware, std::string& atmosphere, bool&) {
     firmware = "PC preview";
     atmosphere = "-";

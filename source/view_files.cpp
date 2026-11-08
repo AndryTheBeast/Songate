@@ -561,16 +561,8 @@ void App::setCoverFor(const std::string& image, const std::vector<int>& targets)
     sheet.track = targets.empty() ? -1 : targets[0];
     sheet.wholeAlbum = false;
     if (targets.empty()) return;
-    // setTrackCover copies the image into Gatefold's folder and sets it for sheet.track; the rest follow it
-    setTrackCover(image);
-    const auto it = store.covers.find(lib.tracks[size_t(targets[0])].path);
-    if (it == store.covers.end()) return;
-    for (int t : targets) {
-        store.covers[lib.tracks[size_t(t)].path] = it->second;
-        meta.setCoverFile(t, it->second);
-    }
-    store.saveEdits();
-    if (std::find(targets.begin(), targets.end(), now.track) != targets.end()) loadTrackCoverAgain();
+    // setTrackCover copies the image into Gatefold's folder and sets it for every one of them (and asks about the files)
+    setTrackCover(image, &targets);
 }
 
 // ------------------------------------------------------------------ the page
@@ -579,15 +571,36 @@ void App::drawFiles(float x, float y, float w, float h) {
     if (route.query.empty()) route.query = filesStart();
     std::string path = route.query;
     const bool root = isRoot(path);
-    if (files.listed != path || files.listedHidden != store.showHidden || files.listedGen != files.gen) {
-        // Looked at only when listed (a stat every frame waited on the SD card each time)
-        if (!isDir(path)) path = route.query = plat::root();   // gone (deleted, the card changed)
-        files.entries = listFolder(path, store.showHidden);
-        files.listed = path;
-        files.listedHidden = store.showHidden;
-        files.listedGen = files.gen;
+    // Listed when it changed, on a worker (a stat each entry waits on the SD card); what it found taken once it is done
+    if (files.listing && files.listDone) {
+        files.lister.join();
+        files.listing = false;
+        if (files.listPath == path && files.listHidden == store.showHidden && files.listGen == files.gen) {
+            if (!files.listOk) route.query = plat::root();   // gone (deleted, the card changed): the card's top instead
+            else {
+                files.entries = std::move(files.listOut);
+                files.listed = path;
+                files.listedHidden = store.showHidden;
+                files.listedGen = files.gen;
+            }
+        }
     }
-    const std::vector<FileEntry>& es = files.entries;
+    const bool stale = files.listed != path || files.listedHidden != store.showHidden || files.listedGen != files.gen;
+    if (stale && !files.listing) {
+        files.listing = true;
+        files.listDone = false;
+        files.listPath = path;
+        files.listHidden = store.showHidden;
+        files.listGen = files.gen;
+        files.lister = std::thread([this, path, hidden = store.showHidden] {
+            cores::moveHere(cores::FileOps);
+            files.listOk = isDir(path);
+            files.listOut = files.listOk ? listFolder(path, hidden) : std::vector<FileEntry>{};
+            files.listDone = true;
+        });
+    }
+    static const std::vector<FileEntry> none;
+    const std::vector<FileEntry>& es = stale ? none : files.entries;
     int nDirs = 0;
     for (const auto& e : es) nDirs += e.dir;
     const int nFiles = int(es.size()) - nDirs;
@@ -732,7 +745,7 @@ void App::drawFiles(float x, float y, float w, float h) {
         else if (files.selecting) g.roundStroke(rx + rw - 33, mid - 9, 18, 18, 9, 1.5f, pal.text3, 0.6f);
         else if (e.dir) g.icon(ICON_CHEV, rx + rw - 24, mid, 18, pal.text3);
     }
-    if (es.empty()) g.textC("This folder is empty", { css::Lg, Weight::SemiBold }, x + w / 2, cy + 60, pal.text2, 1, Align::Center);
+    if (es.empty()) g.textC(stale ? "Reading the folder…" : "This folder is empty", { css::Lg, Weight::SemiBold }, x + w / 2, cy + 60, pal.text2, 1, Align::Center);
     g.unclip();
     ui.popArea();
 }

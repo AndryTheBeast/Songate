@@ -205,13 +205,13 @@ std::string placeOf(const std::string& root, const std::string& name) {
     return f.empty() ? root : root + "/" + f;
 }
 
-void send(Connect* c, char kind, const std::string& text) {
+void send(Connect* c, const std::string& to, char kind, const std::string& text) {
     std::vector<uint8_t> m;
     m.reserve(text.size() + 2);
     m.push_back('f');
     m.push_back(uint8_t(kind));
     m.insert(m.end(), text.begin(), text.end());
-    c->send(std::move(m));
+    c->send(to, std::move(m));
 }
 
 void makeDirs(const std::string& path) {
@@ -303,7 +303,7 @@ void Copier::endSession(const std::string& why) {
 }
 
 /** The other device's asking. Only what is in this library, by hash: there is no way to name anything else. */
-void Copier::serve(const std::vector<uint8_t>& m) {
+void Copier::serve(const std::vector<uint8_t>& m, const std::string& from) {
     const char kind = char(m[1]);
     if (kind == 'A') {
         std::vector<Item> items;
@@ -327,10 +327,10 @@ void Copier::serve(const std::vector<uint8_t>& m) {
             if (!root.empty() && i.path.compare(0, root.size() + 1, root + "/") == 0) o.name = i.path.substr(root.size() + 1);
             else o.name = i.path.substr(i.path.find_last_of('/') + 1);
             chunk += packOffer(o);
-            if (chunk.size() > 32 * 1024) { send(connect_, 'L', chunk); chunk.clear(); }
+            if (chunk.size() > 32 * 1024) { send(connect_, from, 'L', chunk); chunk.clear(); }
         }
-        if (!chunk.empty()) send(connect_, 'L', chunk);
-        send(connect_, 'E', "");
+        if (!chunk.empty()) send(connect_, from, 'L', chunk);
+        send(connect_, from, 'E', "");
     } else if (kind == 'G') {
         const std::string text(m.begin() + 2, m.end());
         const size_t sp = text.find(' ');
@@ -342,13 +342,13 @@ void Copier::serve(const std::vector<uint8_t>& m) {
             std::lock_guard<std::mutex> g(m_);
             for (const Item& i : items_) if (i.exact == exact) { path = i.path; break; }
         }
-        if (path.empty() || off < 0) { send(connect_, 'N', exact); return; }
+        if (path.empty() || off < 0) { send(connect_, from, 'N', exact); return; }
         if (inExact_ != exact) {
             if (in_) fclose(in_);
             in_ = fopen(path.c_str(), "rb");
             inExact_ = in_ ? exact : std::string();
         }
-        if (!in_ || fseek(in_, long(off), SEEK_SET) != 0) { send(connect_, 'N', exact); return; }
+        if (!in_ || fseek(in_, long(off), SEEK_SET) != 0) { send(connect_, from, 'N', exact); return; }
         std::vector<uint8_t> out(2 + 32 + 16 + kPiece);
         out[0] = 'f';
         out[1] = 'D';
@@ -358,7 +358,7 @@ void Copier::serve(const std::vector<uint8_t>& m) {
         memcpy(out.data() + 34, o, 16);
         const size_t n = fread(out.data() + 50, 1, kPiece, in_);
         out.resize(50 + n);
-        connect_->send(std::move(out));
+        connect_->send(from, std::move(out));
         servedAt_ = seconds();
         if (n < kPiece || feof(in_)) {   // all of it: let go at once. Windows cannot delete a file held open
             fclose(in_);
@@ -517,7 +517,7 @@ void Copier::nextFile() {
 
 void Copier::askChunk() {
     connect_->hurry();
-    send(connect_, 'G', plan_[at_].exact + " " + std::to_string((long long)offset_));
+    send(connect_, sessionPeer_, 'G', plan_[at_].exact + " " + std::to_string((long long)offset_));
     waiting_ = true;
     askedAt_ = seconds();
 }
@@ -603,13 +603,17 @@ void Copier::run() {
             pausedNow = paused_;
             paused_ = false;
         }
-        const bool linked = !peerId.empty() && connect_->linkedTo(peerId);
-        for (auto& m : connect_->receiveFiles()) {
+        // a copy under way stays with its device (the app may point the next one elsewhere meanwhile)
+        const std::string from = sessionOn_ ? sessionPeer_ : peerId;
+        const bool linked = !from.empty() && connect_->linkedTo(from);
+        for (auto& fm : connect_->receiveFiles()) {
+            std::vector<uint8_t>& m = fm.msg;
             if (m.size() < 2) continue;
             activeUntil_ = seconds() + 2;
             const char kind = char(m[1]);
-            if (kind == 'A' || kind == 'G') serve(m);
-            else if (kind == 'L' && sessionOn_) takeList(std::string(m.begin() + 2, m.end()));
+            if (kind == 'A' || kind == 'G') { serve(m, fm.peer); continue; }   // any device may take songs from here
+            if (fm.peer != sessionPeer_) continue;   // the rest is the copy's, from its own device only
+            if (kind == 'L' && sessionOn_) takeList(std::string(m.begin() + 2, m.end()));
             else if (kind == 'E' && sessionOn_) listIn = true;
             else if (kind == 'D') chunk(m);
             else if (kind == 'N' && waiting_ && sessionOn_) {
@@ -637,7 +641,8 @@ void Copier::run() {
                 view_ = View{};
                 view_.state = State::Looking;
                 view_.peer = peerName_;
-                send(connect_, 'A', "");
+                sessionPeer_ = peerId;
+                send(connect_, sessionPeer_, 'A', "");
                 waiting_ = true;
                 askedAt_ = seconds();
             }

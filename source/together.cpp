@@ -17,6 +17,7 @@ namespace together {
 
 namespace {
 constexpr size_t kMaxListName = 256;   // a Handoff's playlist name, in bytes
+constexpr size_t kMaxMembers = 1024;   // Members' names, in bytes
 
 bool hexOr0(const std::string& s) {
     if (s == "-") return true;
@@ -93,7 +94,8 @@ std::vector<uint8_t> pack(const Message& m) {
     char head[120];
     snprintf(head, sizeof head, "t%c\t%d\t%c\t%lld\t%d\t%.6f\t%.6f", char(m.kind), m.flag ? 1 : 0, m.what ? m.what : '-', (long long)m.serial, m.song, m.at, m.position);
     std::string out = head;
-    if (m.kind == Kind::Handoff && !m.list.empty() && m.list.size() <= kMaxListName) {   // a first line "@<the name in hex>"
+    if ((m.kind == Kind::Handoff && !m.list.empty() && m.list.size() <= kMaxListName) ||
+        ((m.kind == Kind::Members || m.kind == Kind::Delay) && !m.list.empty() && m.list.size() <= kMaxMembers)) {   // a first line "@<the name in hex>"
         static const char hex[] = "0123456789abcdef";
         out += "\n@";
         for (unsigned char c : m.list) { out += hex[c >> 4]; out += hex[c & 15]; }
@@ -103,6 +105,11 @@ std::vector<uint8_t> pack(const Message& m) {
             char d[32];
             snprintf(d, sizeof d, "%.3f", s.duration);
             out += "\n" + (s.exact.empty() ? std::string("-") : s.exact) + " " + (s.loose.empty() ? std::string("-") : s.loose) + " " + d;
+            if (!s.server.empty() && !s.sid.empty() && s.sid.size() <= kMaxSongId) {   // a server's song: its print and its id (in hex)
+                static const char hx[] = "0123456789abcdef";
+                out += " " + s.server + " ";
+                for (unsigned char c : s.sid) { out += hx[c >> 4]; out += hx[c & 15]; }
+            }
         }
     if (m.kind == Kind::Join) {
         out += "\n";
@@ -128,7 +135,7 @@ bool unpack(const std::vector<uint8_t>& bytes, Message& out) {
     const std::vector<std::string> f = split(text.substr(0, nl), '\t');
     if (f.size() != 7 || f[0].size() != 2 || f[1].size() != 1 || f[2].size() != 1) return false;
     switch (f[0][1]) {
-    case 'I': case 'A': case 'Q': case 'H': case 'P': case 'R': case 'G': case 'S': case 'Z': case 'C': case 'Y': case 'J': case 'O': case 'K': case 'L': case 'F': case 'W': break;
+    case 'I': case 'A': case 'Q': case 'H': case 'P': case 'R': case 'G': case 'S': case 'Z': case 'C': case 'Y': case 'J': case 'O': case 'K': case 'L': case 'F': case 'W': case 'M': case 'T': case 'D': break;
     default: return false;
     }
     out.kind = Kind(f[0][1]);
@@ -159,6 +166,21 @@ bool unpack(const std::vector<uint8_t>& bytes, Message& out) {
                 else return false;
             }
             out.print.push_back(uint8_t(v));
+        }
+        return true;
+    }
+    if (out.kind == Kind::Members || out.kind == Kind::Delay) {   // "@<the text in hex>", or nothing
+        if (nl == std::string::npos) return true;
+        const std::string h = text.substr(nl + 1);
+        if (h.size() < 3 || h[0] != '@' || h.size() % 2 == 0 || (h.size() - 1) / 2 > kMaxMembers) return false;
+        for (size_t i = 1; i < h.size(); i += 2) {
+            int v = 0;
+            for (char c : { h[i], h[i + 1] }) {
+                if (c >= '0' && c <= '9') v = v * 16 + (c - '0');
+                else if (c >= 'a' && c <= 'f') v = v * 16 + (c - 'a' + 10);
+                else return false;
+            }
+            out.list += char(v);
         }
         return true;
     }
@@ -197,9 +219,14 @@ bool unpack(const std::vector<uint8_t>& bytes, Message& out) {
     for (const std::string& l : lines) {
         const std::vector<std::string> p = split(l, ' ');
         Song s;
-        if (p.size() != 3 || !hexOr0(p[0]) || !hexOr0(p[1]) || !number(p[2], s.duration) || s.duration < 0) return false;
+        if ((p.size() != 3 && p.size() != 5) || !hexOr0(p[0]) || !hexOr0(p[1]) || !number(p[2], s.duration) || s.duration < 0) return false;
         if (p[0] != "-") s.exact = p[0];
         if (p[1] != "-") s.loose = p[1];
+        if (p.size() == 5) {   // a server's song
+            if (p[3] == "-" || !hexOr0(p[3]) || p[3].size() > 64 || p[4].empty() || p[4].size() % 2 || p[4].size() > kMaxSongId * 2 || !hexOr0(p[4])) return false;
+            s.server = p[3];
+            for (size_t k = 0; k < p[4].size(); k += 2) s.sid += char(std::stoi(p[4].substr(k, 2), nullptr, 16));
+        }
         out.songs.push_back(std::move(s));
     }
     return true;

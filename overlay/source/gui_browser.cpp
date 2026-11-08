@@ -1,7 +1,6 @@
 #include "gui_browser.hpp"
 #include "gui_main.hpp"
 
-#include "config/config.hpp"
 #include "play_context.hpp"
 #include "tag_reader.hpp"
 #include "symbol.hpp"
@@ -413,13 +412,6 @@ void BrowserGui::buildList() {
                     addAllToPlaylist(sub_path);
                     return true;
                 }
-                if (down & KEY_MINUS) {
-                    const std::string no_slash = sub_path.substr(0, sub_path.size() - 1);
-                    config::set_load_path(no_slash.c_str());
-                    if (tsl::notification)
-                        tsl::notification->showNow(item->getText(), 26, "Startup Folder Set", 2500, false);
-                    return true;
-                }
                 return false;
             });
             folders.push_back(item);
@@ -473,8 +465,7 @@ void BrowserGui::buildList() {
     // ---- Folders -----------------------------------------------------------
     if (!folders.empty()) {
         m_list->addItem(new tsl::elm::CategoryHeader(
-            m_cwd + " " + ult::DIVIDER_SYMBOL + " \uE0E3 Add To Playlist " +
-            ult::DIVIDER_SYMBOL + " \uE0B6 Set As Startup", true));
+            m_cwd + " " + ult::DIVIDER_SYMBOL + " \uE0E3 Add To Playlist", true));
 
         std::sort(folders.begin(), folders.end(), ListItemTextCompare);
         for (auto *el : folders) {
@@ -494,8 +485,7 @@ void BrowserGui::buildList() {
         m_list->addItem(new tsl::elm::CategoryHeader(
             "Tracks " + ult::DIVIDER_SYMBOL +
             " \uE0E3 Add To Playlist " + ult::DIVIDER_SYMBOL +
-            " \uE0E2 Add All "         + ult::DIVIDER_SYMBOL +
-            " \uE0B6 Set As Startup"));
+            " \uE0E2 Add All"));
 
         std::sort(file_entries.begin(), file_entries.end(), FileEntryCompare);
 
@@ -655,13 +645,6 @@ void BrowserGui::buildList() {
                     return true;
                 }
 
-                // ---- Minus: set as startup file ----------------------------
-                if (down & KEY_MINUS) {
-                    config::set_load_path(full_path.c_str());
-                    if (tsl::notification)
-                        tsl::notification->showNow(item->getText(), 26, "Startup File Set", 2500, false);
-                    return true;
-                }
                 return false;
             });
 
@@ -942,6 +925,44 @@ bool PlaylistKindsGui::handleInput(u64 keysDown, u64 keysHeld, const HidTouchSta
 }
 
 // ---------------------------------------------------------------------------
+// A playlist played whole (the user, 2026-11-07: a playlist's actions are Y Play and X Shuffle, as the app's; an Automix one only
+// Play, in its own order with its levelling: adding its songs one by one to the Playlist, or shuffling it, makes no sense)
+namespace {
+void playPlaylist(const std::string &name, char kind, bool shuffle, const std::vector<std::string> *have) {
+    std::vector<std::string> songs;
+    if (have) songs = *have;
+    else {
+        u32 from = 0;
+        std::vector<std::pair<std::string, std::string>> tags;
+        gfPlaylistTracks(name, nullptr, 1, songs, from, tags);
+    }
+    if (songs.empty()) {
+        if (tsl::notification) tsl::notification->showNow("This playlist is empty.");
+        return;
+    }
+    const bool automix = kind == GFBG_KIND_AUTOMIX;
+    shuffle = shuffle && !automix;
+    u32 idx = 0;
+    if (shuffle) {   // from a track chosen at random, the rest shuffled after it
+        u64 r = 0;
+        randomGet(&r, sizeof r);
+        idx = u32(r % songs.size());
+    } else {   // in its order: Shuffle off first (a new queue with it on is shuffled)
+        tuneSetShuffleMode(TuneShuffleMode_Off);
+    }
+    if (!play_ctx::switchToFolder("#" + name, songs, idx, name, automix, /*fresh=*/true)) {
+        if (tsl::notification) tsl::notification->showNow("Failed to play this playlist.");
+        return;
+    }
+    if (shuffle) {   // (after the load: an Automix queue before it refused Shuffle)
+        tuneSetShuffleMode(TuneShuffleMode_On);
+    }
+    play_ctx::poll();
+    if (tsl::notification) tsl::notification->showNow((shuffle ? "Shuffling " : "Playing ") + name);
+}
+}  // namespace
+
+// ---------------------------------------------------------------------------
 // One kind's playlists
 
 PlaylistListGui::PlaylistListGui(char group, std::function<void(u32)> on_count_changed)
@@ -951,7 +972,8 @@ PlaylistListGui::~PlaylistListGui() { delete m_list; }
 tsl::elm::Element *PlaylistListGui::createUI() {
     auto *frame = new SysTuneOverlayFrame(/*pageLeft=*/"Player", /*pageRight=*/"");
     m_list = new tsl::elm::List();
-    m_list->addItem(new tsl::elm::CategoryHeader(std::string(groupName(m_group)) + " Playlists"));
+    m_list->addItem(new tsl::elm::CategoryHeader(std::string(groupName(m_group)) + " Playlists " + ult::DIVIDER_SYMBOL +
+                                                 (m_group == 'A' ? "  Play" : "  Play " + ult::DIVIDER_SYMBOL + "  Shuffle")));
     std::string focus;
     u32 shown = 0;
     for (const GfPlaylist &pl : gfPlaylists()) {
@@ -962,9 +984,10 @@ tsl::elm::Element *PlaylistListGui::createUI() {
         const char g = m_group, kind = pl.kind;
         const std::string name = pl.name;
         item->setClickListener([this, g, kind, name](u64 keys) -> bool {
-            if (!(keys & HidNpadButton_A)) return false;
-            tsl::changeTo<PlaylistTracksGui>(g, name, kind, m_on_count_changed);
-            return true;
+            if (keys & HidNpadButton_A) { tsl::changeTo<PlaylistTracksGui>(g, name, kind, m_on_count_changed); return true; }
+            if (keys & HidNpadButton_Y) { playPlaylist(name, kind, false, nullptr); return true; }
+            if ((keys & HidNpadButton_X) && kind != GFBG_KIND_AUTOMIX) { playPlaylist(name, kind, true, nullptr); return true; }
+            return false;
         });
         m_list->addItem(item);
         shown++;
@@ -1024,8 +1047,8 @@ tsl::elm::Element *PlaylistTracksGui::createUI() {
         }), 32);
     }
     m_list->addItem(new tsl::elm::CategoryHeader(
-        "Tracks " + ult::DIVIDER_SYMBOL + "  Add To Playlist " + ult::DIVIDER_SYMBOL + "  Add All " + ult::DIVIDER_SYMBOL +
-        "  Set As Startup"));
+        "Tracks " + ult::DIVIDER_SYMBOL + "  Play " + ult::DIVIDER_SYMBOL +
+        (m_kind == GFBG_KIND_AUTOMIX ? std::string() : "  Shuffle")));
     std::string focus;
     const bool automix = m_kind == GFBG_KIND_AUTOMIX;
     for (u32 k = 0; k < tags.size() && from + k < count; ++k) {
@@ -1061,43 +1084,15 @@ tsl::elm::Element *PlaylistTracksGui::createUI() {
                 notifyCountChanged();
                 return true;
             }
-            // ---- Y: add to the Playlist (as a folder's track)
+            // ---- Y: the playlist from its start, in its order; X: shuffled (never an Automix one)
             if (down & HidNpadButton_Y) {
-                if (play_ctx::source() == play_ctx::Source::Playlist) {
-                    if (R_SUCCEEDED(tuneEnqueue(path.c_str(), TuneEnqueueType_Back))) {
-                        play_ctx::savedAppend(path);
-                        if (tsl::notification) tsl::notification->showNow("Added 1 track to Playlist.");
-                        notifyCountChanged();
-                    } else if (tsl::notification) {
-                        tsl::notification->showNow("Failed to add track.");
-                    }
-                } else {
-                    play_ctx::savedAppend(path);
-                    if (tsl::notification) tsl::notification->showNow("Added 1 track to Playlist.");
-                    notifyCountChanged();
-                }
+                playPlaylist(m_name, m_kind, false, &m_songs);
+                notifyCountChanged();
                 return true;
             }
-            // ---- X: add all its tracks (as a folder's Add All: at most 300)
-            if (down & HidNpadButton_X) {
-                constexpr u32 kAddAllMax = 300;
-                const bool inPlaylist = play_ctx::source() == play_ctx::Source::Playlist;
-                long added = 0;
-                for (u32 i = 0; i < m_songs.size() && i < kAddAllMax; ++i) {
-                    if (inPlaylist && R_FAILED(tuneEnqueue(m_songs[i].c_str(), TuneEnqueueType_Back))) continue;
-                    play_ctx::savedAppend(m_songs[i]);
-                    added++;
-                }
-                char msg[64];
-                std::snprintf(msg, sizeof(msg), "Added %ld tracks to Playlist.", added);
-                if (tsl::notification) tsl::notification->showNow(msg);
-                if (added > 0) notifyCountChanged();
-                return true;
-            }
-            // ---- Minus: set as startup file
-            if (down & KEY_MINUS) {
-                config::set_load_path(path.c_str());
-                if (tsl::notification) tsl::notification->showNow(item->getText(), 26, "Startup File Set", 2500, false);
+            if ((down & HidNpadButton_X) && !automix) {
+                playPlaylist(m_name, m_kind, true, &m_songs);
+                notifyCountChanged();
                 return true;
             }
             return false;

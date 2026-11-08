@@ -7,7 +7,6 @@
 #include "gui_main.hpp"
 #include "sdmc/sdmc.hpp"
 #include "pm/pm.hpp"
-#include "config/config.hpp"
 
 #include <tesla.hpp>
 
@@ -108,8 +107,9 @@ class SysTuneOverlay final : public tsl::Overlay {
 
         u32 api;
         if (R_FAILED(tuneGetApiVersion(&api)) || api != TUNE_API_VERSION) {
-            this->msg = "   Unsupported\n"
-                        "sys-tune version!";
+            this->msg = "Songate's background player\n"
+                        "and this overlay differ:\n"
+                        "update Songate";
         }
     }
 

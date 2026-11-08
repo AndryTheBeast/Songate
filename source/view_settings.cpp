@@ -59,7 +59,7 @@ struct Section { const char* name; const char* icon; std::vector<Card> cards; };
  *  the user's screenshot, 2026-11-04: "too cramped and not centered"): two rows of equal cells instead of one. */
 bool App::segGrid(float words, size_t n, float maxW) const { return maxW > 0 && n >= 4 && (maxW - 6 - words) / float(n) < 20; }
 
-float App::segmented(Id id, float rx, float cy, const std::vector<std::string>& opts, int cur, int* picked, unsigned disabled, float maxW, int fill) {
+float App::segmented(Id id, float rx, float cy, const std::vector<std::string>& opts, int cur, int* picked, unsigned disabled, float maxW, int fill, float hgt) {
     const Font f{ css::Sm, Weight::SemiBold };
     float words = 0;
     for (const auto& o : opts) words += g.measure(o, f);
@@ -82,9 +82,9 @@ float App::segmented(Id id, float rx, float cy, const std::vector<std::string>& 
     }
     const float room = maxW > 0 && opts.size() ? std::clamp((maxW - 6 - words) / opts.size(), 12.f, fill ? 1e4f : 26.f) : 26.f;   // fill: exactly maxW
     const float w = 6 + words + room * opts.size();
-    const float h = 36, x0 = rx - w;
-    g.roundRect(x0, cy - h / 2, w, h, 12, pal.text, 0.05f);
-    g.roundStroke(x0, cy - h / 2, w, h, 12, 1, pal.text, 0.09f);
+    const float h = hgt, x0 = rx - w, ro = 12 * h / 36, ri = 9 * (h - 6) / 30;   // (32 high: the search box's corners)
+    g.roundRect(x0, cy - h / 2, w, h, ro, pal.text, 0.05f);
+    g.roundStroke(x0, cy - h / 2, w, h, ro, 1, pal.text, 0.09f);
     float x = x0 + 3;
     for (int i = 0; i < int(opts.size()); i++) {
         const float ow = g.measure(opts[i], f) + room;
@@ -98,8 +98,8 @@ float App::segmented(Id id, float rx, float cy, const std::vector<std::string>& 
 #endif
         if (!off && ui.item(oid, hitR, 9) && picked) *picked = i;
         const bool on = i == cur, hot = !off && (ui.pressed(oid) || (ui.focused(oid) && ui.showFocusRing()));
-        if (on) g.roundRect(x, cy - h / 2 + 3, ow, h - 6, 9, pal.text, 0.13f);
-        else if (hot) g.roundRect(x, cy - h / 2 + 3, ow, h - 6, 9, pal.text, 0.065f);
+        if (on) g.roundRect(x, cy - h / 2 + 3, ow, h - 6, ri, pal.text, 0.13f);
+        else if (hot) g.roundRect(x, cy - h / 2 + 3, ow, h - 6, ri, pal.text, 0.065f);
         g.textC(opts[i], f, x + ow / 2, cy, on ? pal.text : pal.text2, off ? 0.35f : 1.f, Align::Center);
         x += ow;
     }
@@ -221,6 +221,57 @@ void App::openFindSetting() {
     area("settings.pane").target = area("settings.pane").y = 0;
 }
 
+/** A row of a list put in order by touch (the sidebar's tabs, the battery's details): a drag handle beside its switch, held and
+ *  dragged. base: added to each item for its row's dragKey (two lists on one page must not share one); after: called each time
+ *  it changes places. */
+void App::dragSort(std::vector<int>& order, int base, const char* key, int i, float rx, float cy, const std::function<void()>& after) {
+    const int n = int(order.size());
+    if (i < 0 || i >= n) return;
+    const int me = base + order[size_t(i)];
+    const float x = rx - 40 - 12;   // what comes before the switch's column
+    const Id hid = uid(key, me);
+    ui.item(hid, { x - 44, cy - 22, 44, 44 }, 10, Slider | Slider2D);   // held: it follows the finger at once (no scroll)
+    static Id dragging = 0;
+    static float anchorY = 0;   // where the finger would be with the row in its place
+    const float dy = ui.sliderDragY(hid);
+    if (dy >= 0) {
+        if (dragging != hid) { dragging = hid; anchorY = dy; }
+        auto heightOf = [](int t) { const auto f = tabRowH.find(t); return f != tabRowH.end() ? f->second : 56.f; };
+        const float myH = heightOf(me);
+        int at = i;
+        // past half of the next row: they change places; the row passed slides from where it was to the place left
+        while (at + 1 < n && dy - anchorY > heightOf(base + order[size_t(at + 1)]) * 0.5f) {
+            const int other = base + order[size_t(at + 1)];
+            anchorY += heightOf(other);
+            tabSlide[other] += myH;
+            std::swap(order[size_t(at)], order[size_t(at + 1)]);
+            at++;
+            if (after) after();
+        }
+        while (at > 0 && anchorY - dy > heightOf(base + order[size_t(at - 1)]) * 0.5f) {
+            const int other = base + order[size_t(at - 1)];
+            anchorY -= heightOf(other);
+            tabSlide[other] -= myH;
+            std::swap(order[size_t(at)], order[size_t(at - 1)]);
+            at--;
+            if (after) after();
+        }
+        // under the finger, but not far past the first or the last place
+        float off = dy - anchorY;
+        if (at == 0) off = std::max(off, -10.f);
+        if (at == n - 1) off = std::min(off, 10.f);
+        tabSlide[me] = off;
+        tabHeld = me;   // drawn floating, with its shadow (App::drawSettings)
+    } else if (dragging == hid) {
+        dragging = 0;
+        tabHeld = -1;   // it settles from where the finger left it (tabSlide eases to 0)
+        persistSoon(0.3f);
+    }
+    const bool hot = dy >= 0 || (ui.focused(hid) && ui.showFocusRing());
+    if (hot) g.roundRect(x - 44, cy - 20, 44, 40, 10, pal.text, 0.08f);
+    g.icon(ICON_MENU, x - 22, cy, 20, hot ? pal.text : pal.text2);
+}
+
 void App::drawSettings(float x, float y, float w, float h) {
     const Font labelF{ css::Md, Weight::SemiBold }, hintF{ css::Sm }, valueF{ css::Md };
     // A category chosen last frame: its page was drawn then, so its first setting is known now
@@ -320,55 +371,10 @@ void App::drawSettings(float x, float y, float w, float h) {
         // was for joycons": the handle once a finger is on the screen, Move again at a button, a key or a click.
         const int sortWay = css::W < kNarrowList || byTouch_ ? 1 : 0;
         const float sortW = 40 + 12 + 44;
-        auto sortCtl = [this](int i, int tab, float rx, float cy) {
-            const int n = int(store.tabOrder.size());
-            const float x = rx - 40 - 12;   // what comes before the switch's column
-            {
-                const Id hid = uid("set.tabdrag", tab);
-                ui.item(hid, { x - 44, cy - 22, 44, 44 }, 10, Slider | Slider2D);   // held: it follows the finger at once (no scroll)
-                static Id dragging = 0;
-                static float anchorY = 0;   // where the finger would be with the row in its place
-                const float dy = ui.sliderDragY(hid);
-                if (dy >= 0) {
-                    if (dragging != hid) { dragging = hid; anchorY = dy; }
-                    auto heightOf = [](int t) { const auto f = tabRowH.find(t); return f != tabRowH.end() ? f->second : 56.f; };
-                    const float myH = heightOf(tab);
-                    int at = i;
-                    // past half of the next row: they change places; the row passed slides from where it was to the place left
-                    while (at + 1 < n && dy - anchorY > heightOf(store.tabOrder[size_t(at + 1)]) * 0.5f) {
-                        const int other = store.tabOrder[size_t(at + 1)];
-                        anchorY += heightOf(other);
-                        tabSlide[other] += myH;
-                        std::swap(store.tabOrder[size_t(at)], store.tabOrder[size_t(at + 1)]);
-                        at++;
-                    }
-                    while (at > 0 && anchorY - dy > heightOf(store.tabOrder[size_t(at - 1)]) * 0.5f) {
-                        const int other = store.tabOrder[size_t(at - 1)];
-                        anchorY -= heightOf(other);
-                        tabSlide[other] -= myH;
-                        std::swap(store.tabOrder[size_t(at)], store.tabOrder[size_t(at - 1)]);
-                        at--;
-                    }
-                    // under the finger, but not far past the first or the last place
-                    float off = dy - anchorY;
-                    if (at == 0) off = std::max(off, -10.f);
-                    if (at == n - 1) off = std::min(off, 10.f);
-                    tabSlide[tab] = off;
-                    tabHeld = tab;   // drawn floating, with its shadow; not Move's lifted outline (a touch puts a Move down each
-                                     // frame the finger moves, so the outline came and went: the user, 2026-11-04, "always flashing")
-                    (void)at;
-                } else if (dragging == hid) {
-                    dragging = 0;
-                    tabHeld = -1;   // it settles from where the finger left it (tabSlide eases to 0)
-                    persistSoon(0.3f);
-                }
-                const bool hot = dy >= 0 || (ui.focused(hid) && ui.showFocusRing());
-                if (hot) g.roundRect(x - 44, cy - 20, 44, 40, 10, pal.text, 0.08f);
-                g.icon(ICON_MENU, x - 22, cy, 20, hot ? pal.text : pal.text2);
-            }
-        };
+        auto sortCtl = [this](int i, int, float rx, float cy) { dragSort(store.tabOrder, 0, "set.tabdrag", i, rx, cy, nullptr); };
         for (int i = 0; i < int(store.tabOrder.size()); i++) {
             const int tab = store.tabOrder[size_t(i)];
+            if (tab == Store::TabServer) continue;   // (in Library now: Local | Server)
             const unsigned bit = Store::tabBit(tab);
             const bool held = grab.kind == Grab::Tabs && grab.pos == i;
             if (Store::isLine(tab)) {   // one of your lines: Move it, or Remove it
@@ -646,10 +652,146 @@ void App::drawSettings(float x, float y, float w, float h) {
         unsigned batteryNow = 0;
         if (plat::batteryLevel(batteryNow))   // a desktop has none
 #endif
-        cards.push_back({ "Title bar",
-                          { toggleRow("Battery percentage", "Beside the battery, top right", "set.batpct", store.batteryPercent),
-                            toggleRow("Battery time", "Time to empty, or to full while charging",
-                                      "set.batest", store.batteryEstimate) } });
+        {   // the battery (BETA 3: "almost everything" yours): what shows beside it, in your order; each state's colour and animation
+            // what shows beside it: put in order as the sidebar's tabs are (a handle by touch; Move with the buttons)
+            std::vector<Row> top;
+            static std::vector<int> vis;
+            vis = batteryItems();
+            const Font bf{ css::Sm, Weight::SemiBold };
+            const float mw = g.measure("Move", bf) + 32 + 24;
+            const bool sortWay = css::W < kNarrowList || byTouch_;
+            const float sortW = 40 + 12 + 44;
+            static const char* names[7] = { "Percentage", "Time", "Charger watts", "Temperature", "Voltage", "Health", "Power" };
+            static const char* hints[7] = { "Beside the battery, top right, in this order. Press the battery for everything about it",
+                                            "Time to empty, or to full while charging", "While charging: what the charger agreed to give",
+                                            "The battery's", "The battery's", "How much it holds against when it was new",
+                                            "What the battery gives now (−) or takes in (+), in watts" };
+            // only as many as fit beside it (the user, 2026-11-05: "once 2/3 option are already enable ... grey out according to space
+            // available"): each at its widest, against the title bar's room; one that would not fit is greyed until another is off
+            static const char* widest[7] = { "100%", "full in 2 h 10", "100 W", "100 °F", "4.40 V", "health 100%", "\u221212.5 W" };
+            const Font tf{ css::Base };
+            const float sep = float(g.measure("x  ·  x", tf) - g.measure("xx", tf));
+            float used = 0;
+            for (int it : vis)
+                if (*batteryShown(it)) used += (used > 0 ? sep : 0) + float(g.measure(widest[it], tf));
+            for (int i = 0; i < int(vis.size()); i++) {
+                const int it = vis[size_t(i)];
+                const bool held = grab.kind == Grab::Battery && grab.pos == i;
+                const bool noRoom = batteryRoom_ > 0 && !*batteryShown(it) && used + (used > 0 ? sep : 0) + float(g.measure(widest[it], tf)) > batteryRoom_;
+                Row r{ names[it], "", held && !sortWay ? GF_MOVING_WORDS : noRoom ? "No room beside the battery: turn another off first" : hints[it],
+                       sortWay ? sortW : 40 + 16 + mw,
+                       [this, it, i, mw, sortWay, noRoom](float rx, float cy) {
+                           bool* on = batteryShown(it);
+                           if (toggle(uid("set.batshow", it), rx - 40, cy, *on, noRoom ? 0.35f : 1.f)) {
+                               if (noRoom) toast("No room beside the battery: turn another off first");
+                               else { *on = !*on; persistSoon(0.3f); }
+                           }
+                           if (sortWay) { dragSort(vis, 1000, "set.batdrag", i, rx, cy, [this] { setBatteryItems(vis); }); return; }
+                           bool c = false;
+                           button(uid("set.batmove", it), ICON_SORT_DOWN, "Move", rx - 40 - 16 - mw, cy - 17, false, &c);
+                           if (c && !byTouch_) {
+                               grab = Grab{};
+                               grab.kind = Grab::Battery;
+                               grab.pos = i;
+                               toast(GF_MOVE_WORDS);
+                           }
+                       } };
+                r.lifted = held;
+                r.dragKey = 1000 + it;
+                top.push_back(r);
+            }
+            if (battery.infoOk)
+                top.push_back(segRow("Temperature in", "", "set.batunit", { "°C", "°F" }, store.batteryFahrenheit ? 1 : 0,
+                                     [this](int i) { store.batteryFahrenheit = i == 1; persistSoon(0.3f); }));
+            cards.push_back({ "Battery", top });
+
+            // each state: the battery as it will look (live), its colour, its animation
+            static const char* stName[Store::BatteryStates] = { "On battery", "Low", "Charging slowly", "Charging", "Charging fast", "Charged" };
+            static const char* stHint[Store::BatteryStates] = { "Unplugged", "At or under Low at", "A charger with little power",
+                                                                "A full-power charger", "Fast charging: the bolt beats too", "Full, still plugged in" };
+            static const std::vector<int> stLooks[Store::BatteryStates] = { { 0, 1, 2, 3, 7, 6 }, { 0, 1, 2, 5, 3 },{ 0, 1, 4, 7, 6, 3 },
+                                                                            { 0, 1, 4, 7, 6, 3 }, { 0, 1, 4, 7, 6, 3 }, { 0, 3, 6, 7, 2 } };
+            static const char* lookName[Store::BatteryLooks] = { "Off", "Sweep", "Pulse", "Glow", "Fill up", "Blink", "Sparkle", "Shimmer" };
+            static const double mockPct[Store::BatteryStates] = { 64, 12, 41, 58, 63, 100 };
+            const bool narrowSet = w < kNarrowList;
+            auto swatches = [this](const char* key, int keyBase, int cur, float bx, float bw, float scy, bool narrow, bool dim,
+                                   const std::function<void(int)>& pick) {
+                const int nc = Store::BatteryColours;
+                const float pitch = narrow ? bw / nc : 30.f;
+                for (int c = 0; c < nc; c++) {
+                    const float sx = narrow ? bx + c * pitch + pitch / 2 - 13 : bx + bw - nc * 30 + 4 + c * 30;
+                    const Id id = uid(key, keyBase + c);
+                    if (ui.item(id, { sx, scy - 13, 26, 26 }, 13)) { pick(c); persistSoon(0.3f); }
+                    const float a = dim ? 0.4f : 1.f;
+                    if (c == 2) g.roundRectH(sx + 1, scy - 12, 24, 24, 12, pal.accent2, pal.accent, a);
+                    else if (c == 3) g.roundRectH(sx + 1, scy - 12, 24, 24, 12, batteryInk(3, 0), batteryInk(3, 100), a);
+                    else g.circle(sx + 13, scy, 12, batteryInk(c, 50), a);
+                    const bool on = !dim && cur == c, hot = ui.focused(id) && ui.showFocusRing();
+                    if (on || hot) g.roundStroke(sx - 2, scy - 15, 30, 30, 15, on ? 2.f : 1.f, pal.text, on ? 0.95f : 0.4f);
+                }
+            };
+            std::vector<Row> states;
+            for (int st = 0; st < Store::BatteryStates; st++) {
+                if ((st == 2 || st == 4) && !battery.infoOk) continue;   // (PC, Android: no charger's details, so just Charging)
+                Row r;
+                r.label = stName[st];
+                r.hint = stHint[st];
+                r.blockH = narrowSet ? 136 : 92;
+                r.block = [this, st, narrowSet, swatches](float bx, float by, float bw) {
+                    // the battery in this state, as the title bar will draw it, larger
+                    g.roundRect(bx, by + 2, 64, 38, 10, pal.text, 0.05f);
+                    g.roundStroke(bx, by + 2, 64, 38, 10, 1, pal.text, 0.08f);
+                    drawBatteryIcon(bx + 32 - 20, by + 21, 1.5f, mockPct[st], st);
+                    g.text(stName[st], { css::Md, Weight::SemiBold }, bx + 80, by + 1, pal.text);
+                    g.text(stHint[st], { css::Sm }, bx + 80, by + 25, pal.text3);
+                    // its colour: as the text, the accent, the palette's gradient, by charge, then seven of its own
+                    swatches("set.batcol", st * 16, store.batteryCol[st], bx, bw, narrowSet ? by + 64 : by + 21, narrowSet, false,
+                             [this, st](int c) { store.batteryCol[st] = c; });
+                    // its animation
+                    const std::vector<int>& looks = stLooks[st];
+                    std::vector<std::string> opts;
+                    int cur = 0;
+                    for (size_t k = 0; k < looks.size(); k++) {
+                        opts.push_back(lookName[looks[k]]);
+                        if (looks[k] == store.batteryLook[st]) cur = int(k);
+                    }
+                    int p = -1;
+                    segmented(uid("set.batlook", st), bx + bw, narrowSet ? by + 108 : by + 68, opts, cur, &p, 0, bw, 1);
+                    if (p >= 0 && p != cur) { store.batteryLook[st] = looks[size_t(p)]; persistSoon(0.3f); }
+                };
+                states.push_back(r);
+            }
+            {   // the outline: laid out as a state is (its battery, the colours, then its choice): as each state's fill, or its own colour
+                Row r;
+                r.label = "Outline";
+                r.hint = store.batteryOutline < 0 ? "The battery's edge: as each state's fill" : "The battery's edge, the same in every state";
+                r.blockH = narrowSet ? 136 : 92;
+                r.block = [this, narrowSet, swatches](float bx, float by, float bw) {
+                    g.roundRect(bx, by + 2, 64, 38, 10, pal.text, 0.05f);
+                    g.roundStroke(bx, by + 2, 64, 38, 10, 1, pal.text, 0.08f);
+                    drawBatteryIcon(bx + 32 - 20, by + 21, 1.5f, mockPct[0], 0);
+                    g.text("Outline", { css::Md, Weight::SemiBold }, bx + 80, by + 1, pal.text);
+                    g.text(store.batteryOutline < 0 ? "As each state's fill" : "The same in every state", { css::Sm }, bx + 80, by + 25, pal.text3);
+                    // a colour picked is its own from then on
+                    swatches("set.batedge", 0, store.batteryOutline, bx, bw, narrowSet ? by + 64 : by + 21, narrowSet, store.batteryOutline < 0,
+                             [this](int c) { store.batteryOutline = c; });
+                    int p = -1;
+                    const int cur = store.batteryOutline < 0 ? 0 : 1;
+                    segmented(uid("set.batedgeway"), bx + bw, narrowSet ? by + 108 : by + 68, { "As the fill", "Its own" }, cur, &p, 0, bw, 1);
+                    if (p >= 0 && p != cur) { store.batteryOutline = p == 0 ? -1 : 0; persistSoon(0.3f); }
+                };
+                states.push_back(r);
+            }
+            static const int lows[4] = { 10, 15, 20, 30 };
+            int lowPick = 1;
+            for (int i = 0; i < 4; i++) if (store.batteryLowAt == lows[i]) lowPick = i;
+            states.push_back(segRow("Low at", "", "set.batlowat", { "10%", "15%", "20%", "30%" }, lowPick,
+                                    [this](int i) { static const int l[4] = { 10, 15, 20, 30 }; store.batteryLowAt = l[i]; persistSoon(0.3f); }));
+            states.push_back(segRow("Pace", store.motion ? "How quickly the animations move. Charging, they follow the charger too"
+                                                         : "Motion is off in Appearance: they stay still",
+                                    "set.bapace", { "Calm", "Normal", "Lively" }, store.batteryAnimPace, [this](int i) { store.batteryAnimPace = i; persistSoon(0.3f); }));
+            cards.push_back({ "Battery states", states });
+        }
         sections.push_back({ "Appearance", ICON_SPARKLE, cards });
     }
 
@@ -981,7 +1123,74 @@ void App::drawSettings(float x, float y, float w, float h) {
                         buttonRow("Rescan", "After adding or removing music", "set.rescan", ICON_REFRESH, "Rescan",
                                   [this] { rescan(); toast("Library rescanned: " + std::to_string(lib.tracks.size()) + " tracks"); }),
                         buttonRow("Read all tags again", "Forgets the tag cache and reads every file", "set.forget", nullptr, "Forget",
-                                  [this] { meta.stop(); meta.clearDiskCache(); rescan(); toast("Reading all tags again"); }) } } } });
+                                  [this] { meta.stop(); meta.clearDiskCache(); rescan(); toast("Reading all tags again"); }),
+                        // tag and cover changes: where they go (the user, 2026-11-07: asked each time unless this says)
+                        segRow("Tag and cover changes", store.tagWrite == 0 ? "Asked each time: Songate only, or into the file too"
+                                                        : store.tagWrite == 1 ? "Kept in Songate; the files stay as they are"
+                                                                              : "Into the file too, and kept in Songate",
+                               "set.tagwrite", { "Ask", "Songate only", "Into the file" }, store.tagWrite,
+                               [this](int i) { store.tagWrite = i; persistSoon(0.3f); }),
+                        [&] {
+                            const int left = int(tagPending_.size()) + (tagJobs.idle() ? 0 : 1);
+                            const std::string hint = store.stopTagWrites ? "Stopped. The changes are in Songate; Resume writes the rest"
+                                                   : left > 0 ? "Writing into the files, a song at a time (never the one playing)"
+                                                              : "What the files held is kept, so a song's menu can put it back";
+                            Row r = store.stopTagWrites || left > 0
+                                        ? buttonRow("Written into files", hint, "set.tagwritestop", store.stopTagWrites ? ICON_PLAY : ICON_X,
+                                                    store.stopTagWrites ? "Resume" : "Stop", [this] { setJobStopped(Stoppable::TagWrites, !store.stopTagWrites); })
+                                        : infoRow("Written into files", hint);
+                            const int n = int(tagUndo_.size());
+                            r.value = std::to_string(n) + (n == 1 ? " song · " : " songs · ") + std::to_string(int((tagUndoBytes() + 512 * 1024) / (1024 * 1024))) + " MB kept";
+                            return r;
+                        }() } } } });
+        {   // Subsonic (BETA 3, item 8): music from your own server; nothing goes online before you sign in (subsonic.hpp)
+            const Subsonic::View sv = subsonic.view();
+            std::string kind = sv.kind;
+            if (!kind.empty()) kind[0] = char(toupper(uint8_t(kind[0])));
+            std::vector<Row> rows;
+            if (sv.state == Subsonic::SignedOut) {
+                rows.push_back(buttonRow("Server", "Navidrome, Airsonic, Gonic… any server with the Subsonic API: its music plays here", "set.subin",
+                                         ICON_LINK, "Sign in", [this] { subsonicSignIn(); }));
+            } else if (sv.state == Subsonic::SigningIn) {
+                rows.push_back(infoRow("Server", "Signing in to " + sv.server + "…"));
+            } else if (sv.state == Subsonic::Failed) {
+                rows.push_back(buttonRow("Server", sv.error + " · " + sv.server, "set.subin", ICON_REFRESH, "Try again", [this] { subsonicSignIn(); }));
+                rows.push_back(buttonRow("Forget this server", "Its address and your sign-in leave this device", "set.subout", nullptr, "Forget",
+                                         [this] { serverSignOutCard(); }));
+            } else {
+                rows.push_back(infoRow("Server", (kind.empty() ? std::string("Server") : kind + (sv.version.empty() ? "" : " " + sv.version)) + " at " + sv.server +
+                                                              " · " + sv.user, "Signed in"));
+                if (sv.songs >= 0) rows.push_back(infoRow("Tracks on it", "", std::to_string(sv.songs)));
+                rows.push_back(segRow("Its music", store.serverPlace == 0 ? "Apart, in Library › Server"
+                                                                          : "Among your own albums, artists and genres, marked as the server's; also in Library › Server",
+                                      "set.subplace", { "Apart", "Mixed in" }, store.serverPlace, [this](int p) { store.serverPlace = p; }));
+                {   // Downloads (stage 4; the user: "User's choice"): where, and what is here
+                    const bool noMusic = store.musicRoot.empty();
+                    rows.push_back(segRow("Downloads", store.serverDlPlace == 1 && !noMusic ? "In your music folder, under Songate downloads: they become your own tracks"
+                                                     : noMusic ? "In Songate's own folder (no music folder chosen)"
+                                                               : "In Songate's own folder: played from here, shown as the server's",
+                                          "set.subdl", { "Songate's folder", "Music folder" }, noMusic ? 0 : store.serverDlPlace,
+                                          [this](int p) { store.serverDlPlace = p; }, noMusic ? 2u : 0u));
+                    int songs = 0, albums = 0, done = 0, total = 0;
+                    long long bytes = 0;
+                    subsonic.dlCounts(songs, bytes, albums);
+                    subsonic.dlProgress(done, total);
+                    const bool working = total > 0 && done < total;
+                    const std::string hint = store.stopDownloads ? "Stopped. What is downloaded stays; Resume gets the rest"
+                                           : working ? "Albums you downloaded, one track at a time"
+                                                     : "Albums you downloaded from the server: Download on an album's page";
+                    Row r = store.stopDownloads || working
+                                ? buttonRow("Downloaded", hint, "set.subdlstop", store.stopDownloads ? ICON_PLAY : ICON_X, store.stopDownloads ? "Resume" : "Stop",
+                                            [this] { setJobStopped(Stoppable::Downloads, !store.stopDownloads); })
+                                : infoRow("Downloaded", hint);
+                    r.value = std::to_string(songs) + (songs == 1 ? " track · " : " tracks · ") + std::to_string(int((bytes + 512 * 1024) / (1024 * 1024))) + " MB";
+                    rows.push_back(r);
+                }
+                rows.push_back(buttonRow("Sign out", "This device forgets the server and your sign-in; nothing on the server changes", "set.subout", nullptr,
+                                         "Sign out", [this] { serverSignOutCard(); }));
+            }
+            sections.back().cards.push_back({ "Subsonic server", rows });
+        }
     }
 
     // Lyrics
@@ -992,7 +1201,38 @@ void App::drawSettings(float x, float y, float w, float h) {
                                    segRow("Show it for", "Where the lyrics come from", "set.lyrtimefor", { "Tags", ".lrc files", "Both" },
                                           store.lyricTimingFor, [this](int i) { store.lyricTimingFor = i; }, store.lyricTiming ? 0u : 0x7u),
                                    infoRow("Where lyrics come from",
-                                           "An .lrc file named as the track, or its LYRICS tag. " GF_CAP_TAP " a synced line to jump there") } } } });
+                                           "An .lrc file named as the track, or its LYRICS tag. " GF_CAP_TAP " a synced line to jump there"),
+                                   // as Measured and Tags read (the user, 2026-11-05: "We should have something like this in lyrics settings too")
+                                   [&] {   // Stop / Resume while not all read, as Measured and Covers ready
+                                       const LyricIndex::Progress lp = lyrIndex.progress();
+                                       const std::string hint = store.stopLyrics ? "Stopped. Search finds what is read so far; Resume reads the rest"
+                                                              : lyrIndex.held() && lp.read < lp.total ? "Waits for the tags to be read first, then reads in the background"
+                                                              : lp.checking ? "Looking for lyrics changed outside Songate, in the background"
+                                                              : lp.read < lp.total ? "In the background while Songate is open, for search by lyrics"
+                                                                                   : "For search by lyrics. Changed them on a computer? Read all again";
+                                       Row r = lyrHeld && !store.stopLyrics && lp.read < lp.total
+                                                   ? buttonRow("Lyrics read", "Not read yet: search finds what is read so far; Read them reads the rest", "set.lyrstop",
+                                                               ICON_PLAY, "Read them", [this] { lyrNotice = 2; releaseLyrics(); })
+                                               : store.stopLyrics || lp.read < lp.total
+                                                   ? buttonRow("Lyrics read", hint, "set.lyrstop", store.stopLyrics ? ICON_PLAY : ICON_X, store.stopLyrics ? "Resume" : "Stop",
+                                                               [this] { setJobStopped(Stoppable::Lyrics, !store.stopLyrics); })
+                                                   : buttonRow("Lyrics read", hint, "set.lyrstop", ICON_REFRESH, "Read all again", [this] { lyrIndex.checkAll(); });
+                                       r.value = std::to_string(lp.read) + " of " + std::to_string(lp.total);
+                                       return r;
+                                   }() } } } });
+    // Online (BETA 3, lyrics_online.cpp): off until turned on; what is sent, said where it is turned on
+    sections.back().cards.push_back(
+        { "Online",
+          { toggleRow("Find lyrics online", "When a song with no lyrics plays, LRCLIB (lrclib.net) is asked for them: its title, artist, album and length are sent, nothing else",
+                      "set.lyronline", store.lyricsOnline),
+            segRow("When found", "Play them at once (Keep or Not these), or show them on a card first (Save or Not these)", "set.lyrway", { "Play them", "Ask first" },
+                   store.lyricsOnlineWay, [this](int i) { store.lyricsOnlineWay = i; }, store.lyricsOnline ? 0u : 0x3u),
+            segRow("Save them",
+                   store.lyricsSaveTo == 0   ? "An .lrc beside the song: other players see it too"
+                   : store.lyricsSaveTo == 2 ? "Written inside the song file, once it is not playing (the rest of the file as it was)"
+                                             : "Kept in Songate's folder: your music folder is not touched",
+                   "set.lyrsave", { "Beside the song", "Inside the song", "In Songate's folder" }, store.lyricsSaveTo == 2 ? 1 : store.lyricsSaveTo == 1 ? 2 : 0,
+                   [this](int i) { store.lyricsSaveTo = i == 1 ? 2 : i == 2 ? 1 : 0; }, store.lyricsOnline ? 0u : 0x7u) } });
 
     // Canvas
     {
@@ -1048,6 +1288,9 @@ void App::drawSettings(float x, float y, float w, float h) {
                     segRow("Bars in the Canvas", "The spectrum the Canvas grows when it is idle", "set.cvbands", cvBands, cvBandIdx,
                            [this](int i) { store.canvasBars = i == 0 ? 32 : i == 1 ? 56 : i == 2 ? 80 : 112; }),
                     toggleRow("Peak caps", "The thin marks that fall slowly above the bars", "set.vpeaks", store.vizPeaks) } },
+                { "Seek bar",   // (the user, 2026-11-06: "Let's make the waveform togglable on settings")
+                  { toggleRow("Waveform", store.seekWave ? "The song's loudness as bars along the seek line" : "A plain line, the part played lit",
+                              "set.seekwave", store.seekWave) } },
                 { "Cover",
                   { sliderRow("Bass pulse", store.coverPulse < 0.01f ? "Off" : pct(store.coverPulse),
                               "How much the cover breathes with the bass. 100% is the default, 0 turns it off", "set.vpulse",
@@ -1103,10 +1346,34 @@ void App::drawSettings(float x, float y, float w, float h) {
                                        GF_POINTER_WORDS, "set.ptrspeed", store.pointerSpeed);
         const Row accelRow = toggleRow("Pointer acceleration", "Slow for small moves, fast when the stick is pushed all the way",
                                        "set.ptraccel", store.pointerAccel);
-        sections.push_back({ "Controls", ICON_SLIDERS,
-                             { { "Buttons", keys },
-                               { "Pointer", { speedRow, accelRow } },
-                               { "Touch", { infoRow("Touch works everywhere", "Tap, drag lists with momentum, drag the seek bar and the volume") } } } });
+        std::vector<Card> controlCards = { { "Buttons", keys },
+                                           { "Pointer", { speedRow, accelRow } } };   // (Touch's card out: it said nothing to set; the user, 2026-11-08)
+#ifdef __SWITCH__
+        if (pocketAvailable()) {   // the pocket lock (a Reddit user, 2026-11-07; "super customisable": the user)
+            std::vector<Row> pk;
+            pk.push_back(toggleRow("Lock button on Now playing", "Under the cover: the screen off and every button and touch ignored, the music "
+                                   "playing; HOME too when Songate runs in place of a game (from the album, HOME brings the screen back)", "set.pocketbtn", store.pocketButton));
+            pk.push_back(segRow("Unlock with", store.pocketKey == 3 ? "Capture pressed twice, no Joy-Con needed in handheld: no screenshots while locked, "
+                                                                     "the volume buttons as always"
+                                : store.pocketHow == 0 ? "The volume buttons, no Joy-Con needed: a quick press still changes the volume, a hold unlocks"
+                                                       : "The volume buttons, no Joy-Con needed: holding still changes the volume, two quick presses unlock",
+                                "set.pocketkey",
+                                { "Volume −", "Volume +", "Capture" }, store.pocketKey == 3 ? 2 : store.pocketKey,   // one key only (the user)
+                                [this](int i) { store.pocketKey = i == 2 ? 3 : i; persistSoon(0.3f); }));
+            if (store.pocketKey != 3)   // (Capture: pressed twice only; an app is never told it is held)
+                pk.push_back(segRow("How", store.pocketHow == 0 ? "Held down" : "Pressed twice within a moment", "set.pockethow", { "Hold", "Press twice" },
+                                    store.pocketHow, [this](int i) { store.pocketHow = i; persistSoon(0.3f); }));
+            if (store.pocketKey != 3 && store.pocketHow == 0)
+                pk.push_back(segRow("Hold for", "How long, so a pocket does not do it", "set.pockethold", { "1 s", "2 s", "3 s" }, store.pocketHold - 1,
+                                    [this](int i) { store.pocketHold = i + 1; persistSoon(0.3f); }));
+            pk.push_back(toggleRow("Turn off the controllers", "Joy-Con off the console and other wireless controllers, at the lock; a press "
+                                   "wakes them (attached Joy-Con stay on)", "set.pocketpads", store.pocketPads));
+            pk.push_back(toggleRow("Show how to unlock", "A press while locked lights a dim hint for a few seconds", "set.pockethint", store.pocketHint));
+            pk.push_back(buttonRow("Lock now", "Unlock: " + pocketHowWords(), "set.pocketnow", ICON_LOCK, "Lock", [this] { pocketLock(true); }));
+            controlCards.push_back({ "Pocket lock", pk });
+        }
+#endif
+        sections.push_back({ "Controls", ICON_SLIDERS, controlCards });
     }
 
     // Storage and reset: where each browser opens (view_storage.cpp), what Gatefold keeps on the card, and the reset
@@ -1135,17 +1402,25 @@ void App::drawSettings(float x, float y, float w, float h) {
             folderRows.push_back(buttonsRow(fs[i].label, field->empty() ? std::string(fs[i].dflt) : *field, btns));
         }
         struct K { const char* label; const char* hint; };
-        const K ks[6] = { { "Covers cache", "Small copies of every cover, so lists open with their covers (" GF_CONFIG_NAME "/art)" },
+        const K ks[9] = { { "Covers cache", "Small copies of every cover, so lists open with their covers (" GF_CONFIG_NAME "/art)" },
                           { "Covers for the overlay", "What the overlay shows for each track (thumbs)" },
                           { "Loudness measurements", "Each track's levelling, Automix and mood measurements" },
                           { "Tag cache", "The tags read from your files, so opening is quick" },
                           { "Backups", "Your settings as they were before each install or restore" },
-                          { "Downloads", GF_DOWNLOADS_WORDS } };
-        static const char* clearKeys[6] = { "set.clr0", "set.clr1", "set.clr2", "set.clr3", "set.clr4", "set.clr5" };
-        for (int i = 0; i < 6; i++) {
+                          { "Update downloads", GF_DOWNLOADS_WORDS },
+                          { "Lyrics found online", "Kept in Songate's folder (Settings › Lyrics › Online). Those beside the songs stay" },
+                          { "Tracks kept from the server", "The server's tracks played lately, so they start at once (Subsonic server)" },
+                          { "Server downloads", "Albums downloaded from the server into Songate's folder (Subsonic server)" } };
+        static const char* clearKeys[9] = { "set.clr0", "set.clr1", "set.clr2", "set.clr3", "set.clr4", "set.clr5", "set.clr6", "set.clr7", "set.clr8" };
+        const bool server = subsonic.view().state != Subsonic::SignedOut;
+        // What Songate makes again by itself first, then what only comes back through you: the lyrics found online above Backups
+        // (the user, 2026-11-04: "move the online lyrics from storage above Backups")
+        for (int i : { 0, 1, 2, 3, 6, 7, 8, 5, 4 }) {   // (the user, 2026-11-06: lyrics, the server's two together, update downloads, backups)
 #ifdef GF_WINDOWED
             if (i == 1) continue;   // the overlay's: none on a PC
 #endif
+            // the server's: only while signed in, or while something of it is still here (none of it shows otherwise: the user, 2026-11-06)
+            if (i >= 7 && !server && !(storage.seen && storage.use[i].files > 0)) continue;
             Row r = buttonRow(ks[i].label, ks[i].hint, clearKeys[i], ICON_X, "Clear", [this, i] { clearStorage(i); }, true);
             r.value = storageValue(i);
             keptRows.push_back(r);
@@ -1551,6 +1826,11 @@ void App::drawSettings(float x, float y, float w, float h) {
                     g.text(left, { css::Md }, bx + bw / 2, by + 100, pal.text2, 1, Align::Center);
                 };
                 cards.push_back({ "Pairing", { code, buttonRow("Stop pairing", "", "set.cnstop", ICON_X, "Cancel", [this] { connect.cancelCode(); }) } });
+                if (cnCodeFocus_) {   // Show a code went away with the press: the page goes to the code, not where focus fell back to
+                    cnCodeFocus_ = false;   // (the user, 2026-11-05: "the page scroll to the middle instead of the section where the code is")
+                    ui.focus(uid("set.cnstop"));
+                    area("settings.pane").target = 0;
+                }
             }
             const Syncer::View sv = syncer.view();
             const bool syncBusy = syncWaiting || sv.state == Syncer::State::Reading || sv.state == Syncer::State::Trading || sv.state == Syncer::State::Asking ||
@@ -1582,7 +1862,8 @@ void App::drawSettings(float x, float y, float w, float h) {
             {
                 static float nudge = 0.5f;
                 int& delay = store.togetherDelay[std::clamp(store.togetherOutput, 0, 2)];
-                nudge = float(delay + 300) / 600.f;
+                static constexpr int kMax = Store::kTimingMax;
+                nudge = float(delay + kMax) / (2.f * kMax);
                 char ms[16];
                 snprintf(ms, sizeof ms, "%+d ms", delay);
                 auto timing = [&](const char* hint) {
@@ -1591,37 +1872,68 @@ void App::drawSettings(float x, float y, float w, float h) {
                                    const Id id = uid("set.tgnudge");
                                    if (const int st = ui.sliderStep(id)) {
                                        ui.useSlide();
-                                       delay = std::clamp(delay + st, -300, 300);
-                                       nudge = float(delay + 300) / 600.f;
+                                       delay = std::clamp(delay + st, -kMax, kMax);
+                                       nudge = float(delay + kMax) / (2.f * kMax);
                                        persistSoon(0.8f);
                                    }
                                    float nv = nudge;
                                    slider(id, rx - setSliderW(), cy, setSliderW(), nudge, &nv);
                                    if (nv != nudge) {
                                        nudge = nv;
-                                       delay = int(std::lround(nudge * 600)) - 300;
+                                       delay = int(std::lround(nudge * 2 * kMax)) - kMax;
                                        persistSoon(0.8f);
                                    }
                                } };
                 };
                 if (tog.stage == Tog::On || tog.stage == Tog::Joining || tog.stage == Tog::Inviting) {
                     std::vector<Row> rows;
-                    if (tog.stage != Tog::On) rows.push_back(infoRow("Waiting", tog.stage == Tog::Inviting ? "Asking " + tog.peerName + " to join" : "Agreeing on the queue and the time"));
-                    else rows.push_back(infoRow(tog.linkLost ? "Waiting for " + tog.peerName : tog.rejoining ? "Getting back in time" : tog.startAt > 0 ? "In time" : "Getting ready", tog.linkLost ? "The link dropped. Both play on, and the session goes on when it is back" : tog.rejoining ? "This device fell behind: it comes back in a few seconds" : tog.startAt > 0 ? "Corrected as it plays" : "Opening the song on both devices", ms));
-                    if (tog.host && tog.missing > 0) rows.push_back(infoRow(std::to_string(tog.missing) + (tog.missing == 1 ? " song is not on both" : " songs are not on both"), "Skipped on both: copy them with Music files, then start again"));
-                    // Who changes what plays (T7): the starter chooses, the other device is told
+                    const std::string others = togetherNames();
+                    if (tog.stage != Tog::On) rows.push_back(infoRow("Waiting", tog.stage == Tog::Inviting ? "Asking " + others + " to join" : "Agreeing on the queue and the time"));
+                    else rows.push_back(infoRow(tog.linkLost ? "Waiting for " + tog.peerName : tog.rejoining ? "Getting back in time" : tog.startAt > 0 ? "In time" : "Getting ready", tog.linkLost ? "The link dropped. Each plays on, and the session goes on when it is back" : tog.rejoining ? "This device fell behind: it comes back in a few seconds" : tog.startAt > 0 ? "Corrected as it plays" : "Opening the song on every device", ms));
+                    if (tog.host) {
+                        // the devices in it, and those linked that are not (BETA 3: three or more, added from here)
+                        std::vector<std::pair<std::string, std::string>> addable;
+                        for (const Connect::Paired& p : cv.paired) if (p.linked && !togMember(p.id)) addable.push_back({ p.id, p.name });
+#if defined(GF_DEV) && !defined(GF_WINDOWED) && !defined(GF_AIRPLAY)
+                        if (getenv("GF_TOG_MOCK")) addable = { { "deck", "Steam Deck" } };
+#endif
+                        // a row for each device, and an Add for each linked one outside it (the user, 2026-11-05: "A, a row each")
+                        static std::string addKeys[16];
+                        for (const Tog::Member& mb : tog.members) rows.push_back(infoRow(mb.name, togetherStateOf(mb)));
+                        for (int i = 0; i < std::min(int(addable.size()), 16); i++) {
+                            addKeys[i] = "set.tgadd" + std::to_string(i);
+                            rows.push_back(buttonRow(addable[size_t(i)].second, "Linked, not in this session", addKeys[i].c_str(), ICON_PLUS, "Add",
+                                                     [this, id = addable[size_t(i)].first, name = addable[size_t(i)].second] { togetherInvite(id, name); }));
+                        }
+                    } else if (!tog.others.empty()) {
+                        std::string list;
+                        for (const std::string& o : tog.others) list += (list.empty() ? "" : ", ") + o;
+                        rows.push_back(infoRow("Also listening", list));
+                    }
+                    if (tog.host && tog.missing > 0) rows.push_back(infoRow(std::to_string(tog.missing) + (tog.missing == 1 ? " song is not on every device" : " songs are not on every device"), "Skipped on all: copy them with Music files, then start again"));
+                    // Who changes what plays (T7): the starter chooses, the others are told
                     if (tog.stage == Tog::On) {
                         if (tog.host)
-                            rows.push_back(segRow("Who changes what plays", tog.onlyHost ? "Only this device: " + tog.peerName + "'s Next, pause and seek are turned off" : "Next, pause, seek and a song chosen, from either device",
-                                                  "set.tgwho", { "Both", "Only this device" }, tog.onlyHost ? 1 : 0, [this](int i) { togetherSetOnlyHost(i == 1); }));
+                            rows.push_back(segRow("Who changes what plays", tog.onlyHost ? "Only this device: the others' Next, pause and seek are turned off" : "Next, pause, seek and a song chosen, from any device",
+                                                  "set.tgwho", { "Everyone", "Only this device" }, tog.onlyHost ? 1 : 0, [this](int i) { togetherSetOnlyHost(i == 1); }));
                         else if (tog.onlyHost)
                             rows.push_back(infoRow(tog.peerName + " decides what plays", "It turned off Next, pause and seek here for this session. Leave is still yours"));
                         else
-                            rows.push_back(infoRow("Both change what plays", "Next, pause, seek and a song chosen, from either device"));
+                            rows.push_back(infoRow("Every device changes what plays", "Next, pause, seek and a song chosen, from any device"));
                     }
-                    rows.push_back(timing("Move it until the two sound as one"));
-                    rows.push_back(buttonRow("Leave", "This device stops; the other plays on by itself", "set.tgleave", ICON_X, "Leave", [this] { togetherLeave(); }));
-                    cards.push_back({ "Listening with " + tog.peerName, rows });
+                    rows.push_back(timing("Move it until this device sounds as one with the others"));
+                    if (tog.host && tog.stage == Tog::On) {   // the delay, measured with the chirps (micmeasure.hpp)
+                        const std::string who = togetherListener();
+                        std::string whoName = "this device";
+                        if (const Tog::Member* mb = who.empty() || who == "-" ? nullptr : togMember(who)) whoName = mb->name;
+                        if (who.empty()) rows.push_back(infoRow("Measure the delay", "No device in this session has a microphone: set Timing by ear"));
+                        else rows.push_back(buttonRow("Measure the delay", tog.measure.stage ? "Each device chirps in turn: keep it quiet for a few seconds"
+                                                                                             : "Each device chirps in turn; " + whoName + " listens with its microphone. Put it where you sit",
+                                                      "set.tgmeasure", ICON_REFRESH, tog.measure.stage ? "Measuring…" : "Measure", [this] { togetherMeasure(false); }));
+                    }
+                    rows.push_back(buttonRow("Leave", tog.host ? "This device stops, and the session ends; each of the others plays on by itself" : "This device stops; the others play on",
+                                             "set.tgleave", ICON_X, "Leave", [this] { togetherLeave(); }));
+                    cards.push_back({ "Listening with " + others, rows });
                 } else {
                     std::vector<Row> rows;
                     static std::string startKeys[16];
@@ -1699,6 +2011,8 @@ void App::drawSettings(float x, float y, float w, float h) {
                                     kindRow("Playlists", "Your own playlists, in their order. One deleted here is deleted there too", "set.cnk2", syncdata::KindLists),
                                     kindRow("Tag edits", "Your files are never changed", "set.cnk4", syncdata::KindEdits),
                                     kindRow("Play counts", "Each device keeps its own count; both show the total", "set.cnk8", syncdata::KindPlays),
+                                    kindRow("Lyrics", "Lyrics found online and kept. A song's own lyrics are never replaced", "set.cnk32", syncdata::KindLyrics),
+                                    kindRow("Moods", "The moods you chose for songs: every device learns from them", "set.cnk64", syncdata::KindMoods),
                                     toggleRow("Measurements and covers", "Saves the other device the work, for the same files", "set.cnres", store.syncResults) } });
                 {
                     const Copier::View fv = copier.view();
@@ -1741,7 +2055,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                 else if (p.offering) near.push_back(deviceRow(p.name, cv.pairing ? "Checking the code…" : p.address + " · showing a code", "set.cncode", i, nullptr, "Type the code", [this, id = p.id] { connectEnterCode(id); }));
                 else near.push_back(infoRow(p.name, p.address + " · to pair, press Add a device on either one"));
             }
-            if (cv.code.empty()) near.push_back(buttonRow("Add a device", "Shows a code here. Both devices need to be on this network", "set.cnadd", nullptr, "Show a code", [this] { connect.offerCode(); }));
+            if (cv.code.empty()) near.push_back(buttonRow("Add a device", "Shows a code here. Both devices need to be on this network", "set.cnadd", nullptr, "Show a code", [this] { connect.offerCode(); cnCodeFocus_ = true; }));
             near.push_back(buttonRow("Can't see it?", store.connectAim.empty() ? "Some networks carry no hellos. Type its address" : "Also saying hello to " + store.connectAim, "set.cnaim", nullptr, "Type an address", [this] { connectAddress(); }));
             cards.push_back({ "On this network", near });
         }
@@ -1752,7 +2066,17 @@ void App::drawSettings(float x, float y, float w, float h) {
     // Debug: dev builds only (the Makefile's DEV), never in a release: the testing tools
     sections.push_back(
         { "Debug", ICON_BOLT,
-          { { "Testing",
+          { { "Self test",
+              { toggleRow("Basic test", "Every page once, playing, Now playing's tabs, every Settings category: each step's frames and what looks wrong, "
+                                        "in the log and selftest-basic.txt", "set.stbasic", selfTestOn_[0]),
+                toggleRow("Advanced test", "Basic, then every list view and sort, the sheets, Canvas, search, Files, the first albums and artists, the "
+                                           "server's views: in selftest-advanced.txt", "set.stadv", selfTestOn_[1]),
+                toggleRow("Full test", "Advanced, then every album and artist page, and each control of the main pages focused in turn (nothing of "
+                                       "yours is changed): in selftest-full.txt", "set.stfull", selfTestOn_[2]),
+                buttonRow("New user test", "As newly installed: your settings folder set aside, then the first start, the tour and every feature; "
+                                           "your folder put back at the end: in selftest-new-user.txt", "set.stnew", ICON_BOLT,
+                          selfTestFresh_ ? "Running" : "Start", [this] { if (!selfTestFresh_) newUserTestAsk(); }) } },
+            { "Testing",
               { toggleRow("Frame times", "A graph of the last two seconds of frames: green is on time, red took longer than a "
                                          "sixtieth of a second, the white part is the app's own work",
                           "set.frametimes", store.frameTimes),

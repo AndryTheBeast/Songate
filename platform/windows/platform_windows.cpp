@@ -291,6 +291,14 @@ void requestSleep() { SetSuspendState(FALSE, FALSE, FALSE); }
 
 bool dimBacklight(float&) { return false; }   // a veil instead: the screen's light is the system's on a PC
 void restoreBacklight(float) {}
+bool volumeKeys(bool& up, bool& down, std::string* err) { up = down = false; if (err) *err = "the Switch only"; return false; }
+bool backlightOff(bool) { return false; }
+bool blockHome(bool) { return false; }
+bool takeCapture(bool) { return false; }
+int capturePresses() { return 0; }
+int disconnectControllers() { return 0; }
+bool outputVolume(int&) { return false; }
+bool setOutputVolume(int) { return false; }
 
 bool batteryRaw(double& percent, bool& charging) {
     SYSTEM_POWER_STATUS s;
@@ -299,6 +307,8 @@ bool batteryRaw(double& percent, bool& charging) {
     charging = s.ACLineStatus == 1;
     return true;
 }
+
+bool batteryInfo(BatteryInfo&) { return false; }   // (the Switch's for now: BETA 3)
 
 bool batteryLevel(unsigned& percent) {
     double p = 0;

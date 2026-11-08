@@ -15,8 +15,12 @@
 #include "cores.hpp"
 #include "gfx.hpp"
 #include "library.hpp"
+#include "lyricsnet.hpp"
 #ifdef GF_WINDOWED
 std::vector<uint8_t> mediaJpeg(SDL_Surface* s);   // metacache.cpp
+#endif
+#ifdef GF_AIRPLAY
+std::vector<uint8_t> airJpeg(SDL_Surface* s);     // metacache.cpp
 #endif
 
 void TrackLoader::Result::release() {
@@ -146,6 +150,10 @@ void TrackLoader::work(const Request& r, Result& out) {
         out.lyrics = readSidecarLyrics(r.path);
         out.sidecar = !out.lyrics.empty();
         if (out.lyrics.empty()) out.lyrics = std::move(out.info.lyrics);
+        if (out.lyrics.empty()) {   // found online and kept in Songate's own folder (lyricsnet.hpp)
+            out.lyrics = lyrnet::readSaved(r.path);
+            out.sidecar = out.inSongate = !out.lyrics.empty();
+        }
         out.info.lyrics.clear();
     } else if (bytes.empty()) {
         TrackInfo info;
@@ -161,6 +169,13 @@ void TrackLoader::work(const Request& r, Result& out) {
         SDL_FreeSurface(src);
     }
     if (!rgba) return;
+#ifdef GF_AIRPLAY
+    {   // for AirPlay speakers with a screen: the file itself when it is a small JPEG or PNG, else 500 px of it as a JPEG
+        const bool jpg = bytes.size() > 3 && bytes[0] == 0xFF && bytes[1] == 0xD8, png = bytes.size() > 8 && bytes[0] == 0x89 && bytes[1] == 'P';
+        if ((jpg || png) && bytes.size() <= 512 * 1024) out.airCover = bytes;
+        else if (SDL_Surface* a = Gfx::shrink(rgba, 500)) { out.airCover = airJpeg(a); SDL_FreeSurface(a); }
+    }
+#endif
     // The cover is drawn at most ~450 px (the Canvas); 512 keeps it sharp without aliasing while it floats and zooms.
 #ifdef GF_WINDOWED
     out.cover = Gfx::shrink(rgba, 1536);   // … three times that on a big window

@@ -104,6 +104,8 @@ b_sdl() {      # shared: SDL's Java side loads libSDL2.so
   unpack "$DL/sdl/SDL2-2.28.5.tar.gz" SDL2-2.28.5
   # NDK r27 made ALooper_pollAll unavailable; SDL's later releases call pollOnce, the same for one poll with no timeout
   sed -i 's/ALooper_pollAll(0, NULL/ALooper_pollOnce(0, NULL/' "$SRC/SDL2-2.28.5/src/sensor/android/SDL_androidsensor.c"
+  # AAudio: an output Android disconnects (Bluetooth to the speaker, headphones out) is opened again; 2.28.5's own span on it
+  cp "$HERE/sdl-patches/SDL_aaudio.c" "$SRC/SDL2-2.28.5/src/audio/aaudio/SDL_aaudio.c"
   cm sdl "$SRC/SDL2-2.28.5" -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST=OFF
 }
 b_ttf() {

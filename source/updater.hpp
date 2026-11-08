@@ -143,10 +143,17 @@ public:
      *  (App::FactoryPart bits) is moved into "<folder>.erased" (instant), or with every bit the whole folder; then the
      *  player starts again with nothing of it to read. */
     static void factoryReset(const std::string& configDir, unsigned mask);
+    /** Debug › Self test › New user (dev): toFresh, the settings folder set aside as <dir>.before-test (Songate starts as new); back,
+     *  the test's folder kept as <dir>.test-run (the one before it removed: a test's own) and yours put back. False when it could not. */
+#ifdef GF_DEV
+    static bool swapFreshTest(const std::string& configDir, bool toFresh);
+#endif
     /** The files of each factory reset part, bit by bit (App::FactoryPart). */
     static const std::vector<std::vector<const char*>>& factoryFiles();
     /** At the next launch, on a worker: what factoryReset moved aside is deleted (thousands of covers: never at exit). */
     static void eraseLeftovers(const std::string& configDir);
+    /** Set as Songate closes: eraseLeftovers stops where it is (the rest goes next launch). */
+    static inline std::atomic<bool> stopErasing{ false };
     /** An install of a release that reads config/gatefold-nx (cfgmove::usesOldFolder) left updates/back.txt: its version, once
      *  (the file is removed: it would move back with the folder and be read again on the return), or empty. */
     static std::string takeBack(const std::string& configDir);

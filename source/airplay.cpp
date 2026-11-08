@@ -55,6 +55,18 @@ constexpr double kAskAfter = 0.1, kGiveUpAfter = 0.6;      // a packet missing: 
 constexpr const char* kTxt[] = { "txtvers=1", "ch=2", "cn=0,1", "et=0,1", "ek=1", "sr=44100", "ss=16", "sv=false", "da=true", "pw=false", "md=0,1,2",
                                  "tp=UDP", "vn=65537", "vs=105.1", "sf=0x4", "am=Songate" };
 
+/** This device's wall clock as NTP seconds (since 1900): what the sender's clock is compared with. */
+double ntpLocal() {
+    using namespace std::chrono;
+    return duration<double>(system_clock::now().time_since_epoch()).count() + 2208988800.0;
+}
+double ntp64(const uint8_t* p) {
+    const uint32_t s = uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
+    const uint32_t f = uint32_t(p[4]) << 24 | uint32_t(p[5]) << 16 | uint32_t(p[6]) << 8 | p[7];
+    return double(s) + double(f) / 4294967296.0;
+}
+uint32_t be32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
+
 double seconds() {
     using namespace std::chrono;
     return duration<double>(steady_clock::now().time_since_epoch()).count();
@@ -140,6 +152,12 @@ struct AirPlay::Impl {
     bool haveNext = false;
     uint16_t nextSeq = 0, topSeq = 0;
     sockaddr_in control{};
+    sockaddr_in timingTo{};          // the sender's timing port: asked what time it is, to follow its clock
+    bool haveTimingTo = false;
+    double lastTimeAsk = 0;
+    int timeAsks = 0;
+    struct Probe { double offset, rtt; };
+    std::vector<Probe> probes;
     bool haveControl = false;
     std::string onceId;   // allowed once: for this stream, until it ends
 
@@ -315,8 +333,14 @@ struct AirPlay::Impl {
         sockaddr_in from{};
         socklen_t len = sizeof from;
         int n;
-        while ((n = int(recvfrom(mdns, reinterpret_cast<char*>(d), sizeof d, 0, reinterpret_cast<sockaddr*>(&from), &len))) > 0)
-            if (from.sin_addr.s_addr != ip && n > 12 && !(d[2] & 0x80) && holds(d, size_t(n), "_raop")) sayAnnounce(announce);
+        while ((n = int(recvfrom(mdns, reinterpret_cast<char*>(d), sizeof d, 0, reinterpret_cast<sockaddr*>(&from), &len))) > 0) {
+            if (from.sin_addr.s_addr == ip || n <= 12 || (d[2] & 0x80) || !holds(d, size_t(n), "_raop")) continue;
+            sayAnnounce(announce);
+            // asked from another port (a sender whose own receiver holds 5353, as Songate's on the console: the user, 2026-11-05, "the
+            // switch is not finding the android airplay"): the answer goes straight back to it as well (mDNS's legacy unicast)
+            if (ntohs(from.sin_port) != 5353)
+                sendto(mdns, reinterpret_cast<const char*>(announce.data()), int(announce.size()), 0, reinterpret_cast<sockaddr*>(&from), sizeof from);
+        }
     }
 
     std::string answerChallenge(const std::string& challenge) {
@@ -448,6 +472,12 @@ struct AirPlay::Impl {
 
     void decode(uint8_t* p, int size) {
         if (!dec || !haveAes || size <= 12) return;
+        {   // where this packet's sound will start in the ring, and its RTP time: the audio thread places it on the sender's clock
+            const unsigned k = a.mapAt_.load(std::memory_order_relaxed);
+            a.mapPos_[k % AirPlay::MapN].store(a.written_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            a.mapRtp_[k % AirPlay::MapN].store(be32(p + 4), std::memory_order_relaxed);
+            a.mapAt_.store(k + 1, std::memory_order_release);
+        }
         uint8_t* audio = p + 12;
         const size_t n = size_t(size - 12), whole = n & ~size_t(15);
         uint8_t v[16];
@@ -592,6 +622,21 @@ struct AirPlay::Impl {
                     control.sin_port = htons(uint16_t(port));
                     control.sin_addr.s_addr = peer;
                     haveControl = true;
+                }
+            }
+            const size_t tp = head.find("timing_port=");
+            if (tp != std::string::npos) {
+                const int port = atoi(head.c_str() + tp + 12);
+                if (port > 0 && port < 65536) {
+                    timingTo = sockaddr_in{};
+                    timingTo.sin_family = AF_INET;
+                    timingTo.sin_port = htons(uint16_t(port));
+                    timingTo.sin_addr.s_addr = peer;
+                    haveTimingTo = true;
+                    timeAsks = 0;
+                    probes.clear();
+                    a.haveClock_ = false;
+                    a.haveSync_ = false;
                 }
             }
             char t[140];
@@ -806,6 +851,10 @@ struct AirPlay::Impl {
                 std::lock_guard<std::mutex> g(a.m_);
                 if (a.quit_ || !a.wanted_) break;
             }
+            if (a.stopNow_.exchange(false, std::memory_order_acq_rel) && client >= 0) {   // the sheet's Stop (the user, 2026-11-05: "it is
+                closeClient();                                                         // not stopping with this button")
+                dropCand();
+            }
             const double t = seconds();
             if (mdns >= 0 && t >= announceAt) {   // (on the PC, Windows announces it)
                 sayAnnounce(announce);
@@ -865,9 +914,42 @@ struct AirPlay::Impl {
             int n;
             while (media[0] >= 0 && (n = int(recvfrom(media[0], reinterpret_cast<char*>(p), sizeof p, 0, reinterpret_cast<sockaddr*>(&src), &sl))) > 0)
                 if (src.sin_addr.s_addr == clientAddress && (p[1] & 0x7f) == 0x60) take(p, n, now, false);
-            while (media[1] >= 0 && (n = int(recvfrom(media[1], reinterpret_cast<char*>(p), sizeof p, 0, reinterpret_cast<sockaddr*>(&src), &sl))) > 0)
-                if (src.sin_addr.s_addr == clientAddress && (p[1] & 0x7f) == 0x56 && n > 4 + 12) take(p + 4, n - 4, now, true);
+            while (media[1] >= 0 && (n = int(recvfrom(media[1], reinterpret_cast<char*>(p), sizeof p, 0, reinterpret_cast<sockaddr*>(&src), &sl))) > 0) {
+                if (src.sin_addr.s_addr != clientAddress) continue;
+                if ((p[1] & 0x7f) == 0x56 && n > 4 + 12) take(p + 4, n - 4, now, true);
+                else if ((p[1] & 0x7f) == 0x54 && n >= 20) {   // sync: RTP time p+4 is heard at the sender's time p+8
+                    a.syncRtp_.store(be32(p + 4), std::memory_order_relaxed);
+                    a.syncNtp_.store(ntp64(p + 8), std::memory_order_relaxed);
+                    a.haveSync_.store(true, std::memory_order_release);
+                }
+            }
+            if (haveTimingTo && client >= 0 && (timeAsks < 5 ? now - lastTimeAsk > 0.3 : now - lastTimeAsk > 3)) {
+                // what time is it there: our time sent, theirs as it came and as they answered (both in the answer)
+                uint8_t q[32] = {};
+                q[0] = 0x80;
+                q[1] = 0xD2;
+                q[3] = 7;
+                const double t0 = ntpLocal();
+                const uint32_t s0 = uint32_t(t0), f0 = uint32_t((t0 - std::floor(t0)) * 4294967296.0);
+                for (int k = 0; k < 4; k++) { q[24 + k] = uint8_t(s0 >> (24 - 8 * k)); q[28 + k] = uint8_t(f0 >> (24 - 8 * k)); }
+                sendto(media[2], reinterpret_cast<const char*>(q), sizeof q, 0, reinterpret_cast<sockaddr*>(&timingTo), sizeof timingTo);
+                lastTimeAsk = now;
+                timeAsks++;
+            }
             while (media[2] >= 0 && (n = int(recvfrom(media[2], reinterpret_cast<char*>(p), sizeof p, 0, reinterpret_cast<sockaddr*>(&src), &sl))) > 0) {
+                if ((p[1] & 0x7f) == 0x53 && n >= 32 && src.sin_addr.s_addr == clientAddress) {
+                    // an answer: the offset from the quickest of the last eight (the least delayed on the way)
+                    const double t3 = ntpLocal(), t0 = ntp64(p + 8), t1 = ntp64(p + 16), t2 = ntp64(p + 24);
+                    const double rtt = (t3 - t0) - (t2 - t1), off = ((t1 - t0) + (t2 - t3)) / 2;
+                    if (t0 > 0 && rtt >= 0 && rtt < 1) {
+                        probes.push_back({ off, rtt });
+                        if (probes.size() > 8) probes.erase(probes.begin());
+                        const Probe best = *std::min_element(probes.begin(), probes.end(), [](const Probe& x, const Probe& y) { return x.rtt < y.rtt; });
+                        a.clockOffset_.store(best.offset, std::memory_order_relaxed);
+                        a.haveClock_.store(true, std::memory_order_release);
+                    }
+                    continue;
+                }
                 if ((p[1] & 0x7f) != 0x52 || n < 32 || src.sin_addr.s_addr != clientAddress) continue;
                 uint8_t out[32];
                 memcpy(out, p, 8);
@@ -945,6 +1027,51 @@ int AirPlay::read(int16_t* out, int frames) {
     lastRead_ = now;
     if (away) { clear_ = false; primed_ = false; read_.store(written_.load(std::memory_order_acquire), std::memory_order_release); return 0; }
     if (clear_.exchange(false)) read_.store(written_.load(std::memory_order_acquire), std::memory_order_release);
+    if (haveClock_.load(std::memory_order_acquire) && haveSync_.load(std::memory_order_acquire)) {
+        // Each sample when the sender's clock says: the RTP time at the ring's head (from the packet it came in), against the one
+        // that should be heard as this buffer comes out (about 45 ms from now, plus how far ahead this device plays)
+        unsigned r = read_.load(std::memory_order_relaxed);
+        const unsigned w = written_.load(std::memory_order_acquire);
+        const unsigned mapAt = mapAt_.load(std::memory_order_acquire);
+        bool found = false;
+        unsigned bestPos = 0;
+        uint32_t bestRtp = 0;
+        for (int k = 0; k < MapN && k < int(mapAt); k++) {
+            const unsigned i = (mapAt - 1 - unsigned(k)) % MapN;
+            const unsigned pos = mapPos_[i].load(std::memory_order_relaxed);
+            if (int(r - pos) >= 0 && int(r - pos) < 48000 * 4) { bestPos = pos; bestRtp = mapRtp_[i].load(std::memory_order_relaxed); found = true; break; }
+        }
+        if (found && w != r) {
+            const double heard = ntpLocal() + 0.045 - ahead_.load(std::memory_order_relaxed) + clockOffset_.load(std::memory_order_relaxed);
+            const double want = double(syncRtp_.load(std::memory_order_relaxed)) + (heard - syncNtp_.load(std::memory_order_relaxed)) * 44100.0;
+            const uint32_t head = bestRtp + uint32_t(double(r - bestPos) * 44100.0 / 48000.0);
+            const double err = double(int32_t(head - uint32_t(int64_t(want)))) / 44100.0;   // + the head is early: wait; - late: skip
+            if (std::fabs(err) < 4) {
+                if (err > 0.06) return 0;   // not yet: silence, nothing taken
+                if (err < -0.06) {          // late: what should have been heard is skipped
+                    const unsigned skip = std::min(w - r, unsigned(-err * 48000));
+                    r += skip;
+                    read_.store(r, std::memory_order_release);
+                }
+                const unsigned avail = w - r;
+                if (!avail) return 0;
+                int n = int(std::min<unsigned>(avail, unsigned(frames)));
+                // a few milliseconds off: a frame dropped or said twice in this buffer, unheard
+                int nudge = err < -0.003 ? 1 : err > 0.003 ? -1 : 0;
+                int o = 0;
+                for (int i = 0; i < n && o < frames; i++, r++) {
+                    if (nudge == 1 && i == n / 2) { nudge = 0; continue; }   // one dropped
+                    out[o * 2] = ring_[(r & (Ring - 1)) * 2];
+                    out[o * 2 + 1] = ring_[(r & (Ring - 1)) * 2 + 1];
+                    o++;
+                    if (nudge == -1 && i == n / 2 && o < frames) { out[o * 2] = out[(o - 1) * 2]; out[o * 2 + 1] = out[(o - 1) * 2 + 1]; o++; nudge = 0; }
+                }
+                read_.store(r, std::memory_order_release);
+                return o;
+            }
+        }
+        // (no clock to place it on yet, or a wild one: the old way below)
+    }
     if (!primed_) return 0;
     unsigned r = read_.load(std::memory_order_relaxed);
     const unsigned avail = written_.load(std::memory_order_acquire) - r;
@@ -971,8 +1098,10 @@ void AirPlay::run() {
             if (im.open()) im.loop();
             else { std::lock_guard<std::mutex> v(m_); view_.error = "AirPlay could not open on this network"; }
         }
-        std::this_thread::sleep_for(std::chrono::seconds(2));   // the network came back, or it was off: looked at again
+        // the network came back, or it was off: looked at again in 2 s; closing does not wait for them (it waited the whole
+        // 2 s on every exit: shutdown-trace.txt, 2026-11-05)
         g.lock();
+        wake_.wait_for(g, std::chrono::seconds(2), [&] { return quit_; });
     }
 }
 

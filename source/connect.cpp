@@ -66,6 +66,7 @@ double wallSeconds() {
     return duration<double>(system_clock::now().time_since_epoch()).count();
 }
 
+constexpr size_t kMaxLinks = 8;   // devices linked at once
 constexpr double kAsleep = 8;   // the worker's loop not run for this long: a sleep or a freeze (its longest wait is a message written: 2 s twice)
 
 std::string hexOf(const uint8_t* p, size_t n) {
@@ -116,6 +117,8 @@ struct Connect::Link {
     uint8_t mode = 0;
     uint8_t their[kId] = {};
     bool knowTheirs = false, greeted = false, keyed = false, proved = false, up = false, wroteConfirm = false;
+    bool dead = false;      // dropped: deleted at the end of the loop (sweepLinks), never in the middle of reading it
+    std::string theirHex;   // its id, once up
     std::string code;
     Cpace cpace{};
     uint8_t ephemeral[kKey] = {}, ephemeralPublic[kKey] = {}, session[kKey] = {};
@@ -220,41 +223,52 @@ double Connect::seconds_() { return seconds(); }
 
 bool Connect::linkedTo(const std::string& id) {
     std::lock_guard<std::mutex> g(m_);
-    return !linkedId_.empty() && linkedId_ == id;
+    auto it = boxes_.find(id);
+    return it != boxes_.end() && it->second.up;
 }
 
-void Connect::send(std::vector<uint8_t> message) {
+void Connect::send(const std::string& id, std::vector<uint8_t> message) {
     std::lock_guard<std::mutex> g(m_);
-    if (linkedId_.empty()) return;
-    outboxBytes_ += message.size();
-    outbox_.push_back(std::move(message));
+    auto it = boxes_.find(id);
+    if (it == boxes_.end() || !it->second.up) return;
+    it->second.outBytes += message.size();
+    it->second.out.push_back(std::move(message));
     wake_.notify_all();
 }
 
-size_t Connect::outboxBytes() {
+size_t Connect::outboxBytes(const std::string& id) {
     std::lock_guard<std::mutex> g(m_);
-    return outboxBytes_;
+    auto it = boxes_.find(id);
+    return it == boxes_.end() ? 0 : it->second.outBytes;
 }
 
-std::vector<std::vector<uint8_t>> Connect::receiveFiles() {
+std::vector<Connect::From> Connect::receiveFiles() {
     std::lock_guard<std::mutex> g(m_);
-    std::vector<std::vector<uint8_t>> out;
-    out.swap(filesIn_);
+    std::vector<From> out;
+    for (auto& [id, b] : boxes_) {
+        for (auto& m : b.files) out.push_back({ id, std::move(m) });
+        b.files.clear();
+    }
     return out;
 }
 
-std::vector<std::vector<uint8_t>> Connect::receiveTogether() {
+std::vector<Connect::From> Connect::receiveTogether() {
     std::lock_guard<std::mutex> g(m_);
-    std::vector<std::vector<uint8_t>> out;
-    out.swap(togetherIn_);
+    std::vector<From> out;
+    for (auto& [id, b] : boxes_) {
+        for (auto& m : b.together) out.push_back({ id, std::move(m) });
+        b.together.clear();
+    }
     return out;
 }
 
-void Connect::clockWanted(bool on) {
-    if (clockOn_ == on) return;
-    clockOn_ = on;
+void Connect::clockWanted(const std::vector<std::string>& ids) {
     std::lock_guard<std::mutex> g(m_);
-    if (on) clock_ = Clock{};
+    if (clockPeers_ == ids) return;
+    const bool samePrimary = !clockPeers_.empty() && !ids.empty() && clockPeers_[0] == ids[0];
+    clockPeers_ = ids;
+    clockOn_ = !ids.empty();
+    if (!samePrimary) clock_ = Clock{};
 }
 
 Connect::Clock Connect::clock() {
@@ -262,10 +276,22 @@ Connect::Clock Connect::clock() {
     return clock_;
 }
 
-std::vector<std::vector<uint8_t>> Connect::receive() {
+std::vector<std::vector<uint8_t>> Connect::receive(const std::string& id) {
     std::lock_guard<std::mutex> g(m_);
     std::vector<std::vector<uint8_t>> out;
-    out.swap(inbox_);
+    auto it = boxes_.find(id);
+    if (it != boxes_.end()) out.swap(it->second.in);
+    return out;
+}
+
+std::vector<Connect::From> Connect::receiveAll(const std::string& except) {
+    std::lock_guard<std::mutex> g(m_);
+    std::vector<From> out;
+    for (auto& [id, b] : boxes_) {
+        if (id == except) continue;
+        for (auto& m : b.in) out.push_back({ id, std::move(m) });
+        b.in.clear();
+    }
     return out;
 }
 
@@ -450,8 +476,8 @@ double getDouble(const uint8_t* p) { double v; memcpy(&v, p, 8); return v; }
 }  // namespace
 
 /** t1: when the ping left; t2: when it arrived. An answer's own leaving time is taken as late as can be. */
-void Connect::sendClock(bool answer, double t1, double t2) {
-    if (!link_ || !link_->up || udp_ == kNone) return;
+void Connect::sendClock(Link& l, bool answer, double t1, double t2) {
+    if (!l.up || l.dead || udp_ == kNone) return;
     uint8_t plain[kClockPlain], out[10 + kClockPlain + kDatagramExtra];
     memcpy(out, kMark, 8);
     out[8] = uint8_t(kProtocol);
@@ -460,18 +486,21 @@ void Connect::sendClock(bool answer, double t1, double t2) {
     putDouble(plain + 1, t1);
     putDouble(plain + 9, t2);
     putDouble(plain + 17, seconds());
-    sealDatagram(link_->clockKeys, plain, sizeof plain, out + 10);
-    const sockaddr_in to = addressOf(link_->addressBe, kPort);
+    sealDatagram(l.clockKeys, plain, sizeof plain, out + 10);
+    const sockaddr_in to = addressOf(l.addressBe, kPort);
     sendto(S(udp_), reinterpret_cast<const char*>(out), int(sizeof out), 0, reinterpret_cast<const sockaddr*>(&to), sizeof to);
 }
 
 void Connect::onClock(const uint8_t* in, size_t size, uint32_t address) {
     const double t4 = seconds();
-    if (!link_ || !link_->up || address != link_->addressBe || size != 10 + kClockPlain + kDatagramExtra) return;
+    if (size != 10 + kClockPlain + kDatagramExtra || clockPeersW_.empty()) return;
+    Link* lp = nullptr;
+    for (Link* o : links_) if (!o->dead && o->up && o->addressBe == address && clockPeer(o->theirHex)) lp = o;
+    if (!lp) return;
     uint8_t plain[kClockPlain];
-    if (!unsealDatagram(link_->clockKeys, in + 10, size - 10, plain)) return;
-    if (!plain[0]) { if (clockOn_) sendClock(true, getDouble(plain + 17), t4); return; }
-    if (!clockOn_) return;
+    if (!unsealDatagram(lp->clockKeys, in + 10, size - 10, plain)) return;
+    if (!plain[0]) { if (clockOn_) sendClock(*lp, true, getDouble(plain + 17), t4); return; }
+    if (!clockOn_ || lp->theirHex != clockPeersW_[0]) return;   // (answers from the others: the starter measures nothing)
     const double t1 = getDouble(plain + 1), t2 = getDouble(plain + 9), t3 = getDouble(plain + 17);
     const double rtt = (t4 - t1) - (t3 - t2);
     if (!(t1 <= t4) || !(t2 <= t3) || rtt < 0 || t4 - t1 > 2) return;   // not one of ours, or from long ago
@@ -508,14 +537,14 @@ void Connect::onDatagram(const uint8_t* in, size_t size, uint32_t address, uint1
     if (!memcmp(pid, id_, kId)) return;   // our own broadcast, come back
     if (kind == CallMe) {
         // it could not reach us. Only for a device paired with us, or one whose code we hold; to anyone else nothing, and no row
-        if (proto == kProtocol && !link_) {
+        if (proto == kProtocol && !linkTo(pid)) {
             if (remembered(pid)) call(pid, address, ModeKnown);
             else if (!code_.empty()) call(pid, address, ModePair);
         }
         return;
     }
     const std::string idText = hexOf(pid, kId), addr = dotted(address);
-    bool fresh = false;
+    bool fresh = false, renamed = false;
     {
         std::lock_guard<std::mutex> g(m_);
         view_.heard++;
@@ -527,12 +556,17 @@ void Connect::onDatagram(const uint8_t* in, size_t size, uint32_t address, uint1
             it->id = idText;
         }
         it->name = cleanName(in + kHead, nameLen);
+        if (Remembered* r = remembered(pid); r && !it->name.empty() && r->name != it->name) {   // renamed, or a better name now
+            r->name = it->name;
+            renamed = true;
+        }
         it->address = addr;
         it->protocol = proto;
         it->offering = in[10] != 0;
         it->seenAt = seconds();
         (kind == Hello ? it->heardBroadcast : it->heardDirect) = true;
     }
+    if (renamed) savePeers();
     if (fresh) note(std::string("found ") + (proto == kProtocol ? "a device" : "a device of another version") + " at " + addr);
     if (proto != kProtocol) return;   // shown as such, and no further
     if (kind == Hello) {
@@ -551,25 +585,32 @@ void Connect::onDatagram(const uint8_t* in, size_t size, uint32_t address, uint1
 }
 
 /** A connection out; the handshake starts once it is made. */
+/** The link to that device, being made or up (not one dropped). */
+Connect::Link* Connect::linkTo(const uint8_t* id) {
+    for (Link* l : links_) if (!l->dead && l->knowTheirs && !memcmp(l->their, id, kId)) return l;
+    return nullptr;
+}
+
 void Connect::call(const uint8_t* id, uint32_t address, int mode) {
-    if (link_) return;
+    if (linkTo(id) || links_.size() >= kMaxLinks) return;
     Sock s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (s == kNoSock) return;
     nonBlocking(s);
     const sockaddr_in to = addressOf(address, kPort);
     const int rc = connect(s, reinterpret_cast<const sockaddr*>(&to), sizeof to);
     if (rc != 0 && !wouldBlock()) { closeSock(s); return; }
-    link_ = new Link;
-    link_->sock = uintptr_t(s);
-    link_->connecting = rc != 0;
-    link_->mode = uint8_t(mode);
-    memcpy(link_->their, id, kId);
-    link_->knowTheirs = true;
-    link_->startedAt = seconds();
-    link_->address = dotted(address);
-    link_->addressBe = address;
-    if (mode == ModePair) link_->code = !pendingCode_.empty() ? pendingCode_ : code_;
-    if (!link_->connecting) startHandshake(*link_);
+    Link* l = new Link;
+    links_.push_back(l);
+    l->sock = uintptr_t(s);
+    l->connecting = rc != 0;
+    l->mode = uint8_t(mode);
+    memcpy(l->their, id, kId);
+    l->knowTheirs = true;
+    l->startedAt = seconds();
+    l->address = dotted(address);
+    l->addressBe = address;
+    if (mode == ModePair) l->code = !pendingCode_.empty() ? pendingCode_ : code_;
+    if (!l->connecting) startHandshake(*l);
 }
 
 void Connect::startHandshake(Link& l) {
@@ -578,22 +619,33 @@ void Connect::startHandshake(Link& l) {
     g[8] = uint8_t(kProtocol);
     g[9] = l.mode;
     memcpy(g + 10, id_, kId);
-    if (!writeFrame(l.sock, g, sizeof g)) dropLink("the connection failed");
+    if (!writeFrame(l.sock, g, sizeof g)) dropLink(l, "the connection failed");
 }
 
-void Connect::dropLink(const char* why) {
-    if (!link_) return;
-    Link* l = link_;
-    link_ = nullptr;
-    if (l->up) note(std::string("link ended: ") + why);
-    {
+void Connect::dropLink(Link& l, const char* why) {
+    if (l.dead) return;
+    l.dead = true;
+    if (l.up) {
+        note(std::string("link ended: ") + why);
         std::lock_guard<std::mutex> g(m_);
-        linkedId_.clear();
-        outbox_.clear();
-        outboxBytes_ = 0;
+        Box& b = boxes_[l.theirHex];
+        b.up = false;
+        b.out.clear();
+        b.outBytes = 0;
     }
-    if (l->sock != kNone) closeSock(S(l->sock));
-    delete l;
+    if (l.sock != kNone) closeSock(S(l.sock));
+    l.sock = kNone;
+}
+
+void Connect::sweepLinks() {
+    for (size_t i = 0; i < links_.size();) {
+        if (links_[i]->dead) {
+            delete links_[i];
+            links_.erase(links_.begin() + std::ptrdiff_t(i));
+        } else {
+            i++;
+        }
+    }
 }
 
 void Connect::finishPairing(Link& l, const uint8_t* publicKey, const std::string& name) {
@@ -618,48 +670,55 @@ void Connect::finishPairing(Link& l, const uint8_t* publicKey, const std::string
 void Connect::onFrame(Link& l, const uint8_t* p, size_t n) {
     if (!l.greeted) {
         // the greeting: who it is, and what for
-        if (n != 8 + 2 + kId || memcmp(p, kMark, 8) != 0) { dropLink("not a Songate"); return; }
+        if (n != 8 + 2 + kId || memcmp(p, kMark, 8) != 0) { dropLink(l, "not a Songate"); return; }
         if (p[8] != uint8_t(kProtocol)) {
             note("a device of another version was turned away");
             news("That device has another version of Songate: update both");
-            dropLink("another version");
+            dropLink(l, "another version");
             return;
         }
         const uint8_t mode = p[9];
         const uint8_t* who = p + 10;
         if (l.incoming) {
+            // already linked, or calling each other at the same moment: the call from the lower id stays
+            for (Link* o : links_) {
+                if (o == &l || o->dead || !o->knowTheirs || memcmp(o->their, who, kId) != 0) continue;
+                if (o->up || memcmp(id_, who, kId) < 0) { dropLink(l, "already linked"); return; }
+                dropLink(*o, "called at the same moment");
+            }
             l.mode = mode;
             memcpy(l.their, who, kId);
+            l.knowTheirs = true;
             if (mode == ModePair) {
                 const bool mine = !code_.empty(), typed = !pendingCode_.empty() && pendingPeer_ == hexOf(who, kId);
-                if (!mine && !typed) { dropLink("no code waiting"); return; }
+                if (!mine && !typed) { dropLink(l, "no code waiting"); return; }
                 l.code = typed ? pendingCode_ : code_;
             } else if (mode != ModeKnown || !remembered(who)) {
-                dropLink("not paired");   // a stranger: nothing is told, nothing is read
+                dropLink(l, "not paired");   // a stranger: nothing is told, nothing is read
                 return;
             }
             startHandshake(l);
-            if (!link_) return;
+            if (l.dead) return;
         } else if (mode != l.mode || memcmp(l.their, who, kId) != 0) {
-            dropLink("not the device called");
+            dropLink(l, "not the device called");
             return;
         }
         l.greeted = true;
         uint8_t r[kKey];
-        if (!plat::randomBytes(r, kKey)) { dropLink("no random numbers"); return; }
+        if (!plat::randomBytes(r, kKey)) { dropLink(l, "no random numbers"); return; }
         if (l.mode == ModePair) {
             cpaceStart(l.cpace, l.code, id_, l.their, r);
-            if (!writeFrame(l.sock, l.cpace.mine, kKey)) { dropLink("the connection failed"); return; }
+            if (!writeFrame(l.sock, l.cpace.mine, kKey)) { dropLink(l, "the connection failed"); return; }
         } else {
             memcpy(l.ephemeral, r, kKey);
             pairing::publicKey(l.ephemeral, l.ephemeralPublic);
-            if (!writeFrame(l.sock, l.ephemeralPublic, kKey)) { dropLink("the connection failed"); return; }
+            if (!writeFrame(l.sock, l.ephemeralPublic, kKey)) { dropLink(l, "the connection failed"); return; }
         }
         pairing::wipe(r, sizeof r);
         return;
     }
     if (!l.keyed) {
-        if (n != kKey) { dropLink("a bad key"); return; }
+        if (n != kKey) { dropLink(l, "a bad key"); return; }
         bool ok;
         if (l.mode == ModePair) {
             ok = cpaceFinish(l.cpace, p, id_, l.their, l.session);
@@ -667,11 +726,11 @@ void Connect::onFrame(Link& l, const uint8_t* p, size_t n) {
             Remembered* r = remembered(l.their);
             ok = r && knownFinish(secret_, r->publicKey, l.ephemeral, l.ephemeralPublic, p, id_, l.their, l.session);
         }
-        if (!ok) { dropLink("a bad key"); return; }
+        if (!ok) { dropLink(l, "a bad key"); return; }
         l.keyed = true;
         uint8_t mac[kMac];
         confirmation(l.session, id_, mac);
-        if (!writeFrame(l.sock, mac, kMac)) { dropLink("the connection failed"); return; }
+        if (!writeFrame(l.sock, mac, kMac)) { dropLink(l, "the connection failed"); return; }
         return;
     }
     if (!l.proved) {
@@ -687,7 +746,7 @@ void Connect::onFrame(Link& l, const uint8_t* p, size_t n) {
             } else {
                 note("a device failed to prove who it is");
             }
-            dropLink("the proof failed");
+            dropLink(l, "the proof failed");
             return;
         }
         l.proved = true;
@@ -700,40 +759,45 @@ void Connect::onFrame(Link& l, const uint8_t* p, size_t n) {
             memcpy(msg.data() + 1, public_, kKey);
             msg.insert(msg.end(), name_.begin(), name_.begin() + std::ptrdiff_t(std::min(name_.size(), kNameMax)));
             const std::vector<uint8_t> box = seal(l.channel, msg.data(), msg.size());
-            if (!writeFrame(l.sock, box.data(), box.size())) dropLink("the connection failed");
+            if (!writeFrame(l.sock, box.data(), box.size())) dropLink(l, "the connection failed");
         } else {
             l.up = true;
             l.pingAt = seconds() + kPingEvery;
-            clockSamples_.clear();   // (the last estimate stays until there are new ones: the two clocks did not move)
+            l.theirHex = hexOf(l.their, kId);
+            if (!clockPeersW_.empty() && l.theirHex == clockPeersW_[0]) clockSamples_.clear();   // (the last estimate stays until there are new ones: the two clocks did not move)
             {
                 std::lock_guard<std::mutex> g(m_);
-                linkedId_ = hexOf(l.their, kId);
+                Box& b = boxes_[l.theirHex];
+                b.up = true;
+                b.out.clear();
+                b.outBytes = 0;
             }
             note("link up");
         }
         return;
     }
     std::vector<uint8_t> plain;
-    if (!unseal(l.channel, p, n, plain) || plain.empty()) { dropLink("a message failed its check"); return; }
+    if (!unseal(l.channel, p, n, plain) || plain.empty()) { dropLink(l, "a message failed its check"); return; }
     l.lastIn = seconds();
     switch (plain[0]) {
     case MsgIntroduce: {
-        if (l.mode != ModePair || plain.size() < 1 + kKey || plain.size() > 1 + kKey + kNameMax) { dropLink("a bad introduction"); return; }
+        if (l.mode != ModePair || plain.size() < 1 + kKey || plain.size() > 1 + kKey + kNameMax) { dropLink(l, "a bad introduction"); return; }
         const std::string name = cleanName(plain.data() + 1 + kKey, plain.size() - 1 - kKey);
         finishPairing(l, plain.data() + 1, name);
-        dropLink("paired");   // the next connection is by the remembered keys
+        dropLink(l, "paired");   // the next connection is by the remembered keys
         return;
     }
     case MsgPing: return;
     case MsgData: {
-        if (!l.up) { dropLink("data before the link was up"); return; }
+        if (!l.up) { dropLink(l, "data before the link was up"); return; }
         std::lock_guard<std::mutex> g(m_);
         const char kind = plain.size() > 1 ? char(plain[1]) : 0;
-        (kind == 'f' ? filesIn_ : kind == 't' ? togetherIn_ : inbox_).emplace_back(plain.begin() + 1, plain.end());
+        Box& b = boxes_[l.theirHex];
+        (kind == 'f' ? b.files : kind == 't' ? b.together : b.in).emplace_back(plain.begin() + 1, plain.end());
         if (plain.size() > 1 && plain[1] == 'f') hurryUntil_ = seconds() + 2;
         return;
     }
-    case MsgGoodbye: dropLink("the other device left"); return;
+    case MsgGoodbye: dropLink(l, "the other device left"); return;
     default: return;   // of a later version of this protocol: ignored
     }
 }
@@ -753,7 +817,7 @@ void Connect::refreshView() {
         p.id = hexOf(r.id, kId);
         p.name = r.name;
         p.here = std::any_of(heard_.begin(), heard_.end(), [&](const Peer& h) { return h.id == p.id; });
-        p.linked = link_ && link_->up && !memcmp(link_->their, r.id, kId);
+        p.linked = std::any_of(links_.begin(), links_.end(), [&](const Link* l) { return !l->dead && l->up && !memcmp(l->their, r.id, kId); });
         view_.paired.push_back(std::move(p));
     }
     view_.code = code_;
@@ -791,7 +855,8 @@ void Connect::session() {
     double lastLoop = seconds(), lastWall = wallSeconds();
     static uint8_t buf[64 * 1024];   // (one worker)
     auto closeSockets = [&] {
-        dropLink("the network went away");
+        for (Link* l : links_) dropLink(*l, "the network went away");
+        sweepLinks();
         if (udp_ != kNone) closeSock(S(udp_));
         if (listen_ != kNone) closeSock(S(listen_));
         udp_ = listen_ = kNone;
@@ -831,7 +896,7 @@ void Connect::session() {
         if (!forget.empty()) {
             uint8_t id[kId];
             if (unhex(forget, id, kId)) {
-                if (link_ && !memcmp(link_->their, id, kId)) dropLink("forgotten");
+                if (Link* l = linkTo(id)) dropLink(*l, "forgotten");
                 paired_.erase(std::remove_if(paired_.begin(), paired_.end(), [&](const Remembered& r) { return !memcmp(r.id, id, kId); }), paired_.end());
                 savePeers();
             }
@@ -847,10 +912,7 @@ void Connect::session() {
                 std::lock_guard<std::mutex> g(m_);
                 for (const Peer& p : heard_) if (p.id == pendingPeer_) { in_addr ia{}; if (inet_pton(AF_INET, p.address.c_str(), &ia) == 1) addr = ia.s_addr; }
             }
-            if (addr && unhex(pendingPeer_, id, kId)) {
-                dropLink("pairing");
-                call(id, addr, ModePair);
-            }
+            if (addr && unhex(pendingPeer_, id, kId)) call(id, addr, ModePair);
         }
         if (!pendingCode_.empty() && t > pendingUntil_) {
             pairing::wipe(&pendingCode_[0], pendingCode_.size());
@@ -900,9 +962,15 @@ void Connect::session() {
                 continue;
             }
         }
-        // a paired device here and no link: the lower id calls; if that fails, the other is asked to
-        if (udp_ != kNone && !link_) {
+        {
+            std::lock_guard<std::mutex> g(m_);
+            if ((clockPeersW_.empty() ? std::string() : clockPeersW_[0]) != (clockPeers_.empty() ? std::string() : clockPeers_[0])) clockSamples_.clear();
+            clockPeersW_ = clockPeers_;
+        }
+        // each paired device here with no link: the lower id calls; if that fails, the other is asked to
+        if (udp_ != kNone) {
             for (Remembered& r : paired_) {
+                if (linkTo(r.id)) continue;
                 std::string addr;
                 {
                     std::lock_guard<std::mutex> g(m_);
@@ -914,18 +982,17 @@ void Connect::session() {
                 in_addr ia{};
                 if (inet_pton(AF_INET, addr.c_str(), &ia) != 1) continue;
                 if (memcmp(id_, r.id, kId) < 0) call(r.id, ia.s_addr, ModeKnown);
-                break;
             }
         }
-        if (link_) {
-            if (!link_->up && t - link_->startedAt > kHandshakeSeconds) {
+        bool moving = false;   // something to send: the loop comes round again at once
+        for (Link* lp : links_) {
+            Link& l = *lp;
+            if (l.dead) continue;
+            if (!l.up && t - l.startedAt > kHandshakeSeconds) {
                 // not reached, or no answer: ask it to call us instead
-                const bool notReached = link_->connecting && link_->mode != 0 && !link_->incoming;
-                uint8_t id[kId];
-                memcpy(id, link_->their, kId);
-                const std::string addr = link_->address;
-                dropLink("no answer");
-                (void)id;
+                const bool notReached = l.connecting && l.mode != 0 && !l.incoming;
+                const std::string addr = l.address;
+                dropLink(l, "no answer");
                 if (notReached && udp_ != kNone) {
                     uint8_t out[kHead + kNameMax];
                     memcpy(out, kMark, 8);
@@ -942,46 +1009,51 @@ void Connect::session() {
                         sendto(S(udp_), reinterpret_cast<const char*>(out), int(kHead + n), 0, reinterpret_cast<const sockaddr*>(&to), sizeof to);
                     }
                 }
-            } else if (link_->up && t - link_->lastIn > kLinkSilence) {
-                dropLink("silence");
-            } else if (link_->up && t >= link_->pingAt) {
-                link_->pingAt = t + kPingEvery;
+                continue;
+            }
+            if (l.up && t - l.lastIn > kLinkSilence) { dropLink(l, "silence"); continue; }
+            if (l.up && t >= l.pingAt) {
+                l.pingAt = t + kPingEvery;
                 // in the queue with everything else: sealed messages must arrive in the order they were sealed, and never inside one another
                 const uint8_t ping = MsgPing;
-                const std::vector<uint8_t> box = seal(link_->channel, &ping, 1);
+                const std::vector<uint8_t> box = seal(l.channel, &ping, 1);
                 const uint8_t len[4] = { uint8_t(box.size() >> 24), uint8_t(box.size() >> 16), uint8_t(box.size() >> 8), uint8_t(box.size()) };
-                link_->out.insert(link_->out.end(), len, len + 4);
-                link_->out.insert(link_->out.end(), box.begin(), box.end());
+                l.out.insert(l.out.end(), len, len + 4);
+                l.out.insert(l.out.end(), box.begin(), box.end());
             }
-        }
-        if (link_ && link_->up && clockOn_ && t >= link_->clockAt) {
-            link_->clockAt = t + kClockEvery;
-            sendClock(false, 0, 0);
-        }
-        // what the app gave us: sealed in order, then sent as room allows, the reading going on meanwhile
-        if (link_ && link_->up && link_->out.size() < 128 * 1024) {
-            std::vector<std::vector<uint8_t>> send;
-            {
-                std::lock_guard<std::mutex> g(m_);
-                if (!outbox_.empty()) {
-                    send.push_back(std::move(outbox_.front()));
-                    outbox_.erase(outbox_.begin());
-                    outboxBytes_ -= send.back().size();
+            if (l.up && clockOn_ && clockPeer(l.theirHex) && t >= l.clockAt) {
+                l.clockAt = t + kClockEvery;
+                sendClock(l, false, 0, 0);
+            }
+            // what the app gave for this device: sealed in order, then sent as room allows, the reading going on meanwhile
+            if (l.up && l.out.size() < 128 * 1024) {
+                std::vector<uint8_t> m;
+                {
+                    std::lock_guard<std::mutex> g(m_);
+                    Box& bx = boxes_[l.theirHex];
+                    if (!bx.out.empty()) {
+                        m = std::move(bx.out.front());
+                        bx.out.erase(bx.out.begin());
+                        bx.outBytes -= m.size();
+                    }
+                    if (bx.outBytes) moving = true;
+                }
+                if (!m.empty()) {
+                    m.insert(m.begin(), MsgData);
+                    const std::vector<uint8_t> box = seal(l.channel, m.data(), m.size());
+                    const uint8_t len[4] = { uint8_t(box.size() >> 24), uint8_t(box.size() >> 16), uint8_t(box.size() >> 8), uint8_t(box.size()) };
+                    l.out.insert(l.out.end(), len, len + 4);
+                    l.out.insert(l.out.end(), box.begin(), box.end());
                 }
             }
-            for (auto& m : send) {
-                m.insert(m.begin(), MsgData);
-                const std::vector<uint8_t> box = seal(link_->channel, m.data(), m.size());
-                const uint8_t len[4] = { uint8_t(box.size() >> 24), uint8_t(box.size() >> 16), uint8_t(box.size() >> 8), uint8_t(box.size()) };
-                link_->out.insert(link_->out.end(), len, len + 4);
-                link_->out.insert(link_->out.end(), box.begin(), box.end());
+            if (!l.out.empty() && !l.connecting) {
+                const int w = int(::send(S(l.sock), reinterpret_cast<const char*>(l.out.data()), int(std::min<size_t>(l.out.size(), 64 * 1024)), 0));
+                if (w > 0) l.out.erase(l.out.begin(), l.out.begin() + w);
+                else if (w < 0 && !wouldBlock()) { dropLink(l, "the connection failed"); continue; }
+                if (!l.out.empty()) moving = true;
             }
         }
-        if (link_ && !link_->out.empty()) {
-            const int w = int(::send(S(link_->sock), reinterpret_cast<const char*>(link_->out.data()), int(std::min<size_t>(link_->out.size(), 64 * 1024)), 0));
-            if (w > 0) link_->out.erase(link_->out.begin(), link_->out.begin() + w);
-            else if (w < 0 && !wouldBlock()) dropLink("the connection failed");
-        }
+        sweepLinks();
         refreshView();
         if (udp_ == kNone) { std::this_thread::sleep_for(std::chrono::milliseconds(200)); continue; }
 
@@ -991,13 +1063,13 @@ void Connect::session() {
         FD_SET(S(udp_), &rd);
         Sock top = S(udp_);
         if (listen_ != kNone) { FD_SET(S(listen_), &rd); top = std::max(top, S(listen_)); }
-        if (link_) {
-            if (link_->connecting) FD_SET(S(link_->sock), &wr);
-            else FD_SET(S(link_->sock), &rd);
-            if (!link_->connecting && !link_->out.empty()) FD_SET(S(link_->sock), &wr);
-            top = std::max(top, S(link_->sock));
+        for (Link* l : links_) {
+            if (l->connecting) FD_SET(S(l->sock), &wr);
+            else FD_SET(S(l->sock), &rd);
+            if (!l->connecting && !l->out.empty()) FD_SET(S(l->sock), &wr);
+            top = std::max(top, S(l->sock));
         }
-        timeval tv{ 0, (link_ && (!link_->out.empty() || outboxBytes_ || seconds() < hurryUntil_.load())) ? 1000 : clockOn_ ? 10 * 1000 : 100 * 1000 };
+        timeval tv{ 0, (!links_.empty() && (moving || seconds() < hurryUntil_.load())) ? 1000 : clockOn_ ? 10 * 1000 : 100 * 1000 };
         const int ready = select(int(top) + 1, &rd, &wr, nullptr, &tv);
         if (ready < 0) {   // the network went away under it
             closeSockets();
@@ -1015,52 +1087,58 @@ void Connect::session() {
             socklen_t fl = sizeof from;
             Sock c = accept(S(listen_), reinterpret_cast<sockaddr*>(&from), &fl);
             if (c != kNoSock) {
-                if (link_) closeSock(c);   // one at a time
+                if (links_.size() >= kMaxLinks) closeSock(c);   // enough at once
                 else {
                     nonBlocking(c);
-                    link_ = new Link;
-                    link_->sock = uintptr_t(c);
-                    link_->incoming = true;
-                    link_->startedAt = seconds();
-                    link_->address = dotted(from.sin_addr.s_addr);
-                    link_->addressBe = from.sin_addr.s_addr;
+                    Link* l = new Link;
+                    links_.push_back(l);
+                    l->sock = uintptr_t(c);
+                    l->incoming = true;
+                    l->startedAt = seconds();
+                    l->address = dotted(from.sin_addr.s_addr);
+                    l->addressBe = from.sin_addr.s_addr;
                 }
             }
         }
-        if (!link_) continue;
-        if (link_->connecting) {
-            if (!FD_ISSET(S(link_->sock), &wr)) continue;
-            int err = 0;
-            socklen_t el = sizeof err;
-            getsockopt(S(link_->sock), SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&err), &el);
-            if (err) continue;   // left to the timeout, which asks it to call us
-            link_->connecting = false;
-            startHandshake(*link_);
-            continue;
+        for (size_t li = 0; li < links_.size(); li++) {   // (by index: a frame may add none, but may drop any)
+            Link& l = *links_[li];
+            if (l.dead || l.sock == kNone) continue;
+            if (l.connecting) {
+                if (!FD_ISSET(S(l.sock), &wr)) continue;
+                int err = 0;
+                socklen_t el = sizeof err;
+                getsockopt(S(l.sock), SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&err), &el);
+                if (err) continue;   // left to the timeout, which asks it to call us
+                l.connecting = false;
+                startHandshake(l);
+                continue;
+            }
+            if (!FD_ISSET(S(l.sock), &rd)) continue;
+            const int got = int(recv(S(l.sock), reinterpret_cast<char*>(buf), sizeof buf, 0));
+            if (got < 0 && wouldBlock()) continue;
+            if (got == 0) { dropLink(l, "the other device closed it"); continue; }
+            if (got < 0) { if (!wouldBlock()) dropLink(l, "the connection failed"); continue; }
+            l.in.insert(l.in.end(), buf, buf + got);
+            size_t at = 0;
+            while (!l.dead && l.in.size() - at >= 4) {
+                const uint8_t* bp = l.in.data() + at;
+                const size_t n = size_t(bp[0]) << 24 | size_t(bp[1]) << 16 | size_t(bp[2]) << 8 | bp[3];
+                const size_t most = l.proved ? kMaxFrame + kMac : 64;   // nothing large before it has proved itself
+                if (n > most) { dropLink(l, "a message too large"); break; }
+                if (l.in.size() - at < 4 + n) break;
+                std::vector<uint8_t> frame(bp + 4, bp + 4 + n);
+                at += 4 + n;
+                onFrame(l, frame.data(), frame.size());
+            }
+            if (!l.dead && at) l.in.erase(l.in.begin(), l.in.begin() + std::ptrdiff_t(at));
         }
-        if (!FD_ISSET(S(link_->sock), &rd)) continue;
-        const int got = int(recv(S(link_->sock), reinterpret_cast<char*>(buf), sizeof buf, 0));
-        if (got < 0 && wouldBlock()) continue;
-        if (got == 0) { dropLink("the other device closed it"); continue; }
-        if (got < 0) { if (!wouldBlock()) dropLink("the connection failed"); continue; }
-        link_->in.insert(link_->in.end(), buf, buf + got);
-        size_t at = 0;
-        while (link_ && link_->in.size() - at >= 4) {
-            const uint8_t* b = link_->in.data() + at;
-            const size_t n = size_t(b[0]) << 24 | size_t(b[1]) << 16 | size_t(b[2]) << 8 | b[3];
-            const size_t most = link_->proved ? kMaxFrame + kMac : 64;   // nothing large before it has proved itself
-            if (n > most) { dropLink("a message too large"); break; }
-            if (link_->in.size() - at < 4 + n) break;
-            std::vector<uint8_t> frame(b + 4, b + 4 + n);
-            at += 4 + n;
-            onFrame(*link_, frame.data(), frame.size());
-        }
-        if (link_ && at) link_->in.erase(link_->in.begin(), link_->in.begin() + std::ptrdiff_t(at));
+        sweepLinks();
     }
-    if (link_ && link_->up && link_->out.empty()) {   // (with data still queued, the far side simply sees the link end)
+    for (Link* l : links_) {   // (with data still queued, the far side simply sees the link end)
+        if (l->dead || !l->up || !l->out.empty()) continue;
         const uint8_t bye = MsgGoodbye;
-        const std::vector<uint8_t> box = seal(link_->channel, &bye, 1);
-        writeFrame(link_->sock, box.data(), box.size());
+        const std::vector<uint8_t> box = seal(l->channel, &bye, 1);
+        writeFrame(l->sock, box.data(), box.size());
     }
     closeSockets();
     code_.clear();

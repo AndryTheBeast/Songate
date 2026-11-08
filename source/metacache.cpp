@@ -205,6 +205,22 @@ int MetaCache::slotFor(const std::string& key) {
 #ifdef GF_WINDOWED
 std::vector<uint8_t> mediaJpeg(SDL_Surface* s) { return encodeJpeg(s, 85); }
 #endif
+#ifdef GF_AIRPLAY
+std::vector<uint8_t> airJpeg(SDL_Surface* s) { return encodeJpeg(s, 85); }   // (loader.cpp: AirPlay speakers' cover)
+#endif
+
+namespace {
+/** A tag as text: without the NUL a file's tag can carry (an ID3 or MP4 string's terminator kept in it). Seen in four of the console's
+ *  songs (2026-11-06): the NUL went into lastfm-tags.tsv, whose line then read short and was dropped, so those songs were asked of
+ *  Last.fm again at every launch ("still searching for 3 last songs"). */
+std::string tagText(std::string s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) if (c != '\0') out += c;
+    return out;
+}
+std::string tagText(std::string_view v) { return tagText(std::string(v)); }
+}  // namespace
 
 bool MetaCache::pump(SDL_Renderer* r) {
     frame_++;
@@ -221,12 +237,12 @@ bool MetaCache::pump(SDL_Renderer* r) {
     for (auto& t : tags) {
         Track& tr = lib_->tracks[t.idx];
         if (!t.ok) { tagged_++; continue; }
-        if (!t.title.empty()) tr.title = t.title;
-        if (!t.artist.empty()) tr.artist = t.artist;
-        if (!t.album.empty()) tr.album = t.album;
-        tr.date = t.date;
-        tr.albumArtist = t.albumArtist;
-        tr.genre = t.genre;
+        if (!t.title.empty()) tr.title = tagText(t.title);
+        if (!t.artist.empty()) tr.artist = tagText(t.artist);
+        if (!t.album.empty()) tr.album = tagText(t.album);
+        tr.date = tagText(t.date);
+        tr.albumArtist = tagText(t.albumArtist);
+        tr.genre = tagText(t.genre);
         tr.trackNo = t.trackNo;
         if (t.duration > 0) tr.duration = t.duration;
         tr.fromName = (t.title.empty() ? 1 : 0) | (t.artist.empty() ? 2 : 0) | (t.album.empty() ? 4 : 0);
@@ -568,14 +584,14 @@ void MetaCache::load() {
         auto it = byPath.find(cols[0]);
         if (it == byPath.end()) continue;
         Track& t = lib_->tracks[it->second];
-        if (!cols[1].empty()) t.title = cols[1];
-        if (!cols[2].empty()) t.artist = cols[2];
-        if (!cols[3].empty()) t.album = cols[3];
-        t.date = cols[4];
+        if (!cols[1].empty()) t.title = tagText(cols[1]);   // (a cache from before: its NULs dropped too)
+        if (!cols[2].empty()) t.artist = tagText(cols[2]);
+        if (!cols[3].empty()) t.album = tagText(cols[3]);
+        t.date = tagText(cols[4]);
         t.duration = strtod(std::string(cols[5]).c_str(), nullptr);
-        t.albumArtist = cols[6];
+        t.albumArtist = tagText(cols[6]);
         t.trackNo = atoi(std::string(cols[7]).c_str());
-        t.genre = cols[8];
+        t.genre = tagText(cols[8]);
         t.fromName = (unsigned char)atoi(std::string(cols[9]).c_str());
         if (overlay) overlay(t);
         if (!t.tagged) tagged_++;
@@ -586,14 +602,22 @@ void MetaCache::load() {
 
 void MetaCache::save() {
     // Next to the old one and renamed over it: a cut write (power, a full SD card) left half a cache
+    // Made in memory and written at once: a line at a time took 2 s of every exit on the console (shutdown-trace.txt, 2026-11-05)
     const std::string tmp = cacheFile_ + ".tmp";
+    std::string out;
+    out.reserve(lib_->tracks.size() * 160);
+    char num[48];
+    for (const auto& t : lib_->tracks)
+        if (t.tagged) {
+            out += field(t.path); out += '\t'; out += field(t.title); out += '\t'; out += field(t.artist); out += '\t';
+            out += field(t.album); out += '\t'; out += field(t.date); out += '\t';
+            snprintf(num, sizeof num, "%.3f", t.duration);
+            out += num; out += '\t'; out += field(t.albumArtist); out += '\t';
+            out += std::to_string(t.trackNo); out += '\t'; out += field(t.genre); out += '\t'; out += std::to_string(int(t.fromName)); out += '\n';
+        }
     FILE* f = fopen(tmp.c_str(), "wb");
     if (!f) return;
-    for (const auto& t : lib_->tracks)
-        if (t.tagged)
-            fprintf(f, "%s\t%s\t%s\t%s\t%s\t%.3f\t%s\t%d\t%s\t%d\n", field(t.path).c_str(), field(t.title).c_str(), field(t.artist).c_str(),
-                    field(t.album).c_str(), field(t.date).c_str(), t.duration, field(t.albumArtist).c_str(), t.trackNo, field(t.genre).c_str(), int(t.fromName));
-    const bool ok = !ferror(f);
+    const bool ok = fwrite(out.data(), 1, out.size(), f) == out.size() && !ferror(f);
     if (fclose(f) != 0 || !ok) { remove(tmp.c_str()); return; }
     remove(cacheFile_.c_str());
     rename(tmp.c_str(), cacheFile_.c_str());

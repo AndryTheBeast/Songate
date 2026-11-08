@@ -21,6 +21,7 @@
 #include "app.hpp"
 #include "cores.hpp"
 #include "icons.inc"
+#include "tracksort.hpp"
 
 namespace {
 
@@ -64,15 +65,7 @@ int filedCompare(const std::string& a, const std::string& b) {
 
 // ============================================================ Tracks: sorting and filtering
 
-namespace {
-
-/** What a sort needs of a track, copied on the main thread: the metadata thread keeps writing the library's own. */
-struct SortRow {
-    int idx;
-    std::string title, artist, album, genre, date;   // artist: the album artist when there is one
-    int trackNo;
-    double duration;
-};
+namespace tracksort {
 
 void sortRows(std::vector<SortRow>& rows, int s, bool desc, const std::string& filter, std::vector<int>& list,
               std::vector<std::pair<char, int>>& letters) {
@@ -114,7 +107,8 @@ void sortRows(std::vector<SortRow>& rows, int s, bool desc, const std::string& f
         }
 }
 
-}  // namespace
+}  // namespace tracksort
+using namespace tracksort;
 
 /** A sort running on a worker core, and the list it was asked for. */
 struct TracksJob {
@@ -220,16 +214,46 @@ bool App::folderTile(Id id, int folder, float x, float y, float w, float cover) 
 
 void App::drawAlbums(float x, float y, float w, float h) {
     const int loose = int(std::count_if(lib.tracks.begin(), lib.tracks.end(), [](const Track& t) { return t.albumIdx < 0; }));
-    std::string sub = std::to_string(lib.albums.size()) + " albums · " + std::to_string(lib.tracks.size()) + " tracks";
+    std::string sub = std::to_string(lib.albums.size()) + " albums · " + std::to_string(lib.tracks.size()) + " tracks" + serverCountNote();
     if (loose && meta.taggedCount() >= int(lib.tracks.size())) sub += " · " + std::to_string(loose) + " without an album tag";
     drawAlbumGrid(x, y, w, h, viewHead("Library", "Albums", sub, x, y, w));
 }
 
+/** Local | Server (while signed in to a server): the whole app's library, in the title bar (the user, 2026-11-06: "always there",
+ *  gone when no server is signed in); right-aligned at rx; its width (0 when not shown). */
+float App::librarySource(float rx, float cy, float hgt) {
+    if (subsonic.view().state != Subsonic::SignedIn) return 0;
+    int picked = -1;
+    const float sw = segmented(uid("lib.source"), rx, cy, { "Local", "Server" }, store.libSource, &picked, 0, 0, 0, hgt);
+    if (picked >= 0 && picked != store.libSource) { store.libSource = picked; persistSoon(0.5f); libSourceChanged(); libSourceFollow(); }
+    return sw;
+}
+
+float App::librarySourceW() {
+    if (subsonic.view().state != Subsonic::SignedIn) return 0;
+    const Font f{ css::Sm, Weight::SemiBold };
+    return 6 + g.measure("Local", f) + g.measure("Server", f) + 2 * 26;   // (as segmented's)
+}
+
+void App::libraryTabsRow(float x, float w, float y) {
+    if (w < kNarrowList) return;
+    // shown as the server's: Albums, Artists, Genres, Folders, Tracks (no Playlists: the sidebar has them; the user, 2026-11-06)
+    static const int order[5] = { 0, 3, 4, 2, 1 };
+    int cur = 0;
+    for (int i = 0; i < 5; i++) if (order[i] == store.libTab) cur = i;
+    int picked = -1;
+    segmented(uid("lib.tab"), x + w - 28, y + 52, { "Albums", "Artists", "Genres", "Folders", "Tracks" }, cur, &picked);   // (Local | Server: the title bar's)
+    if (picked >= 0 && picked != cur) { store.libTab = order[picked]; persistSoon(0.5f); }
+}
+
 void App::drawLibrary(float x, float y, float w, float h) {
+    if (store.libSource == 1 && subsonic.view().state == Subsonic::SignedIn) { drawServer(x, y, w, h, true); return; }
+    // the views the sidebar also has (the user, 2026-11-06: "people can hide all sidebar items so the library tab should have all")
+    if (store.libTab == 3 || store.libTab == 4) { drawArtists(x, y, w, h, store.libTab == 4, true); return; }
     static const char* tabs[] = { "Albums", "Tracks", "Folders" };
     const int tab = store.libTab;
     std::string sub;
-    if (tab == 0) sub = std::to_string(lib.albums.size()) + " albums · " + std::to_string(lib.tracks.size()) + " tracks";
+    if (tab == 0) sub = std::to_string(lib.albums.size()) + " albums · " + std::to_string(lib.tracks.size()) + " tracks" + serverCountNote();
     else if (tab == 1) {
         const std::vector<int>& list = sortedTracks();
         sub = fmtTotal(list);
@@ -242,16 +266,14 @@ void App::drawLibrary(float x, float y, float w, float h) {
     // .view-head with the tab switch at its right (Albums | Tracks | Folders); narrow (a phone upright), no switch: its Library
     // page has the three as rows
     const bool narrow = w < kNarrowList;
-    const int room = int(w - 56 - (narrow ? 0 : 330));
+    const int room = int(w - 56 - (narrow ? 0 : subsonic.view().state == Subsonic::SignedIn ? 640 : 500));
     float cy = y + 18 + 8;
     kicker("Library", x + 28, cy, pal.text3);
     cy += 10;
     g.text(tabs[tab], { css::Xxl, Weight::Bold }, x + 28, cy, pal.text, 1, Align::Left, room);
     cy += 38;
     g.text(sub, { css::Sm }, x + 28, cy + 4, pal.text3, 1, Align::Left, room);
-    int picked = -1;
-    if (!narrow) segmented(uid("lib.tab"), x + w - 28, y + 52, { "Albums", "Tracks", "Folders" }, tab, &picked);
-    if (picked >= 0 && picked != tab) { store.libTab = picked; persistSoon(0.5f); }
+    libraryTabsRow(x, w, y);
     const float top = cy + 22 + 14;
 
     if (tab == 0) { drawAlbumGrid(x, y, w, h, top + 46); return; }
@@ -269,14 +291,20 @@ void App::drawTracksTab(float x, float y, float w, float h, float top) {
     if (clicked && !list.empty()) playTracks(list, 0, "Library");
     bx += button(uid("trk.shuffle"), ICON_SHUFFLE, "Shuffle", bx, by, false, &clicked) + 8;
     if (clicked && !list.empty()) playTracks(list, 0, "Library", true);
-    // narrow (a phone upright): the filter, sort and direction on a line of their own under Play and Shuffle, no view buttons
+    // narrow (a phone upright): the filter, sort and direction on a line of their own under Play and Shuffle; the views right of
+    // Play and Shuffle where they fit, else on a line of their own (the user, 2026-11-06: "Tracks do not have views in android portrait")
     const bool narrow = w < kNarrowList;
-    const float ty = narrow ? by + 34 + 10 : by;
+    float ty = narrow ? by + 34 + 10 : by;
     const float fx0 = narrow ? x + 28 : bx;
     float rx = x + w - 28;
-    if (!narrow) {
+    {
         int mode = store.viewTracks;
-        rx -= viewSwitch("trk.view", rx, by + 17, mode) + 8;
+        if (!narrow) rx -= viewSwitch("trk.view", rx, by + 17, mode) + 8;
+        else {
+            const float vy = bx + 6 + 38 * 4 <= x + w - 28 ? by : by + 34 + 10;
+            if (vy > by) ty += 34 + 10;
+            viewSwitch("trk.view", x + w - 28, vy + 17, mode);
+        }
         store.viewTracks = mode;
     }
     // direction

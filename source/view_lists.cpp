@@ -5,12 +5,14 @@
  */
 #include "words.hpp"
 #include <algorithm>
+#include <unordered_set>
 #include <cmath>
 #include <strings.h>
 #include <sys/stat.h>
 
 #include "app.hpp"
 #include "icons.inc"
+#include "plicons.inc"
 
 namespace {
 constexpr float RowH = 40;   // .vrow is 36 px on the PC; a little taller for fingers
@@ -18,6 +20,7 @@ constexpr float RowH = 40;   // .vrow is 36 px on the PC; a little taller for fi
 
 void App::drawTrackList(float x, float y, float w, float h) {
     const View v = route.view;
+    if (v == View::Queue && srvq_.on) { drawServerQueue(x, y, w, h); return; }   // the server's tracks playing: their own queue
     const std::vector<int> tracks = listTracks(v, route.ref, route.query);
 
     std::string kick = "Playlist", title, sub, playName;
@@ -68,7 +71,9 @@ void App::drawTrackList(float x, float y, float w, float h) {
     // narrow (a phone upright): a smaller cover, the actions on a line of their own under it, round, and no view buttons
     const bool narrow = w < kNarrowList;
     const float cs = narrow ? 96.f : 120.f;
-    const float headH = narrow ? 18 + cs + 14 + 34 + 16 : 18 + 120 + 14;
+    // upright: the views right of the actions where they fit (search's Play, Shuffle and New search leave room), else on a line under
+    // them (the user, 2026-11-06: "The android port changed search again": the line under them was empty space there)
+    const float headH = narrow ? 18 + cs + 14 + 34 + (plViewsOwnLine_ ? 10 + 36.f : 0.f) + 16 : 18 + 120 + 14;
     sa.view = { x, y, w, h };
     ui.pushArea(&sa);
     const float oy = y - sa.y;
@@ -118,6 +123,10 @@ void App::drawTrackList(float x, float y, float w, float h) {
         else if (ref >= 0) need += bw("Open folder") + bw("Delete");
         if (v == View::List && bgShown()) need += bw("Games");
         if (v != View::Search) need += bw("Export");
+        // (Send: Liked and your own plain playlists only; no Automix, smart or mood playlist goes to a server: the user, 2026-11-06)
+        if (v == View::List && subsonic.view().state == Subsonic::SignedIn &&
+            (ref < 0 || (ref < int(store.playlists.size()) && store.playlists[size_t(ref)].own() && !store.playlists[size_t(ref)].automix)))
+            need += bw("Send to Navidrome");
         if (ownPage) need += 34 + 8;
         compact = narrow || tx + need > x + w - 28 - (6 + 38 * 4) - 16;
     }
@@ -182,6 +191,14 @@ void App::drawTrackList(float x, float y, float w, float h) {
     if (v != View::Search) {
         if (action("pl.export", ICON_DOWNLOAD, "Export")) openExportPicker(playName.empty() ? title : playName, tracks);   // as listed: the queue in play order
     }
+    // Send to the server (signed in; the user: playlists "both ways"): its tracks the server has, as a playlist of the same name there
+    if (v == View::List && subsonic.view().state == Subsonic::SignedIn &&
+        (ref < 0 || (ref < int(store.playlists.size()) && store.playlists[size_t(ref)].own() && !store.playlists[size_t(ref)].automix))) {
+        std::string kind = subsonic.view().kind;
+        static std::string label;
+        label = "Send to " + (kind.empty() ? std::string("the server") : std::string(1, char(toupper(uint8_t(kind[0])))) + kind.substr(1));
+        if (action("pl.send", PLI_CLOUD, label.c_str())) sendPlaylistToServer(playName.empty() ? title : playName, tracks);
+    }
 
     // The playlist's sidebar icon, as a round button wearing it: the icon grid opens at once
     if (ownPage) {
@@ -216,16 +233,27 @@ void App::drawTrackList(float x, float y, float w, float h) {
         }
     }
 
-    // the four views, right of the actions (.pl-modes)
-    if (!narrow) {
+    // the four views, right of the actions (.pl-modes); Search upright keeps none, as it was (the user, 2026-11-06: "The android port
+    // changed search again")
+    if (narrow && v == View::Search) plViewsOwnLine_ = false;
+    else {
         int m = int(mode);
-        viewSwitch("pl.view", x + w - 28, by + 17, m, mixable ? 1u << int(ListMode::Grid) : 0u);
+        const float vw = 6 + 38.f * (mixable ? 3 : 4);
+        plViewsOwnLine_ = narrow && bx + vw > x + w - 28;
+        viewSwitch("pl.view", x + w - 28, plViewsOwnLine_ ? by + 34 + 10 + 18 : by + 17, m, mixable ? 1u << int(ListMode::Grid) : 0u);
         if (m != int(mode)) store.viewPlaylist = m;
     }
 
     // the tracks (no panel behind them: the background shows through, as everywhere here)
-    const float ly = oy + headH;
-    if (tracks.empty()) {
+    // Search: two groups when the lyrics found songs or are still being read (the user, 2026-11-05: "A: two groups"): Songs, then
+    // In the lyrics (drawLyricHits)
+    const LyricIndex::Progress lp = lyrIndex.progress();
+    const bool lyricGroup = v == View::Search && (!searchLyrics_.empty() || lp.read < lp.total);
+    float ly = oy + headH;
+    if (lyricGroup && !tracks.empty()) { kicker("Songs", x + 28, ly + 12, pal.text3); ly += 30; }
+    // Liked: the server's starred tracks after yours (signed in); with none of yours, they alone (no "Tracks you like appear here")
+    const bool srvGroup = v == View::List && route.ref < 0 && !srvStarred_.empty() && subsonic.view().state == Subsonic::SignedIn;
+    if (tracks.empty() && !lyricGroup && !srvGroup) {
         listColumns(x, ly, w, mode == ListMode::Grid ? ListMode::List : mode, false);
         const char* msg = v == View::Search ? "No tracks match" : v == View::Queue ? "Play something from the library or a folder"
                         : ref < 0 ? "Tracks you like appear here"
@@ -236,10 +264,34 @@ void App::drawTrackList(float x, float y, float w, float h) {
     g.clip(x, y, w, h);
     bodyGrab = v == View::Queue && grab.kind == Grab::Queue && !grab.upNext ? grab.pos
              : v == View::List && grab.kind == Grab::List && grab.ref == route.ref ? grab.pos : -1;
-    const float bodyH = drawTrackBody("pl", tracks, x, ly, w, y, h, mode, false, [&](int i) {
+    float bodyH = tracks.empty() && srvGroup ? -18.f : drawTrackBody("pl", tracks, x, ly, w, y, h, mode, false, [&](int i) {
         if (v == View::Queue) playAt(i);   // i is the position in play order
         else playTracks(tracks, i, playName);
     }, joinGap);
+    if (v == View::Search && lyricGroup) bodyH = (ly - (oy + headH)) + bodyH + drawLyricHits(x, ly + bodyH, w, y, h);   // In the lyrics
+    if (srvGroup) {   // Liked: the server's starred
+        std::string kind = subsonic.view().kind;
+        kind = kind.empty() ? std::string("your server") : std::string(1, char(toupper(uint8_t(kind[0])))) + kind.substr(1);
+        const float gy = ly + bodyH + 18;
+        // not those already in your Liked above (the same artist and title: the like sync keeps them as one)
+        static std::vector<int> order;
+        static unsigned orderStars = ~0u;
+        static size_t orderLiked = ~size_t(0);
+        if (orderStars != srvStarredGen_ || orderLiked != tracks.size()) {
+            orderStars = srvStarredGen_;
+            orderLiked = tracks.size();
+            auto low = [](std::string t) { for (char& ch : t) ch = char(tolower(uint8_t(ch))); return t; };
+            std::unordered_set<std::string> mine;
+            for (int t : tracks) mine.insert(low(lib.tracks[size_t(t)].artist) + "" + low(lib.tracks[size_t(t)].title));
+            order.clear();
+            for (size_t i = 0; i < srvStarred_.size(); i++)
+                if (!mine.count(low(srvStarred_[i].artist) + "" + low(srvStarred_[i].title))) order.push_back(int(i));
+        }
+        if (!order.empty()) kicker("Starred on " + kind, x + 28, gy + 12, pal.text3);
+        const float sh = order.empty() ? -48.f : drawServerBody("pl.srv", srvStarred_, order, x, gy + 30, w, y, h, mode == ListMode::Albums ? ListMode::Covers : mode, false,
+                                        [&](int i) { playServer(srvStarred_, i, "Liked"); });
+        bodyH += 18 + 30 + sh;
+    }
     bodyGrab = -1;
     // Mix: after each track (but the last) a line down to the next, and on it a pill saying the two are joined by Automix
     // (Spotify's "Auto"). Only a sign for 2.0 (the user, 2026-10-29: "all in on Auto"; editing a join later perhaps): it
@@ -297,6 +349,34 @@ void App::welcomeCard(const std::string& found) {
     sheet.askAltYes = [this, found] { tourAsk = false; useMusicFolder(found); };
     sheet.askAlt2 = "Another folder";
     sheet.askAlt2Yes = [] {};   // the picker is already under the card (the tour is offered once a folder is chosen: tourAsk)
+}
+
+void App::firstCard(const std::string& found) {
+    confirm(ICON_MUSIC, "Welcome to Songate", "Where is your music?", "Your own files, or your own server", "Where is the music you want to play?",
+            "In a folder " GF_ON_CARD ", read from its files' tags, or on a music server of yours: Navidrome, Airsonic, Gonic… any server with the "
+            "Subsonic API. Settings › Library can add the other later.",
+            "On " GF_THIS_CARD, [this, found] { firstLocal(found); });
+    sheet.askSafe = true;
+    sheet.askYesIcon = ICON_FOLDER;
+    sheet.askNoCancel = true;
+    sheet.askAlt = "On my server";
+    sheet.askAltYes = [this, found] { firstServer(found); };
+}
+
+/** This device's music: Android's access first where not given, then the welcome card (or the picker under it, none found). */
+void App::firstLocal(const std::string& found) {
+#ifdef GF_ANDROID
+    if (!storageOk_) { accessCard(); return; }
+#endif
+    if (!found.empty()) welcomeCard(found);
+}
+
+/** A server's music: its address, user and password (Settings' own steps); cancelled, the first card again. */
+void App::firstServer(const std::string& found) {
+    firstFound_ = found;
+    subsonicSignIn();
+    if (subsonic.view().state == Subsonic::SignedOut) { firstCard(found); return; }
+    firstServer_ = true;   // signing in: serverTick shows how it went
 }
 
 #ifdef GF_ANDROID
@@ -487,8 +567,10 @@ void App::drawFolders(float x, float y, float w, float h) {
     }
     if (!node.children.empty() && more("fo.addall", ICON_PLUS, narrow ? "Add all" : "Add all as playlists", cy)) addSubfoldersAsPlaylists(f);
     if (!isRoot && more("fo.up", ICON_BACK, "Up", cy)) { navigate(View::Folders, node.parent, {}, false); ui.focus(uid("fo.dir", f)); }
-    if (!narrow) {
+    {
         int m = shownMode;
+        const float vw = 6 + 38.f * (ownTracks ? 4 : 3);
+        if (narrow && bx + vw > x + w - 28) { cy += 34 + 10; }   // upright: on a line of its own where the buttons leave no room
         viewSwitch("fo.view", x + w - 28, cy + 17, m, ownTracks ? 0u : 1u);
         if (m != shownMode) store.viewFolders = m;   // a folder without tracks leaves a chosen "by album" as it is
     }
@@ -568,6 +650,55 @@ float App::drawSubfolders(const char* idp, const FolderNode& node, float x, floa
 
 /** "Add all as playlists" (Folders, Library → Folders): every sub-folder of a folder becomes a folder playlist;
  *  those already in are left as they are, a taken name gets "<name> 2". Asks first, with the count. */
+/** A genre's page: Add as playlist (a smart Genre playlist: it follows the genre), or In playlists (pressed: Delete, asked first). */
+void App::genrePlaylistButton(const std::string& genre, float& bx, float by) {
+    const std::string spec = "smart:genre:" + genre;
+    const int pl = store.playlistByPath(spec);
+    bool c = false;
+    bx += button(uid("gen.addpl"), pl >= 0 ? ICON_LIST : ICON_PLUS, pl >= 0 ? "In playlists" : "Add as playlist", bx, by, false, &c, pl >= 0) + 8;
+    if (!c) return;
+    if (pl >= 0) {
+        const FolderPlaylist& p = store.playlists[size_t(pl)];
+        const int count = int(smartTracks(p.path).size());
+        confirm(ICON_TAG, "Delete", p.name, "Genre playlist · " + std::to_string(count) + (count == 1 ? " track" : " tracks"), "Delete this playlist?",
+                "It leaves the sidebar. The genre and its tracks stay " GF_ON_CARD "; Genres can add it again.", "Delete", [this, pl, name = p.name, spec] {
+                    if (pl >= int(store.playlists.size()) || store.playlists[size_t(pl)].path != spec) return;
+                    erasePlaylist(pl);
+                    toast("Deleted the playlist “" + name + "”");
+                });
+        return;
+    }
+    const std::string as = store.freePlaylistName(genre);
+    store.playlists.push_back({ as, spec, {} });
+    toast("Added “" + as + "” to playlists");
+    store.save();
+}
+
+/** Genres: Add all as playlists: every genre not in playlists yet, each a smart Genre playlist (asked first, with the count). */
+void App::addGenresAsPlaylists() {
+    std::vector<std::string> add;
+    for (const Artist& gn : genres) if (store.playlistByPath("smart:genre:" + gn.name) < 0) add.push_back(gn.name);
+    if (add.empty()) { toast("Every genre is in playlists already"); return; }
+    const int n = int(add.size());
+    const std::string count = std::to_string(n) + (n == 1 ? " genre" : " genres");
+    confirm(ICON_LIST, "Genres", "Your genres", count + " not in playlists yet", "Add " + count + " as playlists?",
+            "Each becomes a playlist in the sidebar, named after its genre, with its tracks; it follows the genre as your library changes. "
+            "Genres already in playlists stay as they are.",
+            "Add all", [this] {
+                int added = 0;
+                for (const Artist& gn : genres) {
+                    const std::string spec = "smart:genre:" + gn.name;
+                    if (store.playlistByPath(spec) >= 0) continue;
+                    store.playlists.push_back({ store.freePlaylistName(gn.name), spec, {} });
+                    added++;
+                }
+                store.save();
+                toast("Added " + std::to_string(added) + (added == 1 ? " playlist" : " playlists"));
+            });
+    sheet.askSafe = true;
+    sheet.askYesIcon = ICON_PLUS;
+}
+
 void App::addSubfoldersAsPlaylists(int f) {
     if (f < 0 || f >= int(lib.folders.size())) return;
     std::vector<int> add;
@@ -764,4 +895,101 @@ void App::drawPicker(float x, float y, float w, float h) {
         g.textC(files ? "No folders or playlist files here" : "No folders here", { css::Lg, Weight::SemiBold }, x + w / 2, cy + 60, pal.text2, 1, Align::Center);
     g.unclip();
     ui.popArea();
+}
+
+/** Search's In the lyrics (BETA 3; the user, 2026-11-05: "A: two groups", "Start of words"): each song whose lyrics have the words,
+ *  its cover, name and artist, and the line, the words lit. Pressed: a synced line asks where to play from (playLyricHit). */
+float App::drawLyricHits(float x, float top, float w, float clipY, float clipH) {
+    float y = top + 10;
+    const LyricIndex::Progress p = lyrIndex.progress();
+    kicker("In the lyrics", x + 28, y + 12, pal.text3);
+    if (p.read < p.total) {   // still reading: how far, in fixed-width digits (a count that changes must not move its line)
+        const std::string s = "Reading lyrics · " + std::to_string(p.read) + " of " + std::to_string(p.total);
+        g.textNum(s, { css::Xs }, x + w - 42, y + 12 - g.lineHeight({ css::Xs }) / 2.f, pal.text3, 1, Align::Right);
+    }
+    y += 30;
+    if (searchLyrics_.empty()) {
+        g.text(p.read < p.total ? "Nothing yet in the songs read so far" : "No lyrics have these words", { css::Base }, x + 28, y + 4, pal.text3);
+        return y + 40 - top;
+    }
+    // the words searched for, folded, to light them where they start a word
+    std::vector<std::string> words;
+    {
+        std::string wd;
+        for (char c : foldText(route.query) + " ") {
+            if (c == ' ') { if (!wd.empty()) words.push_back(wd); wd.clear(); }
+            else wd += c;
+        }
+    }
+    for (size_t i = 0; i < searchLyrics_.size(); i++) {
+        const LyricIndex::Hit& h = searchLyrics_[i];
+        auto ix = pathIndex.find(h.path);
+        if (ix == pathIndex.end()) continue;
+        const int t = ix->second;
+        const float rh = 74;
+        // only the hits in view are drawn (the self test on the console: a search for "a" drew hundreds a frame, 240 ms each)
+        if (y + rh < clipY - rh || y > clipY + clipH + rh) { y += rh; continue; }
+        const Id id = uid("ls.hit", int64_t(i));
+        if (ui.item(id, { x + 14, y, w - 28, rh - 4 }, 10)) playLyricHit(i);
+        if (ui.pressed(id) || (ui.focused(id) && ui.showFocusRing())) g.roundRect(x + 14, y, w - 28, rh - 4, 10, pal.text, 0.065f);
+        coverBox(t, x + 28, y + 7, 40, 6);
+        const Track& tr = lib.tracks[size_t(t)];
+        const float tx = x + 28 + 40 + 14, tw = w - (tx - x) - 90;
+        g.text(tr.title, { css::Base, Weight::SemiBold }, tx, y + 7, pal.text, 1, Align::Left, int(tw));
+        g.text(trackSub(t), { css::Sm }, tx, y + 27, pal.text3, 1, Align::Left, int(tw));
+        // the line: “…”, each word searched for lit where it starts a word
+        std::vector<int> off;
+        const std::string fold = foldText(h.line, &off);
+        std::vector<char> lit(h.line.size(), 0);
+        for (const auto& wd : words)
+            for (size_t p0 = fold.find(wd); p0 != std::string::npos; p0 = fold.find(wd, p0 + 1)) {
+                if (p0 > 0 && (isalnum((unsigned char)fold[p0 - 1]) || (unsigned char)fold[p0 - 1] >= 0x80 || fold[p0 - 1] == '\'')) continue;
+                const int a = off[p0], b = p0 + wd.size() < off.size() ? off[p0 + wd.size()] : int(h.line.size());
+                for (int k = a; k < b; k++) lit[size_t(k)] = 1;
+            }
+        const Font f{ css::Sm }, fb{ css::Sm, Weight::SemiBold };
+        float px = tx;
+        const float right = tx + tw;
+        px += g.text("“", f, px, y + 46, pal.text2);
+        for (size_t k = 0; k < h.line.size() && px < right - 20;) {
+            size_t e = k;
+            while (e < h.line.size() && lit[e] == lit[k]) e++;
+            const std::string piece = h.line.substr(k, e - k);
+            px += g.text(piece, lit[k] ? fb : f, px, y + 46, lit[k] ? pal.accentInk : pal.text2, 1, Align::Left, int(right - px - 12));
+            k = e;
+        }
+        g.text("”", f, px, y + 46, pal.text2);
+        g.textC(fmtTime(tr.duration), { css::Sm }, x + w - 42, y + rh / 2 - 2, pal.text3, 1, Align::Right);
+        y += rh;
+    }
+    return y + 24 - top;
+}
+
+/** A lyrics hit pressed: the songs found by their lyrics play, from this one. A synced line: a card asks where from (the user,
+ *  2026-11-05: "a card asking the user both, staying all consistent with other card we already have"); plain lyrics: the start. */
+void App::playLyricHit(size_t i) {
+    if (i >= searchLyrics_.size()) return;
+    std::vector<int> tracks;
+    int at = 0;
+    for (size_t k = 0; k < searchLyrics_.size(); k++) {
+        auto ix = pathIndex.find(searchLyrics_[k].path);
+        if (ix == pathIndex.end()) continue;
+        if (k == i) at = int(tracks.size());
+        tracks.push_back(ix->second);
+    }
+    if (tracks.empty()) return;
+    const std::string name = "Lyrics: " + route.query;
+    const LyricIndex::Hit h = searchLyrics_[i];
+    auto play = [this, tracks, at, name, h](bool fromLine) {
+        playTracks(tracks, at, name);
+        if (fromLine) { lyrSeekPath_ = h.path; lyrSeekAt_ = h.at; lyrSeekUntil_ = time + 10; }
+    };
+    if (h.at < 0) { play(false); return; }
+    const Track& tr = lib.tracks[size_t(tracks[size_t(at)])];
+    confirm(ICON_QUOTE, "In the lyrics", tr.title, tr.artist, "Play from this line?", "“" + h.line + "” · " + fmtTime(h.at), "From the line",
+            [play] { play(true); });
+    sheet.askSafe = true;
+    sheet.askYesIcon = ICON_PLAY;
+    sheet.askAlt = "From the start";
+    sheet.askAltYes = [play] { play(false); };
 }

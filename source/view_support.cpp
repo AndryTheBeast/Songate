@@ -119,7 +119,12 @@ void App::supportTick() {
         }
     }
     // the app's log, saved now and then by the writer thread (store.writeFile), never from here
-    if (logDirty_ && time - logSavedAt_ > 30) saveLog();
+#ifdef GF_DEV
+    constexpr double kLogEvery = 3;   // dev: read while a test runs (FTP, adb, the PC's folder)
+#else
+    constexpr double kLogEvery = 30;
+#endif
+    if (logDirty_ && time - logSavedAt_ > kLogEvery) saveLog();
 }
 
 void App::saveLog() {

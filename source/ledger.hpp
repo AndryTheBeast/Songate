@@ -82,4 +82,10 @@ inline std::string liked(const std::string& song) { return "L" + song; }
 inline std::string edit(const std::string& song, const std::string& field) { return "E" + song + kSep + field; }
 inline std::string plays(const std::string& song, const std::string& device) { return "C" + song + kSep + device; }
 inline std::string list(const std::string& id) { return "P" + id; }
+// Lyrics: Y<song>, the lyrics Songate kept for it (found online and saved), or "" once removed (BETA 3; the user, 2026-11-04: "Yes,
+// add lyrics to sync"). A Songate before BETA 3 keeps and passes on these records without using them.
+inline std::string lyrics(const std::string& song) { return "Y" + song; }
+// Moods: M<song>, your choice for its mood, "is,nots" (mood::Label: its mood or -1, and a bit for each mood it is not), or "" once
+// cleared (BETA 3; the user, 2026-11-05: corrections travel, "Yes, with a switch"). An older Songate keeps and passes them on.
+inline std::string mood(const std::string& song) { return "M" + song; }
 }  // namespace ledgerkey

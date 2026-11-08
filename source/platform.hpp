@@ -9,6 +9,7 @@
 #ifdef GF_WINDOWED
 struct SDL_Window;
 #endif
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -55,6 +56,8 @@ Stick stick(int which);   // 0 left, 1 right
 enum class TextResult { Done, Cancelled, Unavailable };
 /** Asks for a line of text and waits for the answer. initial may be null. out holds UTF-8, at most size bytes with its end. */
 TextResult askText(const char* header, const char* guide, const char* initial, char* out, size_t size);
+/** Set around an askText for a password (Subsonic's): the system's password keyboard, or the app's card shows dots. */
+inline std::atomic<bool>& textSecret() { static std::atomic<bool> on{ false }; return on; }
 #ifdef GF_WINDOWED
 /** No system keyboard to hand over to: askText goes to the app's own card (view_textcard.cpp). */
 using TextFn = TextResult (*)(const char* header, const char* guide, const char* initial, char* out, size_t size);
@@ -103,10 +106,41 @@ void requestSleep();
 /** The screen's own light down; saved keeps the level. False: not possible here, a veil is drawn instead. */
 bool dimBacklight(float& saved);
 void restoreBacklight(float saved);
+/** The console's volume buttons, as they are now (the pocket lock's unlock: no Joy-Con needed). False where they cannot be read;
+ *  err says why the first time. Read only: the system still changes the volume with them. */
+bool volumeKeys(bool& up, bool& down, std::string* err = nullptr);
+/** The screen's light off (the console stays on) or back on. False where Songate cannot. */
+bool backlightOff(bool off);
+/** HOME's presses (short and long) held back from the system; false where it cannot be (the Switch's applet mode, other devices). */
+bool blockHome(bool on);
+/** Capture's short presses taken by Songate (no screenshot) while on; false where it cannot be. capturePresses: how many since asked. */
+bool takeCapture(bool on);
+int capturePresses();
+/** The controllers off the console (wireless Joy-Con, Pro Controller…) disconnected, so they sleep; a press wakes them. How many. */
+int disconnectControllers();
+/** The volume of the output playing now (speaker, headphones, Bluetooth…), in the system's steps; and set back. False where not. */
+bool outputVolume(int& level);
+bool setOutputVolume(int level);
 /** False when there is no battery. */
 bool batteryLevel(unsigned& percent);
 /** percent with its decimals; charging: a charger is connected. */
 bool batteryRaw(double& percent, bool& charging);
+/** The battery and its charger, beyond the charge (BETA 3: the Switch's battery card). 0 where not known. */
+struct BatteryInfo {
+    int charger = 0;        // 0 none, 1 full power (USB-C PD), 2 low power, 3 not supported
+    bool fast = false;      // fast charging on
+    double volts = 0, tempC = 0, healthPct = 0;   // the battery's voltage, temperature, health (100: as new)
+    double chargerVolts = 0, chargerAmps = 0;     // what the charger agreed to give (watts: the two multiplied)
+    std::string raw;        // the power service's words as read (the Switch: for the log, once)
+    // The battery's fuel gauge (the Switch's MAX17050, over I2C; the user, 2026-11-05: "make the battery time appear sooner" and "how
+    // many watts the battery is drawing"): what it measures now. gauge false: none read
+    bool gauge = false;
+    double gaugeVolts = 0, gaugeAmps = 0;   // the cell's average voltage and current (+ into the battery, − out of it)
+    double capMah = 0, fullMah = 0;         // the charge in it now and when full (0: not known)
+    int tteMin = -1, ttfMin = -1;           // its own time to empty and to full, in minutes (−1: not known)
+};
+/** False where there is none to read (only the Switch for now). */
+bool batteryInfo(BatteryInfo& out);
 void sysInfo(std::string& firmware, std::string& atmosphere, bool& docked);
 /** When the machine last started, in time() seconds: a different one means it restarted. */
 long long bootStamp();
@@ -171,7 +205,7 @@ void askStorage();
 /** The screen's edges in window pixels: each camera cutout as a box (a hole in a corner or the middle, a notch, two of them) and
  *  the rounded corners' radius. The number changes whenever Android says they did (a turn, a fold). */
 struct EdgeBox { float x, y, w, h; };
-unsigned screenEdges(std::vector<EdgeBox>& boxes, float& cornerRadius);
+unsigned screenEdges(std::vector<EdgeBox>& boxes, float& cornerRadius, int& width, int& height);   // width, height: the window's they are for
 #endif
 /** Files and bytes below a folder, the system's own fast way. False: use stat(). */
 bool measureFiles(const std::string& path, int& files, uint64_t& bytes, int cap);

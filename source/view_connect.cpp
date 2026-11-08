@@ -58,7 +58,7 @@ void App::syncNoteDeleted(const std::string& path) {
     if (!store.connections) return;
     Identity::Known k;
     if (identity.find(path, k) && !k.loose.empty()) syncer.noteGone(k.loose);
-    syncSent = 0;   // a change like any other: tells the others within seconds
+    syncAllDue();   // a change like any other: tells the others within seconds
     syncChangedAt = time;
 }
 
@@ -136,6 +136,18 @@ uint64_t App::syncStamp() const {
     uint64_t h = 14695981039346656037ull;
     auto add = [&](const std::string& s) { for (unsigned char c : s) h = (h ^ c) * 1099511628211ull; h = (h ^ 0xFF) * 1099511628211ull; };
     for (const auto& p : store.liked) add(p);
+    {   // your mood choices (an unordered map: added up, so its order does not matter)
+        uint64_t sum = 0;
+        for (const auto& [path, l] : moodLabels_) {
+            const uint64_t keep = h;
+            h = 14695981039346656037ull;
+            add(path);
+            add(moodLabelText(l));
+            sum += h;
+            h = keep;
+        }
+        h = (h ^ sum) * 1099511628211ull;
+    }
     for (const auto& p : store.playlists) {
         if (p.smart()) continue;
         add(p.name);
@@ -154,11 +166,40 @@ uint64_t App::syncStamp() const {
         one = h;
         h = keep + one;
     }
+    for (const auto& w : lyrWritten_) {   // lyrics Songate kept: saved or removed here, a sync follows
+        uint64_t keep = h;
+        h = 14695981039346656037ull;
+        add(w);
+        h = keep + h;
+    }
     return h;
 }
 
 void App::syncApply(const syncdata::Changes& c) {
     if (c.empty()) return;   // nothing to save: the card is left alone
+    if (!c.moodsSet.empty()) {   // your mood choices from another device
+        for (const auto& [path, v] : c.moodsSet) {
+            mood::Label l;
+            if (!v.empty() && moodLabelParse(v, l) && l.any()) moodLabels_[path] = l;
+            else moodLabels_.erase(path);
+        }
+        moodLabelsSave();
+        moodInputsGen_++;
+    }
+    for (const auto& l : c.lyricsSet) {   // kept on another device: saved here the way this one saves them (lyricsnet)
+        lyrnet::Query q;
+        q.kind = lyrnet::Ask::SyncSave;
+        q.path = l.path;
+        q.text = l.text;
+        q.saveTo = store.lyricsSaveTo;
+        lyrNet.ask(q);
+    }
+    for (const std::string& p : c.lyricsRemove) {
+        lyrnet::Query q;
+        q.kind = lyrnet::Ask::SyncRemove;
+        q.path = p;
+        lyrNet.ask(q);
+    }
     for (const std::string& p : c.likedAdd) if (std::find(store.liked.begin(), store.liked.end(), p) == store.liked.end()) store.liked.push_back(p);
     for (const std::string& p : c.likedRemove) std::erase(store.liked, p);
     std::vector<int> retag;
@@ -255,8 +296,8 @@ void App::syncDeleteStep() {
         syncNextFiles.clear();
         if (!syncDeleteOn) return;   // songs that arrived: no sync waits for this
         syncDeleteOn = false;
-        syncSent = syncLast = syncStamp();
-        syncPlaysSent = stats.gen();
+        syncFor_[syncPeer].sent = syncLast = syncStamp();   // that device's news, not its own to hear back; the others' still
+        syncFor_[syncPeer].plays = stats.gen();
         syncer.applied();
         return;
     }
@@ -299,7 +340,11 @@ void App::connectTick() {
         // the first 70 seconds, one line a second: how the frames went, and what else was at work
         if (time < 70) {
             if (gap > 33) tlSlow++;
-            if (gap > tlWorst) { tlWorst = gap; tlPresent = profPrev_[7]; tlUpdate = profPrev_[0]; }
+            if (gap > tlWorst) {
+                tlWorst = gap; tlPresent = profPrev_[7]; tlUpdate = profPrev_[0];
+                tlPage = profPrev_[2]; tlBars = profPrev_[3] + profPrev_[4]; tlOver = profPrev_[5] + profPrev_[6];
+                tlStep = updPrevSlow_ ? updPrevSlow_ : "";
+            }
             if (int(time) != tlSec) {
                 if (tlSlow > 0) {
                     const Identity::Progress ip = identity.progress();
@@ -308,6 +353,12 @@ void App::connectTick() {
                     char line[200];
                     snprintf(line, sizeof line, "Second %d: %d slow, worst %.0f (present %.0f, update %.0f); sync %d, identity %d/%d hashed %d, thumbs left %d, levels %d, gains %d, tags %d/%d, playing %d, opening %d",
                              int(time), tlSlow, tlWorst, tlPresent, tlUpdate, int(syncer.view().state), ip.done, ip.total, ip.hashed, left, int(levels.busy()), int(gainsBuilding), meta.taggedCount(), int(lib.tracks.size()), int(isPlaying()), int(!openingDone_));
+                    logLine(line);
+                    // which page, its parts, and the lyrics workers (the user, 2026-11-08: "30 frames for some seconds on boot")
+                    const LyricIndex::Progress lp = lyrIndex.progress();
+                    snprintf(line, sizeof line, "  page %d%s: page %.0f, side+bars %.0f, over %.0f, update step %s; lyrics read %d/%d%s%s, online %d",
+                             int(route.view), canvas ? " (Canvas)" : "", tlPage, tlBars, tlOver, tlStep, lp.read, lp.total, lp.checking ? " checking" : "",
+                             lyrIndex.held() ? " held" : "", int(lyrOn.state));
                     logLine(line);
                 }
                 tlSec = int(time);
@@ -364,9 +415,14 @@ void App::connectTick() {
         job.myName = v.name;
         job.now.liked = store.liked;
         job.now.edits = store.edits;
-        syncSent = syncLast = syncStamp();
-        syncPlaysSent = stats.gen();
-        syncAt = time;
+        job.now.lyricsKept = lyrWritten_;   // (their texts read on the sync worker)
+        for (const auto& [path, l] : moodLabels_) if (l.any()) job.now.moods[path] = moodLabelText(l);
+        {
+            PeerSync& ps = syncFor_[syncPeer];
+            ps.sent = syncLast = syncStamp();
+            ps.plays = stats.gen();
+            ps.at = time;
+        }
         for (const auto& p : store.playlists) {
             if (p.smart()) continue;
             syncdata::List l;
@@ -388,14 +444,15 @@ void App::connectTick() {
     }
     if (syncWatchIdentity && !identity.busy()) {
         syncWatchIdentity = false;
-        if (identity.progress().hashed > 0) syncSent = 0;   // files changed: another sync, once this one is over
+        if (identity.progress().hashed > 0) syncAllDue();   // files changed: another sync, once this one is over
     }
     syncdata::Changes changes;
     if (syncer.takeChanges(changes)) {
         const Uint64 t0 = SDL_GetPerformanceCounter();
         syncApply(changes);
-        syncSent = syncLast = syncStamp();   // what came in is no change of ours to send back
-        syncPlaysSent = stats.gen();
+        // what came in is no change of ours to send back to that device; to the others it is news
+        syncFor_[syncPeer].sent = syncLast = syncStamp();
+        syncFor_[syncPeer].plays = stats.gen();
         syncDeleting = std::move(changes.filesDelete);
         syncDeleteOn = !syncDeleting.empty();
         if (!syncDeleteOn) syncer.applied();
@@ -468,19 +525,28 @@ void App::connectTick() {
         logLine("Connections: synced: " + said + worst);
     } else if (sv.state == Syncer::State::Failed && !syncShown) {
         syncShown = true;
-        if (!store.syncAuto) toast(sv.error);
+        if (!store.syncAuto) toast(sv.busy ? sv.error + ": try again in a moment" : sv.error);
         logLine("Connections: " + sv.error);
-        syncSent = 0;   // what was not sent is still to send
+        syncFor_[syncPeer].sent = 0;   // what was not sent is still to send (busy: tried again once the gap has passed)
     }
-    // the other device began one, or (automatically) a device has just linked
+    // a device asked, or (automatically) one has just linked, or has changes to hear about. Several may be linked (BETA 3): each
+    // is synced with in turn, one at a time; what one brings is news to the others, so it goes on to them too
     const Connect::View v = connect.view();
-    std::string linked;
-    for (const Connect::Paired& p : v.paired) if (p.linked) linked = p.id;
+    std::vector<std::string> linked;
+    for (const Connect::Paired& p : v.paired) if (p.linked) linked.push_back(p.id);
+    auto isLinked = [&](const std::string& id) { return std::find(linked.begin(), linked.end(), id) != linked.end(); };
     copier.set(store.syncFiles && !store.musicRoot.empty() && !plat::appletMode(), isPlaying());
-    {
-        std::string to, toName;
-        for (const Connect::Paired& p : v.paired) if (p.linked) { to = p.id; toName = p.name; }
-        copier.place(store.musicRoot, to, toName);
+    {   // songs: copied from one linked device at a time, each in turn once the copy before has ended
+        const Copier::State cs = copier.view().state;
+        const bool copyIdle = cs != Copier::State::Looking && cs != Copier::State::Asking && cs != Copier::State::Copying;
+        if (!isLinked(copyFrom_) || (copyIdle && linked.size() > 1 && time - copyFromAt_ > 70)) {
+            auto it = std::find(linked.begin(), linked.end(), copyFrom_);
+            copyFrom_ = linked.empty() ? std::string() : it == linked.end() || it + 1 == linked.end() ? linked.front() : *(it + 1);
+            copyFromAt_ = time;
+        }
+        std::string toName;
+        for (const Connect::Paired& p : v.paired) if (p.id == copyFrom_) toName = p.name;
+        copier.place(store.musicRoot, copyFrom_, toName);
     }
     const Copier::View cv = copier.view();
     if (cv.state == Copier::State::Copying) syncBusy = true;
@@ -523,22 +589,34 @@ void App::connectTick() {
     if (cv.state != Copier::State::Copying && !syncDeleteOn && !syncRebuilding && copier.takeArrived()) rebuildBehind(true);   // the new songs join the library when the copy has ended
     const bool busy = syncWaiting || syncBuild.on || sv.state == Syncer::State::Reading || sv.state == Syncer::State::Trading || sv.state == Syncer::State::Asking ||
                       sv.state == Syncer::State::Backing || sv.state == Syncer::State::Applying || sv.state == Syncer::State::Sharing;
-    if (syncer.asked()) syncAskedLater = true;
-    if (syncAskedLater && !linked.empty() && syncSettled() && !busy) {
-        syncAskedLater = false;
-        syncNow(linked, true);
+    for (std::string asker = syncer.asked(); !asker.empty(); asker = syncer.asked())
+        if (std::find(syncAskedLater.begin(), syncAskedLater.end(), asker) == syncAskedLater.end()) syncAskedLater.push_back(asker);
+    std::erase_if(syncAskedLater, [&](const std::string& id) { return !isLinked(id); });
+    if (!syncAskedLater.empty() && syncSettled() && !busy) {
+        const std::string id = syncAskedLater.front();
+        syncAskedLater.erase(syncAskedLater.begin());
+        syncNow(id, true);
     } else if (store.syncAuto && !linked.empty() && !busy && syncSettled()) {
-        if (linked != syncLinked || (syncShareDue() && time - syncAt >= 30)) {
-            syncNow(linked, false);
-        } else if (time - syncStampAt >= 1) {
-            // a change: a few seconds' calm first, so that a run of them is one sync
+        std::string pick;
+        for (const std::string& id : linked)   // a new link first
+            if (std::find(syncLinked.begin(), syncLinked.end(), id) == syncLinked.end()) { pick = id; break; }
+        if (pick.empty() && syncShareDue())
+            for (const std::string& id : linked) if (time - syncFor_[id].at >= 30) { pick = id; break; }
+        if (pick.empty() && time - syncStampAt >= 1) {
+            // a change: a few seconds' calm first, so that a run of them is one sync; the device waiting longest first
             syncStampAt = time;
             const uint64_t s = syncStamp();
             if (s != syncLast) { syncLast = s; syncChangedAt = time; }
             const double gap = 15;
-            if (s != syncSent && time - syncChangedAt >= 4 && time - syncAt >= gap) syncNow(linked, false);
-            else if (stats.gen() != syncPlaysSent && time - syncAt >= 180) syncNow(linked, false);   // plays can wait: there is one every few minutes
+            double oldest = 1e18;
+            for (const std::string& id : linked) {
+                const PeerSync& ps = syncFor_[id];
+                const bool due = (s != ps.sent && time - syncChangedAt >= 4 && time - ps.at >= gap) ||
+                                 (stats.gen() != ps.plays && time - ps.at >= 180);   // plays can wait: there is one every few minutes
+                if (due && ps.at < oldest) { oldest = ps.at; pick = id; }
+            }
         }
+        if (!pick.empty()) syncNow(pick, false);
     }
     if (syncSettled() || linked.empty()) syncLinked = linked;   // a link made while starting up still counts as new
 }

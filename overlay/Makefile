@@ -46,7 +46,7 @@ APP_AUTHOR	:=	AndryTheBeast
 
 TARGET		:=	Songate
 BUILD		:=	build
-SOURCES		:=	source common/minIni common/sdmc common/config common/pm
+SOURCES		:=	source common/sdmc common/pm
 DATA		:=	data
 INCLUDES	:=	source common ../sysmodule/include
 APP_VERSION	:=	$(VERSION)

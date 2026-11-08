@@ -12,6 +12,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -32,6 +33,7 @@ public:
         std::string peer, summary, error;   // summary: what the first sync would do, or what the last one did
         int sent = 0, received = 0;
         int measures = 0, covers = 0;       // taken in from the other device, this sync
+        bool busy = false;                  // failed because the other device was syncing with a third: tried again soon
         bool shared = false;                // measurements and covers were traded, this sync
         uint64_t deleteFrom = ~uint64_t(0); // the clock the switch took effect from, once known
     };
@@ -48,11 +50,13 @@ public:
     void stop();
     /** A song deleted here, inside Songate: told to other devices at the next sync. Any thread. */
     void noteGone(const std::string& song);
+    /** Lyrics Songate kept for this song (a path) removed here by hand: told to other devices at the next sync. Any thread. */
+    void noteLyricsGone(const std::string& path);
     /** Runs one. False while one is under way. */
     bool begin(Job job);
     View view();
-    /** The other device wants to sync; asked once. */
-    bool asked();
+    /** A device that wants to sync (its id), each asked once; "" none. */
+    std::string asked();
     /** The first sync's answer. */
     void accept();
     void decline();
@@ -81,7 +85,10 @@ private:
     std::thread thread_;   // joined in stop(), never detached
     std::mutex m_;
     std::condition_variable wake_;
-    bool quit_ = false, have_ = false, answered_ = false, accepted_ = false, appliedDone_ = false, changesReady_ = false, asked_ = false;
+    bool quit_ = false, have_ = false, answered_ = false, accepted_ = false, appliedDone_ = false, changesReady_ = false;
+    std::vector<std::string> asked_;   // devices that asked, in order
+    std::string peer_;                 // the worker's: the device of the sync under way
+    std::map<std::string, std::vector<std::vector<uint8_t>>> early_;   // a device's H that came before its sync began here
     Job job_;
     View view_;
     syncdata::Changes changes_;
@@ -96,4 +103,5 @@ private:
     // unanswered for 240 s, the arrows turning (the user, 2026-11-02: "the sync got stuck on the console")
     std::vector<std::vector<uint8_t>> later_;
     std::vector<std::string> goneQueue_;   // to sync-gone.txt, on the worker
+    std::vector<std::string> lyricsGoneQueue_;   // paths (noteLyricsGone)
 };

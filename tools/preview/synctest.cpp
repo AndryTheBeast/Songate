@@ -53,6 +53,15 @@ struct Device {
             now.songs.erase(std::remove_if(now.songs.begin(), now.songs.end(), [&](const Song& s) { return s.path == p; }), now.songs.end());
             now.liked.erase(std::remove(now.liked.begin(), now.liked.end(), p), now.liked.end());
         }
+        for (const auto& l : c.lyricsSet) {   // as lyricsnet does: never over the song's own (the plan already leaves those out)
+            now.lyrics[l.path] = l.text;
+            now.lyricsKept.push_back("dir\t" + l.path);
+        }
+        for (const auto& p : c.lyricsRemove) now.lyrics.erase(p);
+        for (const auto& [path, v] : c.moodsSet) {
+            if (v.empty()) now.moods.erase(path);
+            else now.moods[path] = v;
+        }
         for (const auto& p : c.plays) {
             now.others[p.first] = p.second.plays;
             now.plays[p.first].last = p.second.last;
@@ -76,7 +85,9 @@ static size_t sync(Device& a, Device& b) {
     b.apply(cb);
     a.now.gone.clear();
     b.now.gone.clear();
-    return n + ca.filesDelete.size() + cb.filesDelete.size();
+    a.now.lyricsGone.clear();
+    b.now.lyricsGone.clear();
+    return n + ca.filesDelete.size() + cb.filesDelete.size() + ca.lyricsSet.size() + cb.lyricsSet.size() + ca.lyricsRemove.size() + cb.lyricsRemove.size();
 }
 
 static void lib(Device& d, const char* root) {
@@ -135,6 +146,38 @@ int main() {
         sync(a, b);
         sync(a, b);
         check("stopped between applying and saving: nothing counted twice", a.shown(A + "s2") == 4 && b.shown(B + "s2") == 4);
+    }
+    {   // lyrics found online and kept (BETA 3)
+        Device a("aaa", "Switch"), b("bbb", "PC");
+        lib(a, A.c_str());
+        lib(b, B.c_str());
+        a.now.lyrics[A + "s1"] = "[00:01.00] one\n[00:02.00] two";
+        a.now.lyricsKept = { "tag\t" + A + "s1" };
+        sync(a, b);
+        check("lyrics kept on one: on the other, by song", b.now.lyrics.count(B + "s1") && b.now.lyrics[B + "s1"] == "[00:01.00] one\n[00:02.00] two");
+        check("lyrics: run twice, nothing to do", sync(a, b) == 0 && sync(a, b) == 0);
+        b.now.lyricsKept.push_back("own\t" + B + "s2");   // its own lyrics there
+        a.now.lyrics[A + "s2"] = "mine";
+        sync(a, b);
+        check("a song with lyrics of its own is left alone", !b.now.lyrics.count(B + "s2"));
+        b.now.lyrics[B + "s1"] = syncdata::lyricsText("[00:01.00] one\r\n[00:02.00] two\n\n");   // read back a little differently
+        check("read back a little differently: no back and forth", sync(a, b) == 0 && sync(a, b) == 0);
+        a.now.lyrics.erase(A + "s1");
+        a.now.lyricsGone = { "s1" };
+        sync(a, b);
+        check("removed by hand on one: gone from the other", !b.now.lyrics.count(B + "s1"));
+        sync(a, b);
+        check("and it stays gone", !a.now.lyrics.count(A + "s1") && !b.now.lyrics.count(B + "s1"));
+        // an older Songate in the middle keeps and passes on the records, using none of them
+        Device c("ccc", "Old"), d("ddd", "Phone");
+        lib(c, "old:/");
+        lib(d, "phone:/");
+        c.kinds = KindAll & ~unsigned(KindLyrics);
+        a.now.lyrics[A + "s3"] = "three";
+        sync(a, c);
+        check("an older Songate does not take lyrics in", !c.now.lyrics.count("old:/s3"));
+        sync(c, d);
+        check("but passes them on", d.now.lyrics.count("phone:/s3") && d.now.lyrics["phone:/s3"] == "three");
     }
     {   // edits, and a song keeps its id
         Device a("aaa", "Switch"), b("bbb", "PC");
@@ -502,6 +545,54 @@ int main() {
         sync(a, b);
         check("an emptied list renamed stays yours, the folder one is new", b.list("Mine 2") && b.list("Mine 2")->folder.empty() && b.list("Gym") &&
                                                                       b.list("Gym")->folder == "Gym");
+    }
+    {   // three devices (BETA 3): each sync is between two, and what one brings goes on to the third through the one in between
+        const std::string C = "/sdcard/Music/";
+        Device a("aaa", "Switch"), b("bbb", "PC"), c("ccc", "Phone");
+        lib(a, A.c_str());
+        lib(b, B.c_str());
+        lib(c, C.c_str());
+        a.now.liked = { A + "s1" };
+        sync(a, b);
+        sync(b, c);
+        check("three: a like made on A reaches C through B", c.isLiked(C + "s1"));
+        c.now.edits[C + "s2"]["title"] = "From the Phone";
+        sync(c, b);
+        sync(b, a);
+        check("three: an edit made on C reaches A through B", a.now.edits[A + "s2"]["title"] == "From the Phone");
+        a.now.liked.clear();
+        c.now.liked.push_back(C + "s3");
+        sync(a, b);
+        sync(c, b);
+        sync(a, b);
+        check("three: an unlike on A and a like on C, each on all three", !a.isLiked(A + "s1") && !b.isLiked(B + "s1") && !c.isLiked(C + "s1") &&
+                                                                         a.isLiked(A + "s3") && b.isLiked(B + "s3"));
+        sync(b, c);
+        check("three: settled, nothing to do between any two", sync(a, b) == 0 && sync(b, c) == 0 && sync(a, c) == 0);
+        check("three: A and C meeting directly agree with what came round", a.isLiked(A + "s3") && c.isLiked(C + "s3") && !c.isLiked(C + "s1") &&
+                                                                              c.now.edits[C + "s2"]["title"] == "From the Phone");
+    }
+    {   // mood choices (BETA 3): set on one device, there on the others; cleared on one, cleared there; three devices through the middle
+        const std::string C = "/sdcard/Music/";
+        Device a("aaa", "Switch"), b("bbb", "PC"), c("ccc", "Phone");
+        lib(a, A.c_str());
+        lib(b, B.c_str());
+        lib(c, C.c_str());
+        a.now.moods[A + "s1"] = "7,0";
+        a.now.moods[A + "s2"] = "-1,256";
+        sync(a, b);
+        check("moods: a choice set here is there, by song", b.now.moods[B + "s1"] == "7,0" && b.now.moods[B + "s2"] == "-1,256");
+        check("moods: run twice, nothing to do", sync(a, b) == 0);
+        sync(b, c);
+        check("moods: and on to a third device through the second", c.now.moods[C + "s1"] == "7,0");
+        c.now.moods.erase(C + "s1");
+        sync(c, b);
+        sync(b, a);
+        check("moods: cleared on the third, cleared on all", !a.now.moods.count(A + "s1") && !b.now.moods.count(B + "s1") && a.now.moods[A + "s2"] == "-1,256");
+        b.kinds = KindAll & ~KindMoods;
+        b.now.moods[B + "s3"] = "2,0";
+        sync(a, b);
+        check("moods: the switch off, nothing goes", !a.now.moods.count(A + "s3"));
     }
     printf("%d passed, %d failed: %s\n", passed, failed, failed ? "SOME FAILED" : "ALL GOOD");
     return failed ? 1 : 0;

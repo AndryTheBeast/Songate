@@ -103,6 +103,27 @@ std::mutex leaveMx;
 std::condition_variable leaveCv;
 bool leavePending = false;
 
+// A turn crashed or froze the app (the user, 2026-11-05: "sometimes the app starts flickering and then crashed when switching from
+// landscape to portrait"; the crash: SIGSEGV in SDL_SetRenderTarget → FlushRenderCommands → GLES2 SetCopyState, a queued copy of a
+// texture with no GL data). Android tells SDL the new size on its own UI thread (onNativeResize, Android_SendResize), and SDL's
+// renderer watches window events right there: on a size change it sets the render target back and queues a new viewport, flushing
+// the draw queue, while the app's thread is drawing into it (the frame is drawn into a texture, so a target is nearly always set).
+// The two threads tore the queue: a crash, a freeze, the flicker. So a size change from any other thread is held here, before any
+// watcher sees it, and sent again from the app's thread between frames (mainLoop), where SDL's renderer updates itself safely.
+SDL_threadID appThread = 0;
+SDL_Window* appWindow = nullptr;   // (windowReady)
+std::atomic<bool> resizeHeld{ false };
+
+int resizeFilter(void*, SDL_Event* e) {
+    if (e->type == SDL_WINDOWEVENT && (e->window.event == SDL_WINDOWEVENT_SIZE_CHANGED || e->window.event == SDL_WINDOWEVENT_RESIZED ||
+                                       e->window.event == SDL_WINDOWEVENT_DISPLAY_CHANGED) &&
+        appThread && SDL_ThreadID() != appThread) {
+        resizeHeld = true;
+        return 0;   // dropped: no watcher runs on this thread, nothing is queued
+    }
+    return 1;
+}
+
 int backWatch(void*, SDL_Event* e) {
     if ((e->type == SDL_KEYDOWN || e->type == SDL_KEYUP) && e->key.keysym.scancode == SDL_SCANCODE_AC_BACK)
         { backHeld = e->type == SDL_KEYDOWN; if (backHeld) backPressed = true; }
@@ -147,6 +168,8 @@ void init() {
     SDL_SetHint(SDL_HINT_ANDROID_BLOCK_ON_PAUSE, "0");
     SDL_SetHint(SDL_HINT_ANDROID_BLOCK_ON_PAUSE_PAUSEAUDIO, "0");
     SDL_AddEventWatch(backWatch, nullptr);
+    appThread = SDL_ThreadID();   // (init runs on the app's own thread, SDL_main's)
+    SDL_SetEventFilter(resizeFilter, nullptr);
 }
 
 void quit() {
@@ -156,6 +179,19 @@ void quit() {
 
 /** Between frames, on the app's thread: a leave Android announced (leaveWatch) is done here, the settings and the caches written. */
 bool mainLoop() {
+    // a size change Android announced on its own thread (resizeFilter): now, on the app's, before the frame
+    if (resizeHeld.exchange(false)) {
+        if (SDL_Window* w = appWindow) {
+            SDL_Event e{};
+            e.type = SDL_WINDOWEVENT;
+            e.window.event = SDL_WINDOWEVENT_SIZE_CHANGED;
+            e.window.windowID = SDL_GetWindowID(w);
+            SDL_GetWindowSize(w, &e.window.data1, &e.window.data2);
+            SDL_PushEvent(&e);   // SDL's renderer resets its viewport from here; App::input lays the app out (fitWindow)
+        } else {
+            resizeHeld = true;   // no window to speak of yet: the next frame
+        }
+    }
     bool pending;
     LeaveFn fn;
     void* arg;
@@ -292,7 +328,7 @@ TextResult askText(const char* header, const char* guide, const char* initial, c
 
 void showTouchKeyboard(bool) {}   // SDL_StartTextInput (the text card) brings Android's own keyboard up
 
-void windowReady(SDL_Window*) {}
+void windowReady(SDL_Window* w) { appWindow = w; }   // (mainLoop sends a held size change for it)
 void trayIcon(bool) {}
 void titleColours(uint32_t, uint32_t) {}
 
@@ -405,6 +441,14 @@ void setKeepAwake(bool on) { on ? SDL_DisableScreenSaver() : SDL_EnableScreenSav
 void requestSleep() {}          // an app cannot put a phone to sleep
 bool dimBacklight(float&) { return false; }   // a veil for now
 void restoreBacklight(float) {}
+bool volumeKeys(bool& up, bool& down, std::string* err) { up = down = false; if (err) *err = "the Switch only"; return false; }
+bool backlightOff(bool) { return false; }
+bool blockHome(bool) { return false; }
+bool takeCapture(bool) { return false; }
+int capturePresses() { return 0; }
+int disconnectControllers() { return 0; }
+bool outputVolume(int&) { return false; }
+bool setOutputVolume(int) { return false; }
 
 bool batteryRaw(double& percent, bool& charging) {
     int pct = -1;
@@ -414,6 +458,8 @@ bool batteryRaw(double& percent, bool& charging) {
     charging = s == SDL_POWERSTATE_CHARGING || s == SDL_POWERSTATE_CHARGED;
     return true;
 }
+
+bool batteryInfo(BatteryInfo&) { return false; }   // (the Switch's for now: BETA 3)
 
 bool batteryLevel(unsigned& percent) {
     double p = 0;
@@ -483,8 +529,15 @@ void askStorage() {
 }
 
 std::string deviceName() {
+    // (the user, 2026-11-05: sync showed "M2101K9G" while AirPlay said "Mi 11 Lite": Connect asked from its own thread, where
+    // SongateActivity cannot be found, and got the model; App asks first, on its thread, and that answer is kept)
+    static std::mutex mx;
+    static std::string kept;
+    std::lock_guard<std::mutex> g(mx);
+    if (!kept.empty()) return kept;
     std::string n = javaString("deviceName");
-    if (n.empty()) n = property("ro.product.model");
+    if (!n.empty()) { kept = n; return n; }
+    n = property("ro.product.model");
     return n.empty() ? std::string("Android") : n;
 }
 
@@ -607,13 +660,16 @@ namespace {
 std::mutex edgeMx;
 std::vector<EdgeBox> edgeBoxes;
 float edgeRadius = 0;
+int edgeW = 0, edgeH = 0;   // the window size Android measured them for
 std::atomic<unsigned> edgeGen{ 0 };
 }  // namespace
 
-unsigned screenEdges(std::vector<EdgeBox>& boxes, float& cornerRadius) {
+unsigned screenEdges(std::vector<EdgeBox>& boxes, float& cornerRadius, int& width, int& height) {
     std::lock_guard<std::mutex> g(edgeMx);
     boxes = edgeBoxes;
     cornerRadius = edgeRadius;
+    width = edgeW;
+    height = edgeH;
     return edgeGen.load();
 }
 
@@ -668,7 +724,7 @@ extern "C" JNIEXPORT void JNICALL Java_io_github_andrythebeast_songate_SongateAc
 }
 
 /** SongateActivity.reportEdges, on Android's UI thread each time the window is laid out. */
-extern "C" JNIEXPORT void JNICALL Java_io_github_andrythebeast_songate_SongateActivity_nativeEdges(JNIEnv* env, jclass, jfloatArray boxes, jfloat radius) {
+extern "C" JNIEXPORT void JNICALL Java_io_github_andrythebeast_songate_SongateActivity_nativeEdges(JNIEnv* env, jclass, jfloatArray boxes, jfloat radius, jint width, jint height) {
     std::vector<plat::EdgeBox> v;
     const jsize n = boxes ? env->GetArrayLength(boxes) : 0;
     if (n >= 4) {
@@ -679,5 +735,7 @@ extern "C" JNIEXPORT void JNICALL Java_io_github_andrythebeast_songate_SongateAc
     std::lock_guard<std::mutex> g(plat::edgeMx);
     plat::edgeBoxes = std::move(v);
     plat::edgeRadius = radius;
+    plat::edgeW = width;
+    plat::edgeH = height;
     plat::edgeGen++;
 }

@@ -2,6 +2,10 @@
  * Gatefold NX · player.cpp
  */
 #include "player.hpp"
+#ifdef GF_AIRPLAY
+#include "airsend.hpp"
+#endif
+#include "micmeasure.hpp"
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_mixer.h>
@@ -650,7 +654,19 @@ void Player::ffHook(void* self, unsigned char* stream, int len) {
     if (double(us) > 1e6 * frames / p->rate_) p->late_++;
 }
 
+/** The mix as it leaves: what postMixInner makes of it, then a copy to AirPlay speakers (silence here while one plays). */
 void Player::postMix(void* self, unsigned char* stream, int len) {
+    postMixInner(self, stream, len);
+#ifdef GF_AIRPLAY
+    auto* p = static_cast<Player*>(self);
+    if (AirSend* a = p->air_.load(std::memory_order_acquire); a && a->tapping()) {
+        a->feed(stream, len / p->frameBytes_, p->float32_, p->channels_, int(p->rate_));
+        if (a->silenceHere()) memset(stream, 0, size_t(len));
+    }
+#endif
+}
+
+void Player::postMixInner(void* self, unsigned char* stream, int len) {
     // SDL's audio thread (decoding included: SDL_mixer and the FFmpeg hook run on it) starts on the main
     // thread's core; it gets one of its own.
     static thread_local bool moved = false;
@@ -670,6 +686,48 @@ void Player::postMix(void* self, unsigned char* stream, int len) {
     }
     // The FFmpeg hook does its own levelling, equalizer and spectrum; this is for SDL_mixer's music only.
     if (p->syncOn_ && !p->ffActive_) p->syncTick(len / p->frameBytes_, std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count());
+    // the delay's chirps (micmeasure.hpp): each where this buffer meets its moment, on the shared clock as this device's sound is timed
+    if (p->syncOn_) {
+        double starts[32];
+        int nt = 0, slot = 0;
+        if (p->toneLock_.try_lock()) {
+            for (double s : p->tones_) if (nt < 32) starts[nt++] = s;
+            slot = p->toneSlot_;
+            p->toneLock_.unlock();
+        }
+        const int frames = len / p->frameBytes_, ch = p->channels_;
+        const double base = p->syncBase_, step = 1.0 / p->rate_, until = base + frames * step;
+        if (nt > 0) {   // under them, from before the first (micmeasure.hpp: kBedLead), so a Bluetooth speaker is awake for the first chirp:
+            // a 15 Hz tone, below what people hear and small speakers play, still sound to the speaker (the user, 2026-11-07: kept, of
+            // the hiss, a 19 kHz tone and this one; "Can we make that hiss inaudible?")
+            double first = starts[0], last = starts[0];
+            for (int k = 1; k < nt; k++) { first = std::min(first, starts[k]); last = std::max(last, starts[k]); }
+            if (until > first - micm::kBedLead && base < last + micm::kChirp) {
+                const double inc = 2 * 3.14159265358979 * micm::kWakeHz / p->rate_;
+                for (int i = 0; i < frames; i++) {
+                    const float v = float(micm::kWakeLevel * std::sin(p->bedPhase_));
+                    p->bedPhase_ += inc;
+                    if (p->bedPhase_ > 6.283185307179586) p->bedPhase_ -= 6.283185307179586;
+                    for (int c = 0; c < ch; c++) {
+                        if (p->float32_) { float& o = reinterpret_cast<float*>(stream)[i * ch + c]; o = std::clamp(o + v, -1.f, 1.f); }
+                        else { int16_t& o = reinterpret_cast<int16_t*>(stream)[i * ch + c]; o = int16_t(std::clamp(int(o) + int(v * 32767.f), -32768, 32767)); }
+                    }
+                }
+            }
+        }
+        for (int k = 0; k < nt; k++) {
+            if (starts[k] + micm::kChirp < base || starts[k] >= until) continue;
+            for (int i = 0; i < frames; i++) {
+                const double x = base + i * step - starts[k];
+                if (x < 0 || x >= micm::kChirp) continue;
+                const float v = float(micm::kChirpLevel * micm::chirpAt(x, slot));
+                for (int c = 0; c < ch; c++) {
+                    if (p->float32_) { float& o = reinterpret_cast<float*>(stream)[i * ch + c]; o = std::clamp(o + v, -1.f, 1.f); }
+                    else { int16_t& o = reinterpret_cast<int16_t*>(stream)[i * ch + c]; o = int16_t(std::clamp(int(o) + int(v * 32767.f), -32768, 32767)); }
+                }
+            }
+        }
+    }
     const bool sdlPlaying = !p->ffActive_ && p->music_ && Mix_PlayingMusic() && !Mix_PausedMusic();
     if (!sdlPlaying) return;
     const int frames = len / p->frameBytes_;

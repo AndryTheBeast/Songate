@@ -25,6 +25,9 @@ bool begin(std::string& err);
 void end();
 /** The body of a GET (the GitHub API wants a User-Agent; one is always sent). */
 bool get(const std::string& url, std::string& out, std::string& err, Progress* p = nullptr);
+/** A GET whose "not found" is an answer, not a failure (LRCLIB's lyrics): true when the server answered, whatever the status; the
+ *  status, and the seconds its Retry-After asks for (0 when it gave none). */
+bool lookup(const std::string& url, std::string& out, long& status, int& retryAfter, std::string& err);
 /** A GET written to a file (replaced only when complete: written next to it, then renamed). */
 bool download(const std::string& url, const std::string& file, std::string& err, Progress* p);
 /** A POST of JSON (Settings › Support's reports): `secret` a header line ("Authorization: …") wiped, here and in curl's

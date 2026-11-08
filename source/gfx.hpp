@@ -140,11 +140,16 @@ public:
      */
     void setShift(float dx, float dy) { shiftX_ = dx; shiftY_ = dy; }
     float shiftY() const { return shiftY_; }
-#if defined(GF_WINDOWED) && defined(GF_DEV)
-    /** Tests: the words of this frame and where they are. */
+#ifdef GF_DEV
+    /** Tests: the words of this frame and where they are (while sayOn: always on the PC and Android, during a self test on the console). */
     struct Said { std::string text; float x, y, w, h; int layer; bool cut; };   // cut: shortened to fit (…)
     std::vector<Said> said;
     int saidLayer = 0;   // 1 while what is drawn sits over the page (sheets, cards, toasts): tests compare each layer apart
+#ifdef GF_WINDOWED
+    bool sayOn = true;
+#else
+    bool sayOn = false;
+#endif
 #endif
     int measure(const std::string& s, Font f);
     float measureF(const std::string& s, Font f);   // … not rounded to app pixels
@@ -168,6 +173,13 @@ public:
     /** An SVG icon `size` px, centred; `scale` draws that one texture larger or smaller, smoothly (a twinkle: each size
      *  was an icon of its own, so it grew in whole-pixel steps) */
     void icon(const char* svg, float cx, float cy, float size, const Rgb& c, float alpha = 1, float scale = 1);
+    /** A small icon on a disc (a mark on another icon): the disc and the icon from one centre snapped to a real pixel, so the icon
+     *  (which snaps) sits in the disc's middle; lift (in real pixels) raises the icon, for a glyph whose weight sits low (the cloud's flat bottom) */
+    void iconOnDisc(const char* svg, float cx, float cy, float rad, float size, const Rgb& disc, float discAlpha, const Rgb& c, int lift = 0) {
+        cx = snap(cx); cy = snap(cy);
+        circle(cx, cy, rad, disc, discAlpha);
+        icon(svg, cx, cy - (lift + 0.1f) / scale_, size, c);   // (+0.1: a half pixel rounds the same way every time)
+    }
     /** A soft band of light w wide (white in its middle, nothing at its sides), at fractional positions: it slides
      *  smoothly (Automix's sweep; strips a pixel wide moved in whole pixels). */
     void band(float x, float y, float w, float h, const Rgb& c, float alpha);
@@ -177,6 +189,9 @@ public:
     /** A soft glow round a rounded box: `alpha` at its edge, nothing `spread` beyond it (`spreadX` at its sides), in one
      *  piece (Automix's halo: ten faint layers had only a few levels of alpha each, and breathed in steps). */
     void glowAround(float x, float y, float w, float h, float rad, float spread, float spreadX, const Rgb& c, float alpha);
+    /** The inside of glowAround's box, in its colour and alpha, on the very same outline: the two meet with no seam (the battery's
+     *  glow beside its tip; a softened fill left a darker line where they met). */
+    void glowInside(float x, float y, float w, float h, float rad, const Rgb& c, float alpha);
     /** While set, unused text and icons stay cached (Automix hides the interface for longer than the 10 s they would last:
      *  on its return they were all made again, and the frames stuttered). */
     void holdCache(bool hold) { holdCache_ = hold; }

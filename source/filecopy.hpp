@@ -85,7 +85,8 @@ public:
 
 private:
     void run();
-    void serve(const std::vector<uint8_t>& m);
+    void serve(const std::vector<uint8_t>& m, const std::string& from);   // answered to the device that asked
+    std::string sessionPeer_;   // the worker's: the device this copy takes songs from
     void takeList(const std::string& text);
     void begin();
     void nextFile();

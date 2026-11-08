@@ -468,8 +468,9 @@ const FactoryPartInfo kFactoryParts[] = {
     { "Music folder", "Songate asks where your music is again, as at its first start" },
     { "Playlists", "Your playlists, smart and folder ones, and their icons" },
     { "Liked", "Every track you liked" },
-    { "Tag edits and covers", "Tags you edited and covers you chose (your music files were never changed)" },
+    { "Tag edits, covers and moods", "Edits, covers and moods; tags written into files stay, can't be restored" },   // (tag-undo goes too)
     { "Lyric timings", "How far you moved each track's synced lyrics" },
+    { "Lyrics found online", "Those saved in Songate's folder (those saved beside the songs stay)" },
     { "Saved equalizer presets", "The presets you saved under your own names" },
     { "Play counts and statistics", "Plays, last played and dates added (smart playlists use them)" },
     { "The queue", GF_FACTORY_QUEUE },
@@ -493,8 +494,12 @@ void App::openFactory() {
 void App::factoryRows(std::vector<SheetRow>& rows) {
     rows.push_back({ SheetRow::Group, nullptr, "Erase what you tick" });
     rows.back().h = 34;
+    const bool server = subsonic.view().state != Subsonic::SignedOut;   // (a server's mentioned only while there is one)
     for (int k = 0; k < FacParts; k++) {
-        rows.push_back({ SheetRow::Toggle, nullptr, kFactoryParts[k].label, kFactoryParts[k].sub, "", [this, k] { factoryPick ^= 1u << k; } });
+        const bool both = k == FacLastfm && server;
+        rows.push_back({ SheetRow::Toggle, nullptr, both ? "Last.fm and the Subsonic server" : kFactoryParts[k].label,
+                         both ? "Signs out of both; erases what was waiting to be sent, and the server's downloads in Songate's folder" : kFactoryParts[k].sub, "",
+                         [this, k] { factoryPick ^= 1u << k; } });
         rows.back().h = 60;
         rows.back().on = factoryPick & (1u << k);
     }
@@ -537,7 +542,7 @@ void App::factoryErase(unsigned mask) {
         return;
     }
     confirm(ICON_X, "Factory reset", "Erase everything", "Songate as if it were newly installed", "Erase everything Songate keeps?",
-            "Every setting, playlist and Liked track; your tag edits, chosen covers, lyric timings and saved equalizer presets; play "
+            "Every setting, playlist and Liked track; your tag edits, chosen covers, lyric timings, lyrics found online and saved equalizer presets; play "
             "counts and statistics; your Last.fm sign-in and paired devices; " GF_FACTORY_LIST " "
             "Songate then closes and starts again as new. Your music files are not touched, and backups in " + backupRoot() + " stay.",
             "Erase everything", [this, go] {

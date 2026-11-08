@@ -301,17 +301,25 @@ void App::drawCanvas() {
     g.roundStroke(ax, fy, art, art, rad, 1, { 1, 1, 1 }, 0.06f);
 
     // ---- .cv-meta (+ lyrics): each layout's own, faded by its weight and drifting in by a few pixels
-    const std::string kick = extOn ? "PLAYING OVER AIRPLAY" : !has ? "NOTHING PLAYING" : isPlaying() ? "PLAYING" : "PAUSED";
+    const std::string kick = srvq_.on ? (isPlaying() ? "PLAYING FROM YOUR SERVER" : "PAUSED") : extOn ? "PLAYING OVER AIRPLAY" : !has ? "NOTHING PLAYING" : isPlaying() ? "PLAYING" : "PAUSED";
     auto albumOf = [&](const TrackInfo& in) {
         std::string al = in.album;
         if (has && in.date.size() >= 4) al += (al.empty() ? "" : " · ") + in.date.substr(0, 4);
         return al;
     };
-    const std::string title = has ? now.info.title : "Songate";
+#ifdef GF_PREVIEW
+    static TrackInfo npOver;   // (the preview: a title to try the fitting with, as Now playing's GF_NP_TITLE)
+    const char* const npTitle = has ? getenv("GF_NP_TITLE") : nullptr;
+    if (npTitle) { npOver = now.info; npOver.title = npTitle; }
+    const TrackInfo& nowInfo = npTitle ? npOver : now.info;
+#else
+    const TrackInfo& nowInfo = now.info;
+#endif
+    const std::string title = has ? nowInfo.title : "Songate";
     // a Simple join (Settings › Appearance › Automix › On the Canvas): the outgoing song's title, artist, album and lyrics give
     // way to the next one's, from left to right, timed to the join (the user, 2026-10-29); else the song's own
     const bool give = simple && mixOld.on;
-    auto infoOf = [&](bool old) -> const TrackInfo& { return old ? mixOld.info : now.info; };
+    auto infoOf = [&](bool old) -> const TrackInfo& { return old ? mixOld.info : nowInfo; };
     const Font kf{ int(clampf(0.85f * vw(), 11, 14)), Weight::Bold };
     for (int l = 0; l < 3; l++) {
         // the stage hiding them all: only the layout it returns to, as a ghost (its text ready); hidden interface drawn at
@@ -332,7 +340,7 @@ void App::drawCanvas() {
             auto block = [&](bool old) {
                 const TrackInfo& in = infoOf(old);
                 float ty = s.ay + s.art + 3.5f * vh() + dy;
-                g.text(has ? in.title : title, tf, css::W / 2.f, ty, pal.text, A, Align::Center, int(css::W * 0.8f));
+                g.text(has ? titleTrim(in.title, tf, css::W * 0.8f) : title, tf, css::W / 2.f, ty, pal.text, A, Align::Center, int(css::W * 0.8f));
                 ty += tf.size * 1.25f + 6;
                 g.text(in.artist, { int(clampf(1.3f * vw(), 15, 24)), Weight::SemiBold }, css::W / 2.f, ty, pal.text, A, Align::Center, int(css::W * 0.8f));
                 ty += 24 + 6;
@@ -341,7 +349,7 @@ void App::drawCanvas() {
             if (give) {
                 float wide = 0;
                 for (bool o : { true, false })
-                    wide = std::max({ wide, float(g.measure(infoOf(o).title, tf)), float(g.measure(infoOf(o).artist, { int(clampf(1.3f * vw(), 15, 24)), Weight::SemiBold })) });
+                    wide = std::max({ wide, float(g.measure(titleTrim(infoOf(o).title, tf, css::W * 0.8f), tf)), float(g.measure(infoOf(o).artist, { int(clampf(1.3f * vw(), 15, 24)), Weight::SemiBold })) });
                 wide = std::min(wide, css::W * 0.8f);
                 const float by0 = s.ay + s.art + 3.5f * vh() + dy;
                 wiped(css::W / 2.f - wide / 2, css::W / 2.f + wide / 2, by0, by0 + tf.size * 1.25f + 6 + 24 + 6 + 20, block);
@@ -355,16 +363,18 @@ void App::drawCanvas() {
             const Font arf{ int(clampf(1.2f * vw(), 15, 24)), Weight::SemiBold };
             const float block = kf.size * 1.4f + 4 + tf.size * 1.1f + 4 + arf.size * 1.4f;
             float my = s.ay + (s.art - block) / 2 + dy;
-            g.textSpaced(kick, kf, mx, my + kf.size * 0.7f, 0.16f, pal.accentInk, A);
+            // as Now playing's kicker: its bars, then the same words, spaced the same (the user, 2026-11-07)
+            eqGlyph(mx, my + kf.size * 0.7f, pal.accentInk, isPlaying() || (extOn && !srvq_.on), A, kf.size / float(css::Xs));
+            g.textSpaced(kick, kf, mx + 23 * kf.size / float(css::Xs), my + kf.size * 0.7f, 0.14f, pal.accentInk, A);
             my += kf.size * 1.4f + 4;
             auto metaBlock = [&](bool old) {
                 const TrackInfo& in = infoOf(old);
-                g.text(has ? in.title : title, tf, mx, my - 3, pal.text, A, Align::Left, int(mw));
+                g.text(has ? titleTrim(in.title, tf, mw) : title, tf, mx, my - 3, pal.text, A, Align::Left, int(mw));
                 g.text(in.artist, arf, mx, my + tf.size * 1.1f + 4, pal.text, A, Align::Left, int(mw));
             };
             if (give) {
                 float wide = 0;
-                for (bool o : { true, false }) wide = std::max({ wide, float(g.measure(infoOf(o).title, tf)), float(g.measure(infoOf(o).artist, arf)) });
+                for (bool o : { true, false }) wide = std::max({ wide, float(g.measure(titleTrim(infoOf(o).title, tf, mw), tf)), float(g.measure(infoOf(o).artist, arf)) });
                 wiped(mx, mx + std::min(mw, wide), my - 4, my + tf.size * 1.1f + 4 + arf.size * 1.4f, metaBlock);
             }
             else metaBlock(false);
@@ -378,14 +388,15 @@ void App::drawCanvas() {
             const Font tf{ int(clampf(3.6f * vw(), 30, 72)), Weight::ExtraBold };
             const Font arf{ int(clampf(1.7f * vw(), 18, 32)), Weight::SemiBold };
             const Font alf{ int(clampf(1.05f * vw(), 14, 19)) };
-            const std::vector<std::string> lines = g.wrap(title, tf, int(s.sw), 2);
+            const std::vector<std::string> lines = g.wrap(has ? titleTrim(title, tf, s.sw) : title, tf, int(s.sw), 2);
             const float metaH = kf.size * 1.4f + 10 + lines.size() * std::round(tf.size * 1.02f) + 10 + arf.size * 1.35f + 6 + alf.size * 1.45f;
             float my = (lyricsOn ? s.sy : s.ay + (s.art - metaH) / 2) + dy;
-            g.textSpaced(kick, kf, s.sx, my + kf.size * 0.7f, 0.16f, pal.accentInk, A);
+            eqGlyph(s.sx, my + kf.size * 0.7f, pal.accentInk, isPlaying() || (extOn && !srvq_.on), A, kf.size / float(css::Xs));
+            g.textSpaced(kick, kf, s.sx + 23 * kf.size / float(css::Xs), my + kf.size * 0.7f, 0.14f, pal.accentInk, A);
             my += kf.size * 1.4f + 10;
             auto block = [&](bool old) {   // the next song's lines decide the layout
                 const TrackInfo& in = infoOf(old);
-                const std::vector<std::string> ls = old ? g.wrap(in.title, tf, int(s.sw), 2) : lines;
+                const std::vector<std::string> ls = old ? g.wrap(titleTrim(in.title, tf, s.sw), tf, int(s.sw), 2) : lines;
                 float yy = my;
                 for (const auto& ln : ls) {
                     g.text(ln, tf, s.sx - 2, yy - tf.size * 0.12f, pal.text, A, Align::Left, int(s.sw));
@@ -398,7 +409,7 @@ void App::drawCanvas() {
             if (give) {
                 float wide = 0;
                 for (bool o : { true, false }) {
-                    for (const auto& ln : g.wrap(infoOf(o).title, tf, int(s.sw), 2)) wide = std::max(wide, float(g.measure(ln, tf)));
+                    for (const auto& ln : g.wrap(titleTrim(infoOf(o).title, tf, s.sw), tf, int(s.sw), 2)) wide = std::max(wide, float(g.measure(ln, tf)));
                     wide = std::max({ wide, float(g.measure(infoOf(o).artist, arf)), float(g.measure(albumOf(infoOf(o)), alf)) });
                 }
                 wiped(s.sx, s.sx + std::min(s.sw, wide), my, my + lines.size() * std::round(tf.size * 1.02f) + 10 + arf.size * 1.35f + 6 + alf.size * 1.45f,
@@ -418,7 +429,7 @@ void App::drawCanvas() {
     pageWipe_.on = false;   // (the controls: not wiped)
 
     // ---- .cv-chrome: hairline progress, transport, tools; fades out when idle
-    const bool idle = canvasIdle > store.canvasIdleAfter && (isPlaying() || extOn);
+    const bool idle = canvasIdle > store.canvasIdleAfter && (isPlaying() || (extOn && !srvq_.on));
     // Coming back from idle, the spectrum folds back first: the controls only return in its last moments,
     // so they never sit on top of the bars (going idle, they leave first and the bars rise after).
     canvasCtl += ((idle || canvasViz > 0.12f ? 0.f : 1.f) - canvasCtl) * (1 - std::exp(-dt / 0.12f));
@@ -487,8 +498,8 @@ void App::drawCanvas() {
     // left one to the right one, on the join's clock (the user, 2026-10-29: the next song's length showed at once)
     auto times = [&](bool old) {
         const double pos = old ? mixOld.posAt + (time - mixOld.at) : shownPosition();
-        g.textC(fmtTime(pos), timeF, padX, timeCy, pal.text2, ctlA);
-        g.textC(fmtTime(old ? mixOld.info.duration : dur), timeF, css::W - padX, timeCy, pal.text2, ctlA, Align::Right);
+        g.textNum(fmtTime(pos), timeF, padX, timeCy - g.lineHeight(timeF) / 2.f, pal.text2, ctlA);   // (fixed-width digits, as the player bar)
+        g.textNum(fmtTime(old ? mixOld.info.duration : dur), timeF, css::W - padX, timeCy - g.lineHeight(timeF) / 2.f, pal.text2, ctlA, Align::Right);
     };
     if (simple && mixing && mixOld.on) {
         wipeGroup_ = { true, padX, css::W - padX };
@@ -522,7 +533,7 @@ void App::drawCanvas() {
     // changes what plays
     const bool ctlOff = controlsOff();
     if (cvBtn(uid("cv.prev"), ICON_PREV, mid - 30 - 14 - 21, tc, 42, false, false, ctlOff)) prev();
-    if (cvBtn(uid("cv.play"), isPlaying() || extOn ? ICON_PAUSE : ICON_PLAY, mid, tc, 60, true, false, ctlOff)) togglePlay();
+    if (cvBtn(uid("cv.play"), isPlaying() || (extOn && !srvq_.on) ? ICON_PAUSE : ICON_PLAY, mid, tc, 60, true, false, ctlOff)) togglePlay();
     if (cvBtn(uid("cv.next"), ICON_NEXT, mid + 30 + 14 + 21, tc, 42, false, false, ctlOff)) next(false);
 
     // .cv-tools: layout segment, volume, lyrics, close
@@ -594,7 +605,7 @@ void App::drawCanvas() {
         const bool hot = ui.pressed(sid) || (ui.focused(sid) && ui.showFocusRing());
         g.roundRect(x, cy - 21, sleepW, 42, 21, pal.text, (hot ? 0.16f : 0.08f) * ctlA);
         g.icon(ICON_MOON, x + 21, cy, 18, sleepLeftNow > 0 ? pal.accentInk : pal.text, ctlA);
-        if (sleepLeftNow > 0) g.textC(fmtTime(std::ceil(sleepLeftNow)), sleepF, x + 38, cy, pal.accentInk, ctlA);
+        if (sleepLeftNow > 0) g.textNum(fmtTime(std::ceil(sleepLeftNow)), sleepF, x + 38, cy - g.lineHeight(sleepF) / 2.f, pal.accentInk, ctlA);
     }
     x += sleepW + 8;
     if (syncShown) {

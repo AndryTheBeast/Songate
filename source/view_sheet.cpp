@@ -116,6 +116,13 @@ void App::saveTagEdits() {
         now.info.albumArtist = t.albumArtist; now.info.genre = t.genre; now.info.date = t.date; now.info.trackNo = t.trackNo;
     }
     toast("Tags saved");
+    // into the file too: every change of Songate's to this song (kept in Songate as well: it stays the same on your other devices)
+    if (auto it = store.edits.find(t.path); it != store.edits.end() && !it->second.empty()) {
+        TagJobs::Job j;
+        j.path = t.path;
+        for (const auto& [k, v] : it->second) j.changes.text[k] = v;
+        tagWriteAsk({ j }, "“" + t.title + "”");
+    }
 }
 
 void App::undoTagEdits(int track) {
@@ -144,7 +151,15 @@ void App::listCoverDir(const std::string& dir) {
     ui.focusDefault();
 }
 
-void App::setTrackCover(const std::string& image) {
+void App::openTagEditor(int t) {
+    if (t < 0 || t >= int(lib.tracks.size())) return;
+    sheet.draft.clear();
+    for (const auto& [k, l] : kFields) sheet.draft[k] = fieldOf(lib.tracks[size_t(t)], k);
+    sheet.page = Sheet::Tags;
+    ui.focusDefault();
+}
+
+void App::setTrackCover(const std::string& image, const std::vector<int>* forTracks) {
     const std::vector<uint8_t> bytes = readAll(image);
     if (bytes.empty()) { toast("Couldn't read that image"); return; }
     // Copied into Gatefold's folder, so the cover stays when the image is moved; named by its content.
@@ -160,6 +175,7 @@ void App::setTrackCover(const std::string& image) {
     const Track& t = lib.tracks[sheet.track];
     std::vector<int> targets{ sheet.track };
     if (sheet.wholeAlbum && t.albumIdx >= 0) targets = lib.albums[t.albumIdx].tracks;
+    if (forTracks && !forTracks->empty()) targets = *forTracks;
     for (int i : targets) {
         store.covers[lib.tracks[i].path] = dest;
         meta.setCoverFile(i, dest);
@@ -167,6 +183,208 @@ void App::setTrackCover(const std::string& image) {
     store.saveEdits();
     if (std::find(targets.begin(), targets.end(), now.track) != targets.end()) loadTrackCoverAgain();   // now yours (store.covers)
     toast(targets.size() > 1 ? "Cover set for the whole album" : "Cover set");
+    // into the files too (a JPEG or a PNG: what every reader takes)
+    const bool jpegOrPng = bytes.size() > 8 && ((bytes[0] == 0xFF && bytes[1] == 0xD8) || (bytes[0] == 0x89 && bytes[1] == 'P'));
+    if (!jpegOrPng) return;
+    std::vector<TagJobs::Job> jobs;
+    for (int i : targets) {
+        TagJobs::Job j;
+        j.path = lib.tracks[i].path;
+        j.changes.cover = true;
+        j.changes.coverBytes = bytes;
+        jobs.push_back(std::move(j));
+    }
+    tagWriteAsk(std::move(jobs), targets.size() > 1 ? "the album's cover" : "the cover");
+}
+
+// ------------------------------------------------------------------ tags and covers into the files
+
+void App::tagWriteAsk(std::vector<TagJobs::Job> jobs, const std::string& what) {
+    if (jobs.empty() || store.tagWrite == 1) return;   // Songate only
+    if (store.tagWrite == 2) { tagWriteQueue(std::move(jobs)); return; }
+    const size_t n = jobs.size();
+    confirm(ICON_TAG, "Tags", "Where should " + what + " go?", n > 1 ? std::to_string(n) + " songs" : std::string("This song"),
+            "Into the file too?",
+            "Songate has it now. In the file too, every app and device reading it sees the change; Songate keeps what the file held, so "
+            "\"Restore the file's original tags\" puts it back. Settings › Library can decide for you.",
+            "Into the file", [this, jobs] { tagWriteQueue(jobs); });
+    sheet.askSafe = true;
+    sheet.askYesIcon = ICON_CHECK;
+    sheet.askAlt = "Songate only";
+    sheet.askAltYes = [] {};
+}
+
+void App::tagWriteQueue(std::vector<TagJobs::Job> jobs) {
+    if (tagPending_.empty() && tagJobs.idle()) tagDone_ = tagTotal_ = 0;   // (a new run of writes)
+    for (auto& j : jobs) {
+        // the same song waiting already: this one replaces it (the latest change wins, a write each)
+        for (auto it = tagPending_.begin(); it != tagPending_.end(); ++it)
+            if (it->path == j.path && it->undo == j.undo) {
+                for (const auto& [k, v] : it->changes.text) if (!j.changes.text.count(k)) j.changes.text[k] = v;
+                if (!j.changes.cover && it->changes.cover) { j.changes.cover = true; j.changes.coverBytes = it->changes.coverBytes; }
+                tagPending_.erase(it);
+                tagTotal_--;
+                break;
+            }
+        tagPending_.push_back(std::move(j));
+        tagTotal_++;
+    }
+}
+
+/** Every frame: the next song handed over when nothing is being written and it is not the one playing; what came back applied. */
+void App::tagWritesTick() {
+#ifdef GF_PREVIEW
+    // (the preview: GF_TAGWRITE_TEST=<cover image>: the first song's title and cover into its file, then its originals back; in the log)
+    if (static int step = 0; getenv("GF_TAGWRITE_TEST") && !lib.tracks.empty() && time > 4 && step < 3) {
+        if (step == 0) {
+            TagJobs::Job j;
+            j.path = lib.tracks[0].path;
+            j.changes.text["title"] = "Written by Songate";
+            j.changes.cover = true;
+            j.changes.coverBytes = readAll(getenv("GF_TAGWRITE_TEST"));
+            logLine("Tag test: writing into " + j.path);
+            tagWriteQueue({ j });
+            step = 1;
+        } else if (step == 1 && tagPending_.empty() && tagJobs.idle() && tagUndo_.count(lib.tracks[0].path)) {
+            const auto& u = tagUndo_[lib.tracks[0].path];
+            logLine("Tag test: written; kept to undo: title \"" + u.text.at("title") + "\", cover " + (u.coverFile.empty() ? std::string("none") : u.coverFile));
+            restoreFileTags(0);
+            step = 2;
+        } else if (step == 2 && tagPending_.empty() && tagJobs.idle() && !tagUndo_.count(lib.tracks[0].path)) {
+            logLine("Tag test: restored; undo records left " + std::to_string(tagUndo_.size()));
+            step = 3;
+        }
+    }
+#endif
+    if (!tagPending_.empty() && !store.stopTagWrites && tagJobs.idle()) {
+        const std::string playing = playingFile();
+        for (auto it = tagPending_.begin(); it != tagPending_.end(); ++it) {
+            if (it->path == playing) continue;   // (held open: written once it is not playing)
+            tagJobs.start();
+            tagJobs.put(std::move(*it));
+            tagPending_.erase(it);
+            break;
+        }
+    }
+    TagJobs::Done d;
+    while (tagJobs.take(d)) {
+        tagDone_++;
+        const auto ti = pathIndex.find(d.job.path);
+        const std::string title = ti != pathIndex.end() ? lib.tracks[size_t(ti->second)].title : baseName(d.job.path);
+        if (!d.ok) {
+            logLine("Tags not written into " + d.job.path + ": " + d.err);
+            toast("Couldn't write into “" + title + "”: " + d.err + ". Kept in Songate");
+            continue;
+        }
+        if (!d.job.undo) {   // what the file held, the first write's (a later write does not move the original)
+            TagUndo& u = tagUndo_[d.job.path];
+            for (const auto& [k, v] : d.before.text) if (!u.text.count(k)) u.text[k] = v;
+            if (d.before.cover && !u.cover) {
+                u.cover = true;
+                if (!d.before.coverBytes.empty()) {
+                    uint32_t h = 2166136261u;
+                    for (uint8_t b : d.before.coverBytes) h = (h ^ b) * 16777619u;
+                    char name[40];
+                    snprintf(name, sizeof name, "%08x.%s", h, d.before.coverBytes[0] == 0x89 ? "png" : "jpg");
+                    const std::string dir = store.path("tag-undo");
+                    mkdir(dir.c_str(), 0777);
+                    u.coverFile = dir + "/" + name;
+                    store.writeFile((std::string("tag-undo/") + name).c_str(), std::string(d.before.coverBytes.begin(), d.before.coverBytes.end()));
+                }
+            }
+        } else {   // the originals are back: Songate shows the file as it is (its own changes to these go too)
+            if (auto u = tagUndo_.find(d.job.path); u != tagUndo_.end()) {
+                if (d.job.changes.cover && !u->second.coverFile.empty()) store.removeFile(u->second.coverFile.substr(store.path("").size()).c_str());
+                tagUndo_.erase(u);
+            }
+            if (auto e = store.edits.find(d.job.path); e != store.edits.end()) {
+                for (const auto& [k, v] : d.job.changes.text) { (void)v; e->second.erase(k); }
+                if (e->second.empty()) store.edits.erase(e);
+            }
+            if (d.job.changes.cover) store.covers.erase(d.job.path);
+            store.saveEdits();
+        }
+        saveTagUndo();
+        if (ti != pathIndex.end()) {   // read again: the file's tags, its cover
+            meta.retag(ti->second);
+            if (d.job.changes.cover) {
+                auto c = store.covers.find(d.job.path);
+                meta.setCoverFile(ti->second, c != store.covers.end() ? c->second : std::string());
+            }
+            if (now.track == ti->second && d.job.changes.cover) loadTrackCoverAgain();
+        }
+        if (tagPending_.empty() && tagJobs.idle())
+            toast(d.job.undo ? "The file's original tags are back in “" + title + "”"
+                             : tagTotal_ > 1 ? "Written into " + std::to_string(tagTotal_) + " files" : "Written into “" + title + "”");
+    }
+}
+
+void App::restoreFileTags(int track) {
+    const std::string& path = lib.tracks[size_t(track)].path;
+    auto u = tagUndo_.find(path);
+    if (u == tagUndo_.end()) return;
+    TagJobs::Job j;
+    j.path = path;
+    j.undo = true;
+    j.changes.text = u->second.text;
+    if (u->second.cover) {
+        j.changes.cover = true;
+        if (!u->second.coverFile.empty()) j.changes.coverBytes = readAll(u->second.coverFile);
+    }
+    tagWriteQueue({ j });
+    toast(now.track == track ? "Its original tags go back once it is not playing" : "Putting the file's original tags back");
+}
+
+void App::loadTagUndo() {
+    tagUndo_.clear();
+    FILE* f = fopen(store.path("tag-undo.tsv").c_str(), "rb");
+    if (!f) return;
+    std::string text;
+    char buf[8192];
+    for (size_t n; (n = fread(buf, 1, sizeof buf, f)) > 0;) text.append(buf, n);
+    fclose(f);
+    auto unescape = [](const std::string& s) {
+        std::string o;
+        for (size_t i = 0; i < s.size(); i++) {
+            if (s[i] == '\\' && i + 1 < s.size()) { const char c = s[++i]; o += c == 'n' ? '\n' : c == 't' ? '\t' : c; }
+            else o += s[i];
+        }
+        return o;
+    };
+    for (size_t a = 0; a < text.size();) {   // path TAB field TAB value (a cover: field "#cover", value its file, "" none)
+        size_t b = text.find('\n', a);
+        if (b == std::string::npos) b = text.size();
+        const std::string l = text.substr(a, b - a);
+        a = b + 1;
+        const size_t t1 = l.find('\t'), t2 = t1 == std::string::npos ? std::string::npos : l.find('\t', t1 + 1);
+        if (t2 == std::string::npos) continue;
+        TagUndo& u = tagUndo_[unescape(l.substr(0, t1))];
+        const std::string field = l.substr(t1 + 1, t2 - t1 - 1), value = unescape(l.substr(t2 + 1));
+        if (field == "#cover") { u.cover = true; u.coverFile = value; }
+        else u.text[field] = value;
+    }
+}
+
+void App::saveTagUndo() {
+    auto escape = [](const std::string& s) {
+        std::string o;
+        for (char c : s) { if (c == '\\') o += "\\\\"; else if (c == '\n') o += "\\n"; else if (c == '\t') o += "\\t"; else if (c != '\r') o += c; }
+        return o;
+    };
+    std::string out;
+    for (const auto& [path, u] : tagUndo_) {
+        for (const auto& [k, v] : u.text) out += escape(path) + "\t" + k + "\t" + escape(v) + "\n";
+        if (u.cover) out += escape(path) + "\t#cover\t" + escape(u.coverFile) + "\n";
+    }
+    if (out.empty()) store.removeFile("tag-undo.tsv");
+    else store.writeFile("tag-undo.tsv", std::move(out));
+}
+
+long long App::tagUndoBytes() const {
+    long long n = 0;
+    struct stat st;
+    for (const auto& [p, u] : tagUndo_) if (!u.coverFile.empty() && stat(u.coverFile.c_str(), &st) == 0) n += st.st_size;
+    return n;
 }
 
 // ------------------------------------------------------------------ delete
@@ -235,11 +453,21 @@ void App::sheetBack() {
         sheet.queuePos = row;   // drawSmartSheet focuses it
         return;
     }
-    if (sheet.page == Sheet::Menu || sheet.page == Sheet::NewList || sheet.page == Sheet::Sleep || sheet.page == Sheet::Devices || sheet.page == Sheet::Job || sheet.page == Sheet::Jobs ||
+    if (sheet.page == Sheet::Menu || sheet.page == Sheet::NewList || sheet.page == Sheet::Sleep || sheet.page == Sheet::Devices || sheet.page == Sheet::AirPlay || sheet.page == Sheet::Job || sheet.page == Sheet::Jobs ||
         sheet.page == Sheet::PlFile || sheet.page == Sheet::Confirm || sheet.page == Sheet::EqPreset ||
         sheet.page == Sheet::ActList || sheet.page == Sheet::ListActions || sheet.page == Sheet::PlMenu || sheet.page == Sheet::FileMenu ||
-        sheet.page == Sheet::Factory || sheet.page == Sheet::Report || sheet.page == Sheet::Crashes) {
+        sheet.page == Sheet::Factory || sheet.page == Sheet::Report || sheet.page == Sheet::Crashes || sheet.page == Sheet::Battery || sheet.page == Sheet::SrvMenu || sheet.page == Sheet::SrvPlMenu) {
         closeSheet();
+        return;
+    }
+    if (sheet.page == Sheet::SrvPlIcon) {   // the icons → the server playlist's menu
+        sheet.page = Sheet::SrvPlMenu;
+        ui.focusDefault();
+        return;
+    }
+    if (sheet.page == Sheet::SrvLists) {   // Add to a playlist… → the server track's menu
+        sheet.page = Sheet::SrvMenu;
+        ui.focusDefault();
         return;
     }
     if (sheet.page == Sheet::FileInfo || sheet.page == Sheet::FileLink) {   // Files: back to the file's menu
@@ -277,7 +505,14 @@ void App::drawSheet() {
     const float headH = 24 + 64 + 18, footH = footer ? 64 : 0, maxBody = css::H - 60 - headH - footH - 16;
 
     // ---- the rows of this page, laid out first so the card can be sized to them
-    struct Item { const char* icon; std::string label, detail; std::function<void()> act; bool danger = false; float h = 46; bool text = false; };
+    struct Item {
+        const char* icon;
+        std::string label, detail;
+        std::function<void()> act;
+        bool danger = false;
+        float h = 46;
+        bool text = false;
+    };
     std::vector<Item> items;
     const bool liked = store.isLiked(tr.path);
     // Opened on a row of the queue (the Playlist view, Up next): still that row, unless the queue changed meanwhile.
@@ -357,12 +592,15 @@ void App::drawSheet() {
                               store.save();
                               toast(liked ? "Removed from Liked" : "Added to Liked");
                           } });
-        items.push_back({ ICON_TAG, "Edit tags…", store.edits.count(tr.path) ? "Edited" : "", [this, t] {
-                              sheet.draft.clear();
-                              for (const auto& [k, l] : kFields) sheet.draft[k] = fieldOf(lib.tracks[t], k);
-                              sheet.page = Sheet::Tags;
-                              ui.focusDefault();
-                          } });
+        {   // its mood (BETA 3: yours to correct; the user, 2026-11-05: "Any song's menu")
+            const int m = size_t(t) < moodIdx_.best.size() ? moodIdx_.best[size_t(t)] : -1;
+            const auto lb = moodLabels_.find(tr.path);
+            const bool yours = lb != moodLabels_.end() && lb->second.is >= 0;
+            // one row; its page holds the moods, Not this one, and back to its sound (the user, 2026-11-05: "A, one Mood row")
+            items.push_back({ moodIcon(m), "Mood", m < 0 ? std::string("Not measured yet") : std::string(mood::name(m)) + (yours ? " · yours" : ""),
+                              [this] { sheet.page = Sheet::Moods; ui.focusDefault(); } });
+        }
+        items.push_back({ ICON_TAG, "Edit tags…", store.edits.count(tr.path) ? "Edited" : "", [this, t] { openTagEditor(t); } });
         items.push_back({ ICON_IMAGE, "Change the cover…", store.covers.count(tr.path) ? "Yours" : "", [this, t] {
                               sheet.page = Sheet::Cover;
                               sheet.wholeAlbum = lib.tracks[t].albumIdx >= 0;
@@ -387,6 +625,8 @@ void App::drawSheet() {
                                   toast("Original cover back");
                               } });
         if (store.edits.count(tr.path)) items.push_back({ ICON_REFRESH, "Undo my tag edits", "", [this, t] { undoTagEdits(t); } });
+        if (tagUndo_.count(tr.path))   // written into the file: what it held, back in it
+            items.push_back({ ICON_REFRESH, "Restore the file's original tags", "", [this, t] { restoreFileTags(t); closeSheet(); } });
         if (tr.albumIdx >= 0)
             items.push_back({ ICON_GRID, "Go to the album", lib.albums[tr.albumIdx].title, [this, a = tr.albumIdx] { closeSheet(); goToAlbum(a); } });
         items.push_back({ ICON_MIC, "Go to the artist", tr.artist, [this, a = tr.artist] { closeSheet(); openArtist(a); } });
@@ -414,6 +654,27 @@ void App::drawSheet() {
                                   closeSheet();
                               } });
         }
+    } else if (page == Sheet::Moods) {
+        const int m = size_t(t) < moodIdx_.best.size() ? moodIdx_.best[size_t(t)] : -1;
+        const int bySound = size_t(t) < moodIdx_.sound.size() ? moodIdx_.sound[size_t(t)] : -1;
+        mood::Label own = moodLabels_.count(tr.path) ? moodLabels_[tr.path] : mood::Label{};
+        for (int c = 0; c < mood::Count; c++) {
+            items.push_back({ moodIcon(c), mood::name(c), c == m ? std::string("Now") : (own.nots & (1u << c)) ? std::string("You said not") : std::string(mood::desc(c)),
+                              [this, t, c, own] {
+                                  mood::Label l = own;
+                                  l.is = static_cast<signed char>(c);
+                                  l.nots = uint16_t(l.nots & ~(1u << c));
+                                  setMoodLabel(t, l);
+                                  toast(std::string("In ") + mood::name(c) + " from now on: songs like it follow");
+                                  closeSheet();
+                              } });
+        }
+        if (own.any())
+            items.push_back({ ICON_REFRESH, "As its sound says", bySound >= 0 ? std::string(mood::name(bySound)) : std::string(), [this, t] {
+                                  setMoodLabel(t, mood::Label{});
+                                  toast("Your choice for it cleared");
+                                  closeSheet();
+                              } });
     } else if (page == Sheet::Tags) {
         for (const auto& [k, l] : kFields)
             items.push_back({ nullptr, l, sheet.draft[k], [this, k = k, l = l] { editTag(k, l); } });
@@ -432,7 +693,7 @@ void App::drawSheet() {
                     m = sheet.memo.emplace(full, stat(full.c_str(), &st) == 0 ? sizeText(double(st.st_size)) : "").first;
                 }
                 const std::string size = m->second;
-                items.push_back({ ICON_IMAGE, e, size, [this, full] { setTrackCover(full); sheet.page = Sheet::Menu; ui.focusDefault(); } });
+                items.push_back({ ICON_IMAGE, e, size, [this, full] { setTrackCover(full); if (sheet.page != Sheet::Confirm) { sheet.page = Sheet::Menu; ui.focusDefault(); } } });
             }
         }
         if (sheet.entries.empty()) items.push_back({ nullptr, "No images or folders here", "", nullptr, false, 46, true });
@@ -523,11 +784,30 @@ void App::drawSheet() {
     if (page == Sheet::Cover && sheet.preview) g.image(sheet.preview, hx, hy, 64, 64, 10);
     else coverBox(t, hx, hy, 64, 10);
     g.roundStroke(hx, hy, 64, 64, 10, 1, pal.text, 0.09f);
-    static const char* kickers[] = { "", "Track", "Edit tags", "Choose a cover", "Delete", "Details", "Add to a playlist" };
+    static const char* kickers[] = { "", "Track", "Edit tags", "Choose a cover", "Delete", "Details", "Add to a playlist", "Mood" };
     kicker(kickers[int(page)], hx + 64 + 16, hy + 8, pal.accentInk);
     const int textW = int(w - 64 - 16 - 24 - 24 - 40);
-    g.text(tr.title, { css::Lg, Weight::Bold }, hx + 64 + 16, hy + 18, pal.text, 1, Align::Left, textW);
+    // the mood page: Not <its mood>, on the close button's line, to its left (the user, 2026-11-05: no cross in it, and clear of the
+    // close button's ring and its tip)
+    const int notMood = page == Sheet::Moods && size_t(t) < moodIdx_.best.size() ? moodIdx_.best[size_t(t)] : -1;
+    const std::string notLabel = notMood >= 0 ? std::string("Not ") + mood::name(notMood) : std::string();
+    const float notW = notMood >= 0 ? 16 + g.measure(notLabel, { css::Sm, Weight::SemiBold }) + 16 : 0;
+    const int titleW = notMood >= 0 ? int(textW + 40 - notW - 28 - 16) : textW;
+    g.text(tr.title, { css::Lg, Weight::Bold }, hx + 64 + 16, hy + 18, pal.text, 1, Align::Left, titleW);
     g.text(trackSub(t), { css::Sm }, hx + 64 + 16, hy + 44, pal.text3, 1, Align::Left, textW);
+    if (notMood >= 0) {
+        bool no = false;
+        button(uid("sh.notmood"), nullptr, notLabel, x + w - 24 - 28 - 12 - notW, hy + 14 - 17, false, &no);
+        if (no) {
+            mood::Label l = moodLabels_.count(tr.path) ? moodLabels_[tr.path] : mood::Label{};
+            if (l.is == notMood) l.is = -1;
+            l.nots = uint16_t(l.nots | (1u << notMood));
+            setMoodLabel(t, l);
+            toast(std::string("Not ") + mood::name(notMood) + " from now on: Songate picks the next best");
+            closeSheet();
+            return;
+        }
+    }
     hint(uid("sh.close"), "Close");
     if (iconButton(uid("sh.close"), ICON_X, x + w - 24 - 14, hy + 14)) { closeSheet(); return; }
     g.rect(x + 24, y + headH - 1, w - 48, 1, pal.text, 0.09f);
@@ -565,6 +845,8 @@ void App::drawSheet() {
     if (page == Sheet::Cover)
         for (size_t i = 0; i < items.size(); i++)
             if (items[i].icon == ICON_IMAGE) { focusRow = i; break; }
+    if (page == Sheet::Moods)   // its mood now (the rows are the moods in order)
+        if (const int m = size_t(t) < moodIdx_.best.size() ? moodIdx_.best[size_t(t)] : -1; m >= 0 && size_t(m) < items.size()) focusRow = size_t(m);
     for (size_t i = 0; i < items.size(); i++) {
         const Item& it = items[i];
         const Id id = uid("sh.row", int64_t(i) + 1000 * int(page));
@@ -630,7 +912,7 @@ void App::drawSheet() {
             const float sw = g.measure("Save", bf) + 32 + 24;
             const float cw = g.measure("Cancel", bf) + 32;
             button(uid("sh.save"), ICON_CHECK, "Save", x + w - 24 - sw, fy + 7, true, &c);
-            if (c) { saveTagEdits(); sheet.page = Sheet::Menu; ui.focusDefault(); return; }
+            if (c) { saveTagEdits(); if (sheet.page != Sheet::Confirm) { sheet.page = Sheet::Menu; ui.focusDefault(); } return; }
             button(uid("sh.cancel"), nullptr, "Cancel", x + w - 24 - sw - 8 - cw, fy + 7, false, &c);
             if (c) { sheet.page = Sheet::Menu; ui.focusDefault(); return; }
         } else {

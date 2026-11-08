@@ -25,7 +25,7 @@
 
 namespace syncdata {
 
-enum Kind : unsigned { KindLiked = 1, KindLists = 2, KindEdits = 4, KindPlays = 8, KindAll = 15, KindDeletes = 16 };
+enum Kind : unsigned { KindLiked = 1, KindLists = 2, KindEdits = 4, KindPlays = 8, KindLyrics = 32, KindMoods = 64, KindAll = 111, KindDeletes = 16 };
 
 struct Song { std::string path, id, exact; double duration = 0; int64_t size = 0; };   // exact: the same bytes (identity.hpp)
 struct Plays { int plays = 0; int64_t last = 0, added = 0; };
@@ -50,7 +50,17 @@ struct Snapshot {
     std::unordered_map<std::string, int> others;                                     // path → played on other devices
     std::vector<std::string> gone;                                                   // songs deleted here, inside Songate, since the last sync
     uint64_t deleteFrom = 0;                                                         // only deletions after this clock are obeyed
+    // Lyrics Songate kept here (found online and saved: lyricsnet's written.tsv), "dir|lrc|tag|own<TAB>path", copied on the main
+    // thread; their texts read on the sync worker (Syncer::work), normalised (lyricsText); "own": the song has lyrics of its own
+    std::vector<std::string> lyricsKept;
+    std::unordered_map<std::string, std::string> lyrics;                             // path → the lyrics Songate kept for it
+    std::vector<std::string> lyricsGone;                                             // songs whose lyrics were removed here by hand
+    std::unordered_map<std::string, std::string> moods;                              // path → your mood choice ("is,nots")
 };
+
+/** Lyrics as the record book keeps them: no \r, no space or blank line at the end (a tag reader may drop them, and the same lyrics
+ *  read back a little differently on another device must not go back and forth). */
+std::string lyricsText(std::string s);
 
 /** What the app is to do. */
 struct Changes {
@@ -64,7 +74,11 @@ struct Changes {
     std::vector<std::pair<std::string, Plays>> plays;   // path → its plays on other devices, last played and date added
     std::vector<std::string> listOrder;                 // your playlists' names, in the sidebar's order; empty: leave it
     std::vector<std::string> filesDelete;               // paths: deleted on another device, and this one says to follow
-    bool empty() const { return filesDelete.empty() && likedAdd.empty() && likedRemove.empty() && edits.empty() && listsNew.empty() && listsSet.empty() && listsRename.empty() && listsDelete.empty() && plays.empty() && listOrder.empty(); }
+    struct Lyrics { std::string path, text; };
+    std::vector<Lyrics> lyricsSet;                      // kept on another device: saved here as this device saves them
+    std::vector<std::string> lyricsRemove;              // paths: removed on another device: what Songate kept here goes too
+    std::vector<std::pair<std::string, std::string>> moodsSet;   // path → your mood choice from another device ("": cleared)
+    bool empty() const { return filesDelete.empty() && likedAdd.empty() && likedRemove.empty() && edits.empty() && listsNew.empty() && listsSet.empty() && listsRename.empty() && listsDelete.empty() && plays.empty() && listOrder.empty() && lyricsSet.empty() && lyricsRemove.empty() && moodsSet.empty(); }
     /** Words for the first sync's preview. */
     std::string summary() const;
 };

@@ -15,6 +15,8 @@
 #include "cores.hpp"
 #include "icons.inc"
 
+std::atomic<bool> gStorageStop{ false };   // Songate closing: the sizes stop where they are (app.hpp)
+
 namespace {
 
 std::string joinP(const std::string& a, const std::string& b) { return plat::join(a, b); }
@@ -36,6 +38,7 @@ std::vector<std::string> entries(const std::string& dir) {
 struct Use { int64_t bytes = 0; int files = 0; };
 
 void measure(const std::string& p, Use& u, bool (*keep)(const std::string&) = nullptr) {
+    if (gStorageStop) return;   // Songate closing: the sizes are measured again when the page opens
     if (plat::measureStorage(p, u.bytes, u.files, keep)) return;
     // The SD card serves one request at a time: a walk of thousands of files without pauses held up everything Gatefold
     // reads (covers, tags, the settings) and the app stalled. A short pause every 24 files lets the rest through.
@@ -99,7 +102,7 @@ void App::scanStorage() {
     const std::string dir = Store::Dir, backups = backupRoot();
     storage.thread = std::thread([this, dir, backups] {
         cores::moveHere(cores::FileOps);
-        Use u[6];
+        Use u[9];
         measure(dir + "/art", u[0]);
         measure(dir + "/thumbs", u[1]);
         measure(dir + "/loudness.tsv", u[2]);
@@ -108,10 +111,15 @@ void App::scanStorage() {
         measure(dir + "/gains.bin", u[2]);
         measure(dir + "/tags.tsv", u[3]);
         measure(dir + "/identity.tsv", u[3]);
+        measure(dir + "/lyrics-index.tsv", u[3]);   // search by lyrics: made again from the songs
+        measure(dir + "/lastfm-tags.tsv", u[3]);    // (BETA 3's Last.fm mood tags, taken out: a leftover, cleared here)
         for (const auto& n : entries(backups))   // only Gatefold's own backups, whatever else that folder holds
             if (struct stat st; stat(joinP(joinP(backups, n), "gatefold-backup.txt").c_str(), &st) == 0) measure(joinP(backups, n), u[4]);
         measure(dir + "/updates", u[5], isDownload);
-        for (int i = 0; i < 6; i++) storage.found[i] = { u[i].bytes, u[i].files };
+        measure(dir + "/lyrics", u[6]);
+        measure(dir + "/server-cache", u[7]);       // a Subsonic server's tracks kept to play again
+        measure(dir + "/server-downloads", u[8]);   // its downloads, where kept in Songate's folder
+        for (int i = 0; i < 9; i++) storage.found[i] = { u[i].bytes, u[i].files };
         storage.done = true;
     });
 }
@@ -120,7 +128,7 @@ std::string App::storageValue(int which) {
     if (settingsCat == SetStorage && storage.at < -50) scanStorage();   // once each time the page opens, and after a Clear
     if (storage.done && storage.thread.joinable()) {
         storage.thread.join();
-        for (int i = 0; i < 6; i++) storage.use[i] = storage.found[i];
+        for (int i = 0; i < 9; i++) storage.use[i] = storage.found[i];
         storage.seen = true;
     }
     if (!storage.seen) return "…";
@@ -129,16 +137,20 @@ std::string App::storageValue(int which) {
 }
 
 void App::clearStorage(int which) {
-    static const char* titles[6] = { "Covers cache", "Covers for the overlay", "Loudness measurements", "Tag cache", "Backups", "Downloads" };
-    static const char* texts[6] = {
+    static const char* titles[9] = { "Covers cache", "Covers for the overlay", "Loudness measurements", "Tag cache", "Backups", "Update downloads",
+                                     "Lyrics found online", "Tracks kept from the server", "Server downloads" };
+    static const char* texts[9] = {
         "The small copies of every cover that lists show. Songate makes them again in the background, a few minutes for a large library.",
         "The covers the overlay shows. Made again for each queue sent to the background player, or all of them from Settings › Playback.",
         "Every track's measured loudness and Automix's analysis. With volume levelling or Automix on, the library is measured again in the background; until then tracks play unlevelled and join with a plain fade.",
         "The tags read from your files. Every file is read again now, as Library's \"Read all tags again\" does; your own tag edits stay.",
         "Every settings backup made before an install or a restore. Going back to them is no longer possible; your settings now stay.",
         "Release zips kept from an install that did not finish. The release list stays.",
+        "Lyrics found online and saved in Songate's folder. Those saved beside the songs stay. Each song may be found online again the next time it plays (the one playing now, after Songate starts again).",
+        "The server's tracks played lately, kept so they start at once the next time. They are fetched from the server again when they play.",
+        "Every album downloaded from the server into Songate's folder. They play from the server again, and can be downloaded again from their pages.",
     };
-    confirm(which == 4 ? ICON_HISTORY : which == 5 ? ICON_DOWNLOAD : ICON_FOLDER, "Storage", titles[which],
+    confirm(which == 4 ? ICON_HISTORY : which == 5 || which == 8 ? ICON_DOWNLOAD : which == 6 ? ICON_QUOTE : ICON_FOLDER, "Storage", titles[which],
             storage.seen ? sizeText(storage.use[which].bytes) + " " GF_ON_CARD : std::string(GF_CAP_ON_CARD), "Clear it?", texts[which], "Clear",
             [this, which] {
                 const std::string dir = Store::Dir;
@@ -182,6 +194,8 @@ void App::clearStorage(int which) {
                     writeGains();
                     break;
                 case 3:
+                    remove((dir + "/lyrics-index.tsv").c_str());   // (read again; what is in memory is written back as it goes)
+                    remove((dir + "/lastfm-tags.tsv").c_str());    // (BETA 3's Last.fm mood tags, taken out: a leftover)
                     identity.forget();
                     meta.stop();
                     meta.clearDiskCache();
@@ -200,6 +214,35 @@ void App::clearStorage(int which) {
                 case 5:
                     for (const auto& n : entries(dir + "/updates")) if (isDownload(n)) remove(joinP(dir + "/updates", n).c_str());
                     break;
+                case 7:   // the server's tracks kept to play again: removed on its worker
+                    subsonic.wipeLocal(false);
+                    break;
+                case 8:   // the server's downloads (and the tracks kept): removed on its worker; a music folder's stay (they are your tracks now)
+                    subsonic.wipeLocal(true);
+                    break;
+                case 6:   // lyrics found online, kept in Songate's folder: the song playing shows none, and all may be looked up again
+                    if (!startFileWork("Removing the lyrics found online", dir, false, [ly = dir + "/lyrics"](FileWork& w) {
+                            w.total = 0;
+                            removeAll(ly);
+                            w.result = "Lyrics found online removed";
+                        }, [this] {
+                            storage.at = -100;
+                            lyrMemo_.clear();   // other songs: looked up again when they play
+                            if (now.lyricsInSongate && now.track >= 0) {   // the song playing: as Remove leaves it, not looked up again this run
+                                const std::string path = lib.tracks[now.track].path;
+                                now.lyrics.clear();
+                                now.synced = false;
+                                now.lyricsFromFile = now.lyricsInSongate = false;
+                                lyrOn = LyrOnline{};
+                                lyrOn.path = path;
+                                lyrOn.state = LyrOnline::NotFound;
+                                lyrOn.why = "Removed from Songate's folder";
+                                lyrMemoSet(path, nullptr, lyrOn.why);
+                            }
+                        }))
+                        return;
+                    fileWork.cat = SetStorage;
+                    return;
                 }
                 storage.at = -100;   // measured again
                 toast(std::string(titles[which]) + " cleared");

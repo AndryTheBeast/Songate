@@ -58,7 +58,7 @@ void App::movePlaylist(int from, int to) {
     store.save();
 }
 
-void App::drawPlaylists(float x, float y, float w, float h) {
+void App::drawPlaylists(float x, float y, float w, float h, bool inLibrary) {
     const int n = int(store.playlists.size());
     plHover = -2;   // the playlist under focus this frame (+ opens its menu); −1 Liked
     const ListMode mode = ListMode(store.viewPlaylists == 0 ? 2 : store.viewPlaylists);   // an old "by album" reads as tiles
@@ -78,9 +78,18 @@ void App::drawPlaylists(float x, float y, float w, float h) {
     if (smart) sub += "  ·  " + std::to_string(smart) + " smart";
     if (folder) sub += "  ·  " + std::to_string(folder) + (folder == 1 ? " from a folder" : " from folders");
     float cy = oy + 18 + 8;
+    if (inLibrary) libraryTabsRow(x, w, oy);   // (Library › Playlists: its switch in the head, scrolling with it)
+    // which playlists: Library's Local | Server says (Apart); yours are only shown here, never changed by it
+    const bool server = serverPlaylistsShown(), mixed = serverPlaylistsMixed();
+    if (server) {
+        const std::vector<Subsonic::Playlist>* pls = serverPlaylistList();
+        std::string kind = subsonic.view().kind;
+        kind = kind.empty() ? std::string("the server") : std::string(1, char(toupper(uint8_t(kind[0])))) + kind.substr(1);
+        sub = pls ? std::to_string(pls->size()) + (pls->size() == 1 ? " playlist on " : " playlists on ") + kind : "Asking the server…";
+    }
     kicker("Library", x + 28, cy, pal.text3);
     cy += 10;
-    g.text("Playlists", { css::Xxl, Weight::Bold }, x + 28, cy, pal.text, 1, Align::Left, int(w - 56));
+    g.text("Playlists", { css::Xxl, Weight::Bold }, x + 28, cy, pal.text, 1, Align::Left, int(w - 56 - (inLibrary ? 640 : 0)));
     cy += 38;
     g.text(held >= 0 ? "Moving “" + store.playlists[size_t(held)].name + "”: " GF_MOVING_LOW : sub, { css::Sm }, x + 28, cy + 4,
            held >= 0 ? pal.accentInk : pal.text3, 1, Align::Left, int(w - 56));
@@ -89,7 +98,7 @@ void App::drawPlaylists(float x, float y, float w, float h) {
     float bx = x + 28;
     bool clicked = false;
     bx += button(uid("pls.new"), ICON_PLUS, "New playlist", bx, cy, true, &clicked, false, false, DefaultFocus) + 8;
-    if (clicked) openNewList();
+    if (clicked) { if (server) serverNewPlaylist({}); else openNewList(); }   // (the server's: a plain one; no Automix, smart or mood there)
     {
         // By album would be the tiles again here (a playlist is not an album): three views
         int m = store.viewPlaylists == 0 ? 2 : store.viewPlaylists;
@@ -99,6 +108,12 @@ void App::drawPlaylists(float x, float y, float w, float h) {
     cy += 34 + 16;
 
     g.clip(x, y, w, h);
+    if (server) {
+        drawServerPlaylists(x, y, w, h, cy, oy, mode);
+        g.unclip();
+        ui.popArea();
+        return;
+    }
     // ref −1 is Liked; then the sidebar's playlists in their order
     auto info = [&](int ref, const std::vector<int>& t) {
         std::string s = std::to_string(t.size()) + (t.size() == 1 ? " track" : " tracks");
@@ -174,7 +189,7 @@ void App::drawPlaylists(float x, float y, float w, float h) {
             g.roundRect(rx + 16, mid - cov / 2, cov, cov, 8, pal.surface2);
             g.icon(playlistIcon(ref), rx + 16 + cov / 2, mid, cov * 0.5f, ref < 0 ? pal.accentInk : pal.text2);
             const float tx = rx + 16 + cov + 14;
-            const bool playing = q.name == nameOf(ref) && isPlaying();
+            const bool playing = q.name == nameOf(ref) && isPlaying() && !srvq_.on;
             if (mode == ListMode::List) {
                 g.textC(nameOf(ref), { css::Base, Weight::SemiBold }, tx, mid, playing ? pal.accentInk : pal.text, 1, Align::Left, int(rw * 0.5f));
                 g.textC(info(ref, t), { css::Sm }, rx + rw - 48 - ctlW, mid, pal.text3, 1, Align::Right, int(rw * 0.3f));
@@ -191,6 +206,12 @@ void App::drawPlaylists(float x, float y, float w, float h) {
         cy += (n + 1) * rowH;
     }
     sa.content = cy - oy + 24;
+    if (mixed) {   // Mixed in: the server's playlists after yours, under its name
+        std::string kind = subsonic.view().kind;
+        kind = kind.empty() ? std::string("your server") : std::string(1, char(toupper(uint8_t(kind[0])))) + kind.substr(1);
+        kicker("On " + kind, x + 28, cy + 14, pal.text3);
+        drawServerPlaylists(x, y, w, h, cy + 34, oy, mode);   // (it sets the page's height)
+    }
     g.unclip();
     ui.popArea();
 }

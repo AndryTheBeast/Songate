@@ -137,6 +137,11 @@ int main() {
     check("Who with a body is refused", !unpack(B("tW\t1\t-\t0\t0\t0\t0\nx"), x0));
     m = Message{}; m.kind = Kind::Who; m.song = 3;
     check("Who carries the starter's order", unpack(pack(m), u) && u.song == 3 && !u.flag);
+    m = Message{}; m.kind = Kind::Members; m.list = "PC\nTheBeast's Phone";
+    check("Members: the other devices' names come back the same", unpack(pack(m), u) && u.kind == Kind::Members && u.list == "PC\nTheBeast's Phone");
+    m = Message{}; m.kind = Kind::Members;
+    check("Members: no one else comes back empty", unpack(pack(m), u) && u.kind == Kind::Members && u.list.empty());
+    check("Members with a bad body is refused", !unpack(B("tM\t0\t-\t0\t0\t0\t0\n@zz"), x0) && !unpack(B("tM\t0\t-\t0\t0\t0\t0\nPC"), x0));
     m = Message{}; m.kind = Kind::Ask; m.what = AskOrder; m.song = 2;
     check("an order asked for comes back the same", unpack(pack(m), u) && u.what == AskOrder && u.song == 2);
     m = Message{}; m.kind = Kind::Ask; m.what = AskWhere;
@@ -164,6 +169,18 @@ int main() {
     check("a name too long is refused", !unpack(B("tO\t0\t-\t0\t0\t0\t0\n@" + std::string(2 * 257, 'a')), x0));
     m = Message{}; m.kind = Kind::Handoff; m.song = 1; m.position = 42.5; m.flag = true; m.songs = { { h1, h2, 200 }, { "", h3, 100 } };
     check("a handoff comes back the same", unpack(pack(m), u) && u.kind == Kind::Handoff && u.song == 1 && u.position == 42.5 && u.flag && u.songs.size() == 2 && u.songs[1].loose == h3);
+    {   // server songs (2026-11-07): the server's print and the song's id cross, the id in hex; your own songs stay as they were
+        Song sv{ "", h2, 200 };
+        sv.server = h3;
+        sv.sid = "a1b2-C3 d4/é";   // (any bytes: they go as hex)
+        m = Message{}; m.kind = Kind::Handoff; m.song = 0; m.songs = { sv, { h1, "", 90 } };
+        check("a server song comes back the same", unpack(pack(m), u) && u.songs.size() == 2 && u.songs[0].server == h3 && u.songs[0].sid == sv.sid &&
+                                                   u.songs[0].loose == h2 && u.songs[1].server.empty() && u.songs[1].sid.empty() && u.songs[1].exact == h1);
+        check("a server song with no id is refused", !unpack(B("tO\t0\t-\t0\t0\t0\t0\n- " + h2 + " 200 " + h3 + " "), x0));
+        check("a server song's id of odd hex is refused", !unpack(B("tO\t0\t-\t0\t0\t0\t0\n- " + h2 + " 200 " + h3 + " abc"), x0));
+        check("a server song's id too long is refused", !unpack(B("tO\t0\t-\t0\t0\t0\t0\n- " + h2 + " 200 " + h3 + " " + std::string(2 * 129, 'a')), x0));
+        check("four fields are refused", !unpack(B("tO\t0\t-\t0\t0\t0\t0\n- " + h2 + " 200 " + h3), x0));
+    }
     m = Message{}; m.kind = Kind::Have; m.have = { 1, 0, 1 };
     check("Have comes back the same", unpack(pack(m), u) && u.have == std::vector<uint8_t>({ 1, 0, 1 }));
     m = Message{}; m.kind = Kind::Queue; m.songs.assign(3000, Song{ h1, h2, 200 });
