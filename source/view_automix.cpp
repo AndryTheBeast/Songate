@@ -147,10 +147,9 @@ void App::orderAutomixList(int ref, bool announce) {
     // the order itself on a worker (mixOrderTick puts it in): one at a time; another asked meanwhile waits its turn
     const bool sameRunning = mixOrderOn_ && mixOrderJob_.name == p.name && mixOrderJob_.before == p.tracks;
     if (sameRunning) { mixOrderJob_.announce = mixOrderJob_.announce || announce; return; }
-    if (mixOrderOn_ || store.stopMixOrder) {
+    if (mixOrderOn_) {
         for (auto& w : mixOrderWaiting_) if (w.first == p.name) { w.second = w.second || announce; return; }
         mixOrderWaiting_.push_back({ p.name, announce });
-        if (announce && store.stopMixOrder) toast("Ordering is stopped: Resume it in Settings › Playback");
         return;
     }
     mixOrderJob_ = MixOrderJob{};
@@ -163,8 +162,6 @@ void App::orderAutomixList(int ref, bool announce) {
     mixOrderJob_.first = first;
     mixOrderJob_.model = mixModel();
     mixOrderJob_.announce = announce;
-    mixOrderWatch_.done = 0;
-    mixOrderWatch_.total = 0;
     mixOrderWatch_.stop = false;
     mixOrderDone_ = false;
     mixOrderOn_ = true;
@@ -189,9 +186,9 @@ void App::mixOrderTick() {
         for (int i = 0; i < int(store.playlists.size()); i++) if (store.playlists[size_t(i)].name == j.name) ref = i;
         if (ref >= 0 && store.playlists[size_t(ref)].own() && store.playlists[size_t(ref)].automix) {
             FolderPlaylist& p = store.playlists[size_t(ref)];
-            const bool whole = j.result.size() == j.here.size();   // (empty for a list with songs: it was stopped)
+            const bool whole = j.result.size() == j.here.size();
             if (!whole || p.tracks != j.before) {
-                // stopped, or songs came or went meanwhile: asked again (at once, or when ordering is resumed)
+                // songs came or went meanwhile: asked again
                 mixOrderWaiting_.insert(mixOrderWaiting_.begin(), { j.name, j.announce });
             } else {
                 std::vector<std::string> out;
@@ -206,7 +203,7 @@ void App::mixOrderTick() {
             }
         }
     }
-    if (!mixOrderOn_ && !store.stopMixOrder && !mixOrderWaiting_.empty()) {
+    if (!mixOrderOn_ && !mixOrderWaiting_.empty()) {
         const auto next = mixOrderWaiting_.front();
         mixOrderWaiting_.erase(mixOrderWaiting_.begin());
         for (int i = 0; i < int(store.playlists.size()); i++)

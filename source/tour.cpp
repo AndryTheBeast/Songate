@@ -1,5 +1,5 @@
 /*
- * Gatefold NX · tour.cpp
+ * Songate · tour.cpp
  * The guided tour (the user, 2026-10-28): offered by the first launch's welcome card, again from Settings › About.
  * Each step opens the real page it talks about, lights up the part (the rest dimmed) and explains it in a card with an
  * example. Next / Back / Chapters / ×, by D-pad, A and B, or touch. The pages under it are drawn as usual but take no

@@ -237,16 +237,16 @@ private:
     long long fadeLen_ = 0, fadeAt_ = 0;   // frames: the crossfade's length and how far it is (ffLock_)
     long long delay_ = 0;                  // frames of the outgoing track still to play before the incoming one starts (Automix)
     float outLevel_ = 1;                   // the outgoing track's levelling gain, kept through the fade
-    bool outEcho_ = false;
+    bool outEcho_ = false;   // the join echoes the outgoing track: its fade outlasts its end
     std::vector<int16_t> pv_;              // the preview (ffLock_)
     std::atomic<bool> pvOn_{ false };
-    std::atomic<size_t> pvAt_{ 0 }, pvLen_{ 0 };   // frames                 // the join echoes the outgoing track: its fade outlasts its end
+    std::atomic<size_t> pvAt_{ 0 }, pvLen_{ 0 };   // frames
     automix::Fader fader_;                 // the fade's gains, EQ swaps, filters and echo (shared with tools/preview/mixtest)
     automix::OutLoop outLoop_;             // the outgoing voice, its last bars looped when the join asks
     automix::Stretcher stretch_;           // the track playing, at the next one's tempo before and through a join (Automix v3)
     automix::Stretcher stretchOut_;        // … handed over with it when it becomes the outgoing voice (its buffered audio must not be skipped)
     float outF_[4096 * 2] = {};            // the outgoing voice, as floats at its own level
-    float mixIn_[4096 * 2] = {}, mixOut_[4096 * 2] = {};
+    float mixIn_[4096 * 2] = {};
     int16_t pcmIn_[4096 * 2] = {};
 
     // The equalizer (gfeq.hpp), run in the hook. Settings are handed over through eqWant_ (eqLock_), which

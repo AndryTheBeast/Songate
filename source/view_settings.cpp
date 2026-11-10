@@ -942,18 +942,6 @@ void App::drawSettings(float x, float y, float w, float h) {
                                           [this] { setJobStopped(Stoppable::Levels, !store.stopLevels); })
                               : infoRow("Measured", measuredHint);
         measuredRow.value = std::to_string(measured) + " of " + std::to_string(lib.tracks.size());
-        // Ordered for Automix: how many Automix playlists there are; Stop / Resume while one is being ordered or waits for it
-        int mixLists = 0;
-        for (const auto& pl : store.playlists) mixLists += pl.own() && pl.automix;
-        const int mixWaiting = int(mixOrderWaiting_.size()) + (mixOrderOn_ ? 1 : 0);
-        const std::string orderedHint = store.stopMixOrder ? "Stopped. Automix playlists keep the order they have until you resume"
-                                      : mixWaiting > 0     ? "Finding the order with the best joins, in the background"
-                                                           : "An Automix playlist is put in the order with the best joins, in the background";
-        Row orderedRow = store.stopMixOrder || mixWaiting > 0
-                             ? buttonRow("Ordered for Automix", orderedHint, "set.mixorderstop", store.stopMixOrder ? ICON_PLAY : ICON_X,
-                                         store.stopMixOrder ? "Resume" : "Stop", [this] { setJobStopped(Stoppable::MixOrder, !store.stopMixOrder); })
-                             : infoRow("Ordered for Automix", orderedHint);
-        orderedRow.value = std::to_string(mixLists - std::min(mixLists, mixWaiting)) + " of " + std::to_string(mixLists);
         static const std::vector<std::string> orders = { "Default", "Repeat list", "Repeat song", "Shuffle" };
         sections.push_back(
             { "Playback", ICON_PLAY,
@@ -982,7 +970,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                                persistSoon(0.3f);
                            },
                            store.levelMode ? 0u : 0x7u),
-                    measuredRow, orderedRow } },
+                    measuredRow } },
                 { "Crossfade",
                   { segRow("Crossfade", "The end of a song fades into the next one. Automix playlists mix their own",
 
@@ -1073,7 +1061,6 @@ void App::drawSettings(float x, float y, float w, float h) {
                                                                                          : "Sets the ten bands")
                                                                    : "Your own curve, kept when you choose a preset", "set.eqpreset",
                                   nullptr, preset, [this] { openEqPresets(); });
-        presetRow.value = "";
         // Under the preset: Save while the curve is your own, Rename and Delete while one of yours is on
         std::vector<Row> presetRows = { presetRow };
         const Row saveNew = buttonRow("Save as a new preset", "Keeps this sound as a preset of your own",

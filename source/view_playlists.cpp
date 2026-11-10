@@ -107,7 +107,6 @@ void App::drawPlaylists(float x, float y, float w, float h, bool inLibrary) {
         store.viewPlaylists = m;
     }
     cy += 34 + 16;
-    const float listTop = cy;
 
     g.clip(x, y, w, h);
     if (server) {
@@ -177,7 +176,6 @@ void App::drawPlaylists(float x, float y, float w, float h, bool inLibrary) {
             const float ry = cy + k * rowH, rx = x + 14, rw = w - 28;
             const Id id = uid("pls.item", keyOf(ref));
             const bool visible = !(ry + rowH < y - rowH || ry > y + h + rowH);
-            const float ctlW = 0;
             const bool hit = ui.item(id, { rx, ry, rw, rowH - 4 }, 10);
             if (hit) navigate(View::List, ref);
             if (ui.focused(id)) plHover = ref;
@@ -194,15 +192,15 @@ void App::drawPlaylists(float x, float y, float w, float h, bool inLibrary) {
             const bool playing = q.name == nameOf(ref) && isPlaying() && !srvq_.on;
             if (mode == ListMode::List) {
                 g.textC(nameOf(ref), { css::Base, Weight::SemiBold }, tx, mid, playing ? pal.accentInk : pal.text, 1, Align::Left, int(rw * 0.5f));
-                g.textC(info(ref, t), { css::Sm }, rx + rw - 48 - ctlW, mid, pal.text3, 1, Align::Right, int(rw * 0.3f));
+                g.textC(info(ref, t), { css::Sm }, rx + rw - 48, mid, pal.text3, 1, Align::Right, int(rw * 0.3f));
             } else {
-                g.text(nameOf(ref), { css::Base, Weight::SemiBold }, tx, mid - 19, playing ? pal.accentInk : pal.text, 1, Align::Left, int(rw - 160 - ctlW));
+                g.text(nameOf(ref), { css::Base, Weight::SemiBold }, tx, mid - 19, playing ? pal.accentInk : pal.text, 1, Align::Left, int(rw - 160));
                 std::string s2 = info(ref, t);
                 if (ref >= 0 && store.playlists[size_t(ref)].folder()) s2 += " · " + store.playlists[size_t(ref)].path;
                 else if (ref >= 0 && store.playlists[size_t(ref)].smart()) s2 = smartSummary(store.playlists[size_t(ref)].path) + " · " + s2;
-                g.text(s2, { css::Sm }, tx, mid + 1, pal.text3, 1, Align::Left, int(rw - 160 - ctlW));
+                g.text(s2, { css::Sm }, tx, mid + 1, pal.text3, 1, Align::Left, int(rw - 160));
             }
-            if (playing) eqGlyph(rx + rw - 48 - ctlW - 13 - (mode == ListMode::List ? g.measure(info(ref, t), { css::Sm }) + 14 : 0), mid, pal.accentInk);
+            if (playing) eqGlyph(rx + rw - 48 - 13 - (mode == ListMode::List ? g.measure(info(ref, t), { css::Sm }) + 14 : 0), mid, pal.accentInk);
             g.icon(ICON_CHEV, rx + rw - 24, mid, 18, pal.text3);
         }
         cy += (n + 1) * rowH;

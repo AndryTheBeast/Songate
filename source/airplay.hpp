@@ -70,7 +70,6 @@ private:
     bool quit_ = false, wanted_ = false;
     std::vector<std::string> allowed_;   // under m_
     int answer_ = -1;                    // under m_: -1 waiting, 0 no, 1 yes
-    std::condition_variable answered_;
     std::vector<uint8_t> cover_;   // under m_
     View view_;
     static constexpr unsigned Ring = 1u << 18;   // frames: 5.4 s

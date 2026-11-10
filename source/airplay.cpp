@@ -597,11 +597,11 @@ struct AirPlay::Impl {
         } else if (method == "ANNOUNCE") {
             std::string name;
             const std::string id = deviceOf(body, peer, name);
-            if (known(id)) { takeAnnounce(fromCand, head, body, cseq); return; }
+            if (known(id)) { takeAnnounce(fromCand, body, cseq); return; }
             if (ask.on) {   // one question at a time
                 reply = "RTSP/1.0 403 Forbidden\r\nServer: AirTunes/105.1\r\nCSeq:" + cseq + "\r\n";
             } else {
-                ask = Ask{ true, fromCand, id, head, body, cseq, peer, seconds() + 20 };
+                ask = Ask{ true, fromCand, id, body, cseq, peer, seconds() + 20 };
                 std::lock_guard<std::mutex> g(a.m_);
                 a.view_.asking = true;
                 a.view_.askId = id;
@@ -721,7 +721,7 @@ struct AirPlay::Impl {
     double candSince = 0;
     // The question, while its ANNOUNCE waits for an answer: the loop runs on meanwhile (the stream playing is not held up), and
     // the answer is sent when it comes, or 403 after 20 s. One at a time: another unknown device meanwhile hears 403.
-    struct Ask { bool on = false, fromCand = false; std::string id, head, body, cseq; uint32_t peer = 0; double until = 0; } ask;
+    struct Ask { bool on = false, fromCand = false; std::string id, body, cseq; uint32_t peer = 0; double until = 0; } ask;
 
     void sendOn(bool fromCand, const std::string& reply) {
         const Sock fd = fromCand ? cand : client;
@@ -742,7 +742,7 @@ struct AirPlay::Impl {
     }
 
     /** An allowed ANNOUNCE: a newcomer becomes the one that plays (the old stream ends), then it is taken as before. */
-    void takeAnnounce(bool fromCand, const std::string& head, const std::string& body, const std::string& cseq) {
+    void takeAnnounce(bool fromCand, const std::string& body, const std::string& cseq) {
         if (!playable(body)) {   // refused as it is: the stream playing goes on, a newcomer is closed
             sendOn(fromCand, "RTSP/1.0 415 Unsupported Media Type\r\nServer: AirTunes/105.1\r\nCSeq:" + cseq + "\r\n\r\n");
             if (fromCand) dropCand();
@@ -770,7 +770,6 @@ struct AirPlay::Impl {
             }
             newSong();   // a new stream: measured from its start (outside the lock: newSong takes it)
         }
-        (void)head;
         sendOn(false, reply + "\r\n");
     }
 
@@ -787,7 +786,7 @@ struct AirPlay::Impl {
         endAsk();
         if (answer == 1) {
             onceId = was.id;
-            takeAnnounce(was.fromCand, was.head, was.body, was.cseq);
+            takeAnnounce(was.fromCand, was.body, was.cseq);
             onceId = was.id;   // (taking over hung the old stream up, which forgets the once)
         } else {
             sendOn(was.fromCand, "RTSP/1.0 403 Forbidden\r\nServer: AirTunes/105.1\r\nCSeq:" + was.cseq + "\r\n\r\n");
@@ -844,7 +843,7 @@ struct AirPlay::Impl {
     uint32_t clientAddress = 0;
 
     void loop() {
-        double announceAt = 0, netAt = 0, stale = 0;
+        double announceAt = 0, netAt = 0;
         int told = 0;
         for (;;) {
             {
@@ -960,7 +959,6 @@ struct AirPlay::Impl {
                 sendto(media[2], reinterpret_cast<const char*>(out), sizeof out, 0, reinterpret_cast<sockaddr*>(&src), sl);
             }
             drain(now);
-            (void)stale;
         }
         if (mdns >= 0 && !announce.empty()) sayAnnounce(buildAnnounce(0));   // goodbye: iOS lists it no longer
         unadvertise();   // (the PC's: through Windows)
@@ -981,7 +979,6 @@ void AirPlay::stop() {
         wanted_ = false;
     }
     wake_.notify_all();
-    answered_.notify_all();   // a question waiting ends with Songate
     if (thread_.joinable()) thread_.join();
     delete[] ring_;
     ring_ = nullptr;
@@ -1003,7 +1000,6 @@ void AirPlay::answer(bool yes) {
         if (!view_.asking || answer_ >= 0) return;   // the first answer counts: a Cancel seen after Allow changes nothing
         answer_ = yes ? 1 : 0;
     }
-    answered_.notify_all();
 }
 
 void AirPlay::want(bool on) {

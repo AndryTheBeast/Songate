@@ -385,7 +385,6 @@ void App::drawTrackList(float x, float y, float w, float h) {
     ui.popArea();
 }
 
-/** A folder playlist's Delete (its page, or the Folders page's "In playlists"): the same card as your own playlists'. */
 /** The first launch (the user, 2026-10-27: always asked): the card's Music folder offered, with the guided tour or without
  *  (the user, 2026-10-28), the picker under the card for another. No Cancel: Another folder, B or × leave the picker. */
 void App::welcomeCard(const std::string& found) {
@@ -466,6 +465,7 @@ void App::storageGiven() {
 }
 #endif
 
+/** A folder playlist's Delete (its page, or the Folders page's "In playlists"): the same card as your own playlists'. */
 void App::confirmRemoveFolderPlaylist(int ref, int count) {
     if (ref < 0 || ref >= int(store.playlists.size())) return;
     const FolderPlaylist& p = store.playlists[ref];
@@ -730,8 +730,6 @@ float App::drawSubfolders(const char* idp, const FolderNode& node, float x, floa
     return nSub * rowH;
 }
 
-/** "Add all as playlists" (Folders, Library → Folders): every sub-folder of a folder becomes a folder playlist;
- *  those already in are left as they are, a taken name gets "<name> 2". Asks first, with the count. */
 /** A genre's page: Add as playlist (a smart Genre playlist: it follows the genre), or In playlists (pressed: Delete, asked first). */
 void App::genrePlaylistButton(const std::string& genre, float& bx, float by) {
     const std::string spec = "smart:genre:" + genre;
@@ -781,6 +779,8 @@ void App::addGenresAsPlaylists() {
     sheet.askYesIcon = ICON_PLUS;
 }
 
+/** "Add all as playlists" (Folders, Library → Folders): every sub-folder of a folder becomes a folder playlist;
+ *  those already in are left as they are, a taken name gets "<name> 2". Asks first, with the count. */
 void App::addSubfoldersAsPlaylists(int f) {
     if (f < 0 || f >= int(lib.folders.size())) return;
     std::vector<int> add;

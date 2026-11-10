@@ -249,8 +249,8 @@ private:
     std::unordered_map<std::string, int> measured_;   // font + text → width: measuring is FreeType work, every text asks each frame
     bool ghost_ = false;
     int ghostBudget_ = 0;
-    int newBudget_ = 0;
-    int wrapBudget_ = 0;  // new wraps a ghost may do this frame   // new visible text textures left this frame: a page or a track change spreads over a few frames
+    int newBudget_ = 0;   // new visible text textures left this frame: a page or a track change spreads over a few frames
+    int wrapBudget_ = 0;  // new wraps a ghost may do this frame
     float shiftX_ = 0, shiftY_ = 0;
     bool wipeOn_ = false, wipeLeft_ = true, wipeBump_ = false, textOnly_ = false;
     bool pixelWipe_ = false, shapesOnly_ = false;   // shape(): through the wipe per pixel, not at its centre (images)

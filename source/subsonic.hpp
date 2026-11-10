@@ -64,8 +64,6 @@ public:
     bool cover(const std::string& id, std::vector<uint8_t>& bytes);
     /** Covers asked for, decoded (RGBA32) on the worker: the caller owns them (a texture each, then SDL_FreeSurface). */
     void takeCovers(std::vector<std::pair<std::string, SDL_Surface*>>& out);
-    /** Where a song streams from (with its token: never logged). */
-    std::string streamUrl(const std::string& id);
     /** Stage 2: a song fetched to the card (server-cache/, the oldest dropped past 512 MB) to play from there; asked again it is found
      *  at once. fetched(): its file once it is there ("" while it comes; false when it could not be had). */
     /** now: the song to play now, fetched before everything else waiting (the user, 2026-11-07: "Sometimes it takes a bit to load":
@@ -143,7 +141,6 @@ private:
     bool unreached_ = false;     // the worker's: the task's last call never got to the server
     void clearSession();         // m_ held: every list and cover of the session forgotten
     std::vector<std::pair<std::string, std::string>> songs_;   // under m_: id → its file ("" could not be had)
-    void prune();
     void run();
     bool call(const std::string& method, const std::string& extra, std::string& body, std::string& err);
     std::string base(const std::string& method, const std::string& extra);
@@ -179,7 +176,6 @@ private:
     int dlDone_ = 0, dlTotal_ = 0, wiping_ = 0;
     unsigned dlGen_ = 0;
     std::vector<Playlist> playlists_;
-    unsigned plEdits_ = 0;
     bool havePlaylists_ = false;
     unsigned plGen_ = 0;
     std::vector<std::pair<std::string, std::pair<Playlist, std::vector<Song>>>> playlistSongs_;

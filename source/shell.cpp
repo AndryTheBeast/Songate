@@ -161,13 +161,6 @@ void App::drawEdges() {
 
 void App::draw() {
     updateEdges();
-#if defined(GF_ANDROID) && defined(GF_DEV)
-    if (portraitMock_ >= 0 && css::H > css::W) {   // a portrait mock-up instead of the app (view_portrait.cpp)
-        drawBackground();
-        drawPortraitMock(portraitMock_);
-        return;
-    }
-#endif
     hoverTrackShown = hoverTrack;
     hoverTrack = -1;
     hoverSrvShownOn_ = hoverSrvOn_;   // (a server track's row: its song, and its place on a server playlist's page)
@@ -257,8 +250,6 @@ void App::draw() {
     case View::Playlists: drawPlaylists(mx, my, mw, mh); break;
     case View::Server: drawServer(mx, my, mw, mh); break;
     case View::PickFolder:
-        if (folderFor >= 0 && route.view != View::PickFolder) folderFor = -1;
-        [[fallthrough]];
     case View::PickPlaylist:
     case View::PickExport: drawPicker(mx, my, mw, mh); break;
     default: drawTrackList(mx, my, mw, mh); break;
@@ -1557,11 +1548,6 @@ void App::backgroundJobs(Job (&jobs)[JobSlots], bool (&busy)[JobSlots]) {
         }
     }
     // tag and cover changes into the files: this run, a song at a time (Stop keeps the rest waiting, in Songate meanwhile)
-    if (!store.stopMixOrder && (mixOrderOn_ || !mixOrderWaiting_.empty())) {   // an Automix playlist being ordered (view_automix.cpp)
-        jobs[6] = { "Ordering for Automix", mixOrderWatch_.done.load(), mixOrderWatch_.total.load() > 1 ? mixOrderWatch_.total.load() : 0, SetPlayback,
-                    Stoppable::MixOrder, "Ordered for Automix", false, ICON_REFRESH };
-        busy[6] = true;
-    }
     if (!store.stopTagWrites && tagTotal_ > 0 && tagDone_ < tagTotal_) {
         jobs[9] = { "Writing tags", tagDone_, tagTotal_, SetLibrary, Stoppable::TagWrites, "Written into files", false, ICON_TAG };
         busy[9] = true;
@@ -1630,20 +1616,18 @@ void App::applyJobStops() {
     levels.pause(store.stopLevels);
     lyrIndex.pause(store.stopLyrics);
     subsonic.pauseDownloads(store.stopDownloads);
-    if (store.stopMixOrder) mixOrderWatch_.stop = true;   // (the one being worked out ends; it is asked again at Resume)
 }
 
 void App::setJobStopped(Stoppable which, bool stopped) {
     bool& flag = which == Stoppable::Covers ? store.stopCovers : which == Stoppable::Thumbs ? store.stopThumbs
                : which == Stoppable::Lyrics ? store.stopLyrics
-               : which == Stoppable::Downloads ? store.stopDownloads : which == Stoppable::TagWrites ? store.stopTagWrites
-               : which == Stoppable::MixOrder ? store.stopMixOrder : store.stopLevels;
+               : which == Stoppable::Downloads ? store.stopDownloads : which == Stoppable::TagWrites ? store.stopTagWrites : store.stopLevels;
     if (which == Stoppable::None || flag == stopped) return;
     flag = stopped;
     if (which == Stoppable::Covers) coversHeld = false;   // your Stop or Resume answers the launch's hold too
     applyJobStops();
     persistSoon(0.3f);
-    static const char* names[] = { "", "Covers", "Overlay covers", "Levelling", "Reading lyrics", "Downloads", "Writing tags", "Automix ordering" };   // as Stoppable
+    static const char* names[] = { "", "Covers", "Overlay covers", "Levelling", "Reading lyrics", "Downloads", "Writing tags" };   // as Stoppable
     toast(std::string(names[int(which)]) + (stopped ? " stopped. Resume it in Settings" : " resumed"));
 }
 

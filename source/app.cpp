@@ -328,16 +328,6 @@ bool App::init() {
         }
         fclose(f);
     }
-    if (FILE* f = fopen(store.path("portrait-mock.txt").c_str(), "r")) {   // portrait mock-ups (view_portrait.cpp)
-        if (fscanf(f, "%d", &portraitMock_) != 1) portraitMock_ = -1;
-        // then, if given, a word of a song's file name to play (one with lyrics, for the lyrics page)
-        char want[128] = {};
-        if (fscanf(f, " %127[^\n]", want) == 1)
-            for (int t = 0; t < int(lib.tracks.size()); t++)
-                if (lib.tracks[t].path.find(want) != std::string::npos) { playTracks({ t }, 0, "Mock", false); break; }
-        fclose(f);
-        if (portraitMock_ >= 0 && now.track >= 0 && !isPlaying()) togglePlay();   // the music on, for what moves with it
-    }
 #endif
 #endif
     startMark("queue");
@@ -2089,7 +2079,6 @@ void App::updateAutomix() {
     const Level* lb = levels.find(lib.tracks[q.tracks[q.order[p]]].path);
     // Auto, always (the user, 2026-10-29: "all in on Auto" for 2.0; the join editor is out of reach). Joins edited before
     // stay in mixes.tsv, unused, for a later version that edits them again
-    const bool edited = false;
     const automix::Plan pl = planJoin(la ? &la->mix : nullptr, dur, lb ? &lb->mix : nullptr, store.crossfade, nullptr);
     if (pl.off || dur <= pl.length * 2) { xfadeChecked = true; return; }   // Off, or a track shorter than two fades: it plays whole
     if (pl.speed != 1 && !stretchBegun && pos >= pl.stretchFrom) {   // towards the next track's tempo, a few beats before
@@ -2109,7 +2098,6 @@ void App::updateAutomix() {
     if (!mixAnnounced || time >= mixUntil) {   // (again after a long pause in between: it had run out)
         mixAnnounced = true;
         mixLabel = "Automix";
-        if (edited && pl.join.preset != automix::Preset::Auto) mixLabel += std::string(" · ") + automix::name(pl.join.preset);
         if (pl.beatmatched) mixLabel += " · " + std::to_string(int(std::lround(pl.bpm))) + " BPM";
         mixUntil = time + std::max(0.0, pl.startOut - pos) + pl.length;
         mixShownAt = time;

@@ -392,8 +392,8 @@ void LyricIndex::run() {
     constexpr auto kLookGap = std::chrono::milliseconds(6), kReadGap = std::chrono::milliseconds(25);
     size_t next = 0;      // where the look for work goes on from
     int sinceSave = 0;
-    bool dirty = false, listed = false;
-    bool mustKeep = false;   // Songate's own changes (saved, removed, the playing song) not yet in the cache: kept even at exit   // listed: Songate's lyrics folder listed for this run of work
+    bool dirty = false, listed = false;   // listed: Songate's lyrics folder listed for this run of work
+    bool mustKeep = false;   // Songate's own changes (saved, removed, the playing song) not yet in the cache: kept even at exit
     auto needs = [](const Song& s) { return !s.read || s.stale || s.check; };
     auto pending = [&] {
         for (size_t i = next; i < songs_.size(); i++) if (needs(songs_[i])) { next = i; return true; }

@@ -670,9 +670,6 @@ void Subsonic::saveDownloads() {
     rename(tmp.c_str(), p.c_str());
 }
 
-/** A song played (fetched now, or found there): its time in the cache's index set to now; then the cache kept to 512 MB, the songs
- *  played longest ago going first. Its own index (server-cache.tsv), as the app's own file calls reach every platform alike. */
-void Subsonic::prune() {}
 void Subsonic::takeCovers(std::vector<std::pair<std::string, SDL_Surface*>>& out) {
     std::lock_guard<std::mutex> g(m_);
     for (auto& d : decoded_) out.push_back(d);
@@ -683,8 +680,6 @@ std::string Subsonic::base(const std::string& method, const std::string& extra) 
     std::lock_guard<std::mutex> g(m_);
     return view_.server + "/rest/" + method + "?u=" + urlEncode(view_.user) + "&t=" + token_ + "&s=" + salt_ + "&v=1.16.1&c=Songate&f=json" + extra;
 }
-
-std::string Subsonic::streamUrl(const std::string& id) { return base("stream", "&id=" + urlEncode(id)); }
 
 void Subsonic::note(const std::string& s) { (void)s; }
 
@@ -1042,7 +1037,6 @@ void Subsonic::run() {
             if (!ok) note("Playlist " + std::string(method) + " failed: " + err);
             playlistSongs_.erase(std::remove_if(playlistSongs_.begin(), playlistSongs_.end(), [&](const auto& q) { return q.first == t.id; }), playlistSongs_.end());
             tasks_.push_back({ Task::Playlists });
-            plEdits_++;
             view_.gen++;
         } else if (t.kind == Task::SaveLedger) {
             std::string out;

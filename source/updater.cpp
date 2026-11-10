@@ -1,5 +1,5 @@
 /*
- * Gatefold NX · updater.cpp
+ * Songate · updater.cpp
  * See updater.hpp. Self-contained on purpose: a small JSON reader, SHA-256, CRC-32 and an inflater for the release
  * zips (stored and deflated entries, as every zip tool writes them), so the PC preview needs no extra library.
  */
@@ -143,14 +143,6 @@ bool removeTree(const std::string& p) {
     bool ok = true;
     for (const auto& n : names(p)) ok = removeTree(join(p, n)) && ok;
     return rmdir(p.c_str()) == 0 && ok;
-}
-
-void measure(const std::string& p, int64_t& bytes, int& files) {
-    for (const auto& n : names(p)) {
-        const std::string a = join(p, n);
-        if (isDir(a)) measure(a, bytes, files);
-        else { bytes += std::max<int64_t>(0, fileSize(a)); files++; }
-    }
 }
 
 /** Renames over a file that may exist (FAT does not rename onto one). The old one is kept as .gfold until the new one is in. */
@@ -474,7 +466,7 @@ bool isEmoji(uint32_t cp) {
     return cp >= 0x1F000 || (cp >= 0x2300 && cp <= 0x2BFF) || cp == 0xFE0F || cp == 0x200D || cp == 0x21E7 || cp == 0x2328;
 }
 
-/** An emoji as one of Gatefold's icons (by name; App::changelogIcon draws it). */
+/** An emoji as one of Songate's icons (by name; App::changelogIcon draws it). */
 const char* emojiIcon(uint32_t cp) {
     switch (cp) {
     case 0x2728: return "sparkle";
@@ -573,7 +565,7 @@ std::vector<UpdLog> logFromNotes(const std::string& body) {
 bool readManifest(const std::string& text, UpdRelease& r) {
     Json m;
     if (!parseJson(text, m) || m.kind != Json::Obj) return false;
-    if (m.i("format") > 1) return false;   // a newer manifest than this Gatefold knows: treated as none
+    if (m.i("format") > 1) return false;   // a newer manifest than this Songate knows: treated as none
     r.manifest = true;
     r.protocol = int(m.i("protocol"));
     if (!m.s("version").empty()) r.version = Updater::pretty(m.s("version"));
@@ -818,7 +810,7 @@ void Updater::readInstalled() {
     // The background player's new file runs once it was restarted here, or the console was
     installed.bgChanged = readKey(t, "bgChanged") == "1" && readKey(t, "bgRestarted") != "1" &&
                           std::llabs(atoll(readKey(t, "boot").c_str()) - bootStamp()) < 120;
-    installed.fresh = exists(dir_ + "/updates/fresh.txt");   // still to do when Gatefold closes
+    installed.fresh = exists(dir_ + "/updates/fresh.txt");   // still to do when Songate closes
     std::string pend;
     installed.appPending = exists(self_ + ".gfnew") || (readAll(dir_ + "/updates/pending.txt", pend) && (pend[0] == '@' || pend.find("\n@") != std::string::npos));
     installed.overlayPending = exists(sdPath(kOverlay, self_) + ".gfnew");
@@ -985,7 +977,7 @@ void Updater::doInstall(UpdRelease r, bool fresh, std::string backupRoot) {
     mkdirs(up);
     const std::string zip = up + "/" + (r.zipName.empty() ? "release.zip" : r.zipName);
     if (r.zipSha.size() != 64) { fail("This release has no checksum to check the download against: it was not installed"); return; }
-    for (const Legacy& l : kLegacy)   // GitHub's digest and Gatefold's own table must agree
+    for (const Legacy& l : kLegacy)   // GitHub's digest and Songate's own table must agree
         if (r.version == l.version && r.zipSha != l.sha) { fail("The release's checksum is not the one Songate knows: it was not installed"); return; }
 
     // ---- 1. the zip (kept from an earlier try when it is already whole and right)
@@ -1072,7 +1064,7 @@ void Updater::doInstall(UpdRelease r, bool fresh, std::string backupRoot) {
     fclose(f);
     if (!hasNro) { undo(); fail("The zip has no Songate.nro"); return; }
 
-    // ---- 3. the settings, copied first (never moved: a fresh start clears them only when Gatefold closes)
+    // ---- 3. the settings, copied first (never moved: a fresh start clears them only when Songate closes)
     phase_ = BackingUp;
     const std::string backup = backupNow(backupRoot, r.version);
     if (backup.empty()) {
@@ -1081,7 +1073,7 @@ void Updater::doInstall(UpdRelease r, bool fresh, std::string backupRoot) {
         return;
     }
 
-    // ---- 4. in: the background player and the overlay now; the app when Gatefold closes
+    // ---- 4. in: the background player and the overlay now; the app when Songate closes
     phase_ = Installing;
     std::string pending;
     for (const auto& t : placed) {
@@ -1127,7 +1119,7 @@ std::string Updater::backupNow(const std::string& root, const std::string& note)
     const std::string backup = join(root, stamp() + " " + thisVersion() + (version ? " before " : " ") + note);
     int64_t bytes = 0;
     int files = 0;
-    // Left out: the downloads, and caches Gatefold makes again by itself (the overlay's covers, the tag cache)
+    // Left out: the downloads, and caches Songate makes again by itself (the overlay's covers, the tag cache)
     // (art/ is the covers cache: thousands of small files, and copying them took the console a minute and a half)
     // and the Last.fm account: a key to it never sits in a backup, a restore asks you to sign in again
     // (and the Subsonic account the same way: subsonic.hpp)
@@ -1202,7 +1194,7 @@ std::string Updater::finishPending(const std::string& configDir, const std::stri
     if (doFresh || doRestore) {
         while (!restore.empty() && (restore.back() == '\n' || restore.back() == '\r')) restore.pop_back();
         if (!doRestore || isDir(restore)) {
-            // The caches stay (thousands of covers: removing them held Gatefold's exit for minutes; they are made from the
+            // The caches stay (thousands of covers: removing them held Songate's exit for minutes; they are made from the
             // music files, not the settings, and backups leave them out)
             for (const auto& n : names(configDir))
                 if (n != "updates" && n != "art" && n != "thumbs" && n != "tags.tsv") removeTree(join(configDir, n));
@@ -1229,7 +1221,7 @@ void Updater::cleanLegacy(const std::string& configDir, const std::string& self)
 bool Updater::restartBackground(std::string& err) { return plat::bgRestart(err); }
 
 const std::vector<std::vector<const char*>>& Updater::factoryFiles() {
-    // In App::FactoryPart's order. Settings and the music folder live in settings.txt with each other: Gatefold resets
+    // In App::FactoryPart's order. Settings and the music folder live in settings.txt with each other: Songate resets
     // them in memory before it closes (App::factoryReset), so settings.txt is never moved but for everything.
     static const std::vector<std::vector<const char*>> files = {
         { "bg-config.txt" },                                                          // settings: the background player's

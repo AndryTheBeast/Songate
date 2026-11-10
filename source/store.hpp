@@ -135,19 +135,18 @@ struct Store {
                                     // fill, else one of the colours above for every state
     int batteryLowAt = 15;          // low at or under this (10, 15, 20, 30)
     int batteryAnimPace = 1;        // 0 calm, 1 normal, 2 lively
-    int sleepConsole = 30;
+    int sleepConsole = 30;   // seconds of the "going to sleep" card after the sleep timer ends; 0: do not sleep the console
     // Background work stopped by hand (the progress stack's menu, Settings) until resumed: the cover cache, the overlay's covers, measuring loudness
     bool stopCovers = false, stopThumbs = false, stopLevels = false, stopLyrics = false, stopDownloads = false;
-    bool stopTagWrites = false;
-    bool stopMixOrder = false;   // Automix playlists' ordering, stopped until resumed
+    bool stopTagWrites = false;   // writing tag and cover changes into the files, stopped until resumed
     // the pocket lock (the Switch; Settings › Controls): its button on Now playing; the unlock: 0 Volume −, 1 Volume +, 3 Capture (twice); 2 either is only the fallback when Capture is refused,
     // held (pocketHold seconds) or pressed twice; a hint lit on a press while locked
     bool pocketButton = true, pocketHint = true;
     bool pocketPads = false;   // the controllers off the console turned off at the lock
-    int pocketKey = 0, pocketHow = 0, pocketHold = 2;   // writing tag and cover changes into the files, stopped until resumed
+    int pocketKey = 0, pocketHow = 0, pocketHold = 2;
     int tagWrite = 0;             // a tag or cover change (Settings › Library): 0 asks each time, 1 Songate only, 2 into the file too
     int levelMode = 0;              // volume levelling: 0 off (the default: the user chooses), 1 track, 2 album, 3 auto (GfbgLevel)
-    int levelTarget = -14;          // ... to this loudness, LUFS          // seconds of the "going to sleep" card after the sleep timer ends; 0: do not sleep the console
+    int levelTarget = -14;          // ... to this loudness, LUFS
     // Settings → Playback → Crossfade: seconds (0 off), and whether consecutive tracks of one album keep their join
     float crossfade = 0;
     bool xfadeNotInAlbum = true;

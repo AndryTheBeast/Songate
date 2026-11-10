@@ -1158,32 +1158,6 @@ void App::serverForget() {
     serverCovers_.clear();
 }
 
-/** Songs as rows (the album page's): its number, title, artist and album, length; the one playing lit; a press plays from there.
- *  Only the rows in view are drawn. Returns the rows' height. */
-float App::drawServerSongs(const char* key, const std::vector<Subsonic::Song>& songs, const std::string& name, float x, float top, float w, float y, float h) {
-    const float rowH = 52;
-    const std::string playingId = srvq_.on && srvq_.pos >= 0 ? srvq_.songs[size_t(srvq_.pos)].id : std::string();
-    for (size_t i = 0; i < songs.size(); i++) {
-        const float ry = top + float(i) * rowH;
-        if (ry + rowH < y || ry > y + h) continue;
-        const Subsonic::Song& s = songs[i];
-        const Id rid = uid(key, int(i));
-        if (ui.item(rid, { x + 18, ry, w - 36, rowH - 4 }, 10)) playServer(songs, int(i), name);
-        const bool hot = ui.pressed(rid) || (ui.focused(rid) && ui.showFocusRing());
-        if (!playingId.empty() && s.id == playingId) g.roundRect(x + 18, ry, w - 36, rowH - 4, 10, pal.accent, 0.12f);
-        if (hot) g.roundRect(x + 18, ry, w - 36, rowH - 4, 10, pal.text, ui.pressed(rid) ? 0.11f : 0.065f);
-        const float my = ry + (rowH - 4) / 2;
-        g.textNum(std::to_string(i + 1), { css::Sm }, x + 52, my - g.lineHeight({ css::Sm }) / 2.f, pal.text3, 1, Align::Right);
-        const std::string dur = s.duration > 0 ? fmtTime(s.duration) : "";
-        const float dw = float(g.measureNum(dur, { css::Sm }));
-        const float tw = w - 36 - 52 - 24 - dw - 24;
-        g.textC(s.title, { css::Base, Weight::SemiBold }, x + 70, my - 9, pal.text, 1, Align::Left, int(tw));
-        g.textC(s.artist + (s.album.empty() ? "" : " · " + s.album), { css::Sm }, x + 70, my + 10, pal.text3, 1, Align::Left, int(tw));
-        g.textNum(dur, { css::Sm }, x + w - 36, my - g.lineHeight({ css::Sm }) / 2.f, pal.text3, 1, Align::Right);
-    }
-    return float(songs.size()) * rowH;
-}
-
 
 /** Covers decoded on the worker: textures from them, three a frame at most (each frame; nothing while none came). */
 void App::serverCoverPump() {

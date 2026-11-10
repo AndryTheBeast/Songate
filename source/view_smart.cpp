@@ -26,6 +26,8 @@
 
 namespace {
 
+const char* const kEvNames[4] = { "When a game opens", "On the HOME menu", "When a game closes", "Back to the game" };
+
 struct Recipe {
     const char* id;
     const char* icon;
@@ -886,7 +888,6 @@ void App::drawSmartSheet() {
                           : j.stop == Stoppable::Thumbs ? "The song playing still gets its cover"
                           : j.stop == Stoppable::Lyrics ? "Search finds what is already read"
                           : j.stop == Stoppable::Downloads ? "What is downloaded stays; the rest waits"
-                          : j.stop == Stoppable::MixOrder ? "The playlists keep the order they have"
                           : j.stop == Stoppable::TagWrites ? "What is written stays; the rest waits, kept in Songate meanwhile"
                                                         : "The song playing and the next ones are still measured";
         rows.push_back({ Row::Action, ICON_X, "Stop until I resume it", std::string(still) + "; Resume is in Settings", "", [this, s = j.stop] {
@@ -921,14 +922,13 @@ void App::drawSmartSheet() {
         }
     } else if (page == Sheet::ListActions) {
         // The four events, each on or off for this playlist; off gives the event its usual action back
-        static const char* labels[4] = { "When a game opens", "On the HOME menu", "When a game closes", "Back to the game" };
         const uint64_t h = listHash(sheet.name);
         int* acts[4] = { &bgs.cfg.onOpen, &bgs.cfg.onHome, &bgs.cfg.onClose, &bgs.cfg.onReturn };
         for (int ev : { 0, 1, 3, 2 }) {   // in the order Settings shows them
             const bool on = *acts[ev] == 4 && bgs.cfg.lists[ev] == h;
             const std::string other = *acts[ev] == 4 && bgs.cfg.lists[ev] != h && !listName(bgs.cfg.lists[ev]).empty()
                                           ? "Now: " + listName(bgs.cfg.lists[ev]) : "";
-            rows.push_back({ Row::Choice, nullptr, labels[ev], "", other, [this, ev, h, on] {
+            rows.push_back({ Row::Choice, nullptr, kEvNames[ev], "", other, [this, ev, h, on] {
                                  int* a[4] = { &bgs.cfg.onOpen, &bgs.cfg.onHome, &bgs.cfg.onClose, &bgs.cfg.onReturn };
                                  if (on) {   // its usual action back: the first-run default (BgConfig)
                                      const BgConfig d;
@@ -1142,7 +1142,6 @@ void App::drawSmartSheet() {
         // AirPlay's rows on its own page (the title bar's AirPlay button); a phone upright has one button for both, so Devices keeps
         // them there (the user, 2026-11-05: "In the android app it can stay in the same card in portrait")
         const bool airHere = page == Sheet::AirPlay || css::W < css::H;
-        (void)airHere;
         if (page == Sheet::Devices) {
         // One place for what reaches other devices: AirPlay's rows go here when it comes (the user, 2026-11-02). Action rows, with an
         // icon and their second line: as Choice rows they showed one line in a row made for two (the user, 2026-11-03: "way bigger")
@@ -1373,7 +1372,6 @@ void App::drawSmartSheet() {
     const Job& jb = jobCards[std::clamp(sheet.recipe, 0, JobSlots - 1)].job;
     const bool plFile = page == Sheet::PlFile, eqp = page == Sheet::EqPreset;
     const bool actl = page == Sheet::ActList, lacts = page == Sheet::ListActions;
-    static const char* evNames[4] = { "When a game opens", "On the HOME menu", "When a game closes", "Back to the game" };
     std::string plName;
     if (plFile) { plName = baseName(sheet.dir); plName = plName.substr(0, plName.find_last_of('.')); }
     const FolderPlaylist* plp = plPage ? &store.playlists[size_t(sheet.recipe)] : nullptr;
@@ -1424,7 +1422,7 @@ void App::drawSmartSheet() {
     const std::string kick = ownHead ? fileKick : plp ? playlistKind(sheet.recipe) : ask ? sheet.askKicker : eqp ? "Equalizer" : actl ? "Background player" : lacts ? "Games" : rc ? kGroups[rc->group] : plFile ? "Playlist file" : devs ? "Devices" : airp ? "AirPlay" : sleep ? "Sleep timer" : job || jobs ? "In the background" : page == Sheet::Smart ? "New playlist" : "Playlists";
     const std::string title = ownHead ? fileTitle : plp ? plp->name : ask ? sheet.askTitle
                             : eqp ? "Preset"
-                            : actl ? evNames[std::clamp(sheet.recipe, 0, 3)]
+                            : actl ? kEvNames[std::clamp(sheet.recipe, 0, 3)]
                             : lacts ? sheet.name
                             : rc ? rc->title
                             : devs ? "Play with other devices"

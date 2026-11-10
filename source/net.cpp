@@ -1,7 +1,7 @@
 /*
- * Gatefold NX · net.cpp
+ * Songate · net.cpp
  * See net.hpp. Console: libcurl (portlibs, built on libnx's ssl service: the console's own TLS and trusted
- * certificates, so no CA bundle travels with Gatefold). Preview: GF_NET=<folder>.
+ * certificates, so no CA bundle travels with Songate). Preview: GF_NET=<folder>.
  */
 #include "words.hpp"
 #include "net.hpp"

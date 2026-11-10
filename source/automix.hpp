@@ -194,10 +194,9 @@ Plan plan(const mixan::Info* a, double dur, const mixan::Info* b, double fallbac
 ModelFile builtinFile(Model m);
 
 double joinScore(const mixan::Info* a, const mixan::Info* b, Model m = Latest);
-/** An order being worked out elsewhere than the frame: how far it is (done of total starts; total 0 until known) and a way to
- *  end it early (stop: order returns empty). Watching changes nothing of the order found. */
+/** An order being worked out elsewhere than the frame: a way to end it early (stop: order returns empty; the app's close).
+ *  It changes nothing of the order found. */
 struct OrderWatch {
-    std::atomic<int> done{ 0 }, total{ 0 };
     std::atomic<bool> stop{ false };
 };
 std::vector<int> order(const std::vector<const mixan::Info*>& tracks, int first = -1, Model m = Latest, OrderWatch* watch = nullptr);

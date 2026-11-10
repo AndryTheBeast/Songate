@@ -24,7 +24,6 @@
 #include <string>
 #include <vector>
 
-#include <dirent.h>
 #include "platform.hpp"
 #include "winpath.hpp"
 

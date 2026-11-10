@@ -143,11 +143,6 @@ void openPad() {
 void init() {
     SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight Portrait");   // upright: its own layout (view_phone.cpp)
 #ifdef GF_DEV
-    // portrait mock-ups (view_portrait.cpp): the screen upright while portrait-mock.txt is in the settings folder
-    if (FILE* f = fopen((std::string(SDL_AndroidGetInternalStoragePath()) + "/Songate/portrait-mock.txt").c_str(), "r")) {
-        fclose(f);
-        SDL_SetHint(SDL_HINT_ORIENTATIONS, "Portrait");
-    }
     // test scripts (tools/android/devtest.py): with test-items in the settings folder, what is on screen is written to items.txt,
     // as GF_ITEMS does on the PC (App::frame), and the toasts to stderr
     {

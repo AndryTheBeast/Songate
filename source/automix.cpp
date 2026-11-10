@@ -1132,9 +1132,8 @@ std::vector<int> order(const std::vector<const mixan::Info*>& t, int first, Orde
 #ifdef GF_PREVIEW
     if (const char* e = getenv("AUTOMIX_TRIES"); e && first < 0) tries = std::clamp(atoi(e), 1, n);
 #endif
-    if (watch) watch->total = tries;
     for (int s = 0; s < tries; s++) {
-        if (watch) { watch->done = s; if (watch->stop) return {}; }
+        if (watch && watch->stop) return {};
         const int start = first >= 0 ? first : s * n / tries;
         std::vector<int> p{ start };
         std::vector<bool> used(static_cast<size_t>(n), false);

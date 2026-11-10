@@ -580,7 +580,7 @@ private:
     void drawBatteryIcon(float bx, float cy, float s, double pct, int state, float alpha = 1);
     float drawBatteryCluster(float rx, float cy, unsigned pct, float limit);   // the battery, what is beside it, its press: left edge
     double batPhase_[6] = {};   // each state's animation, 0..1 and round again: advanced by the frame's time over its period, so a
-    double batPhaseAt_ = -1;
+    double batPhaseAt_ = -1;   // change of pace or charger speeds it up or slows it down without a jump
     // (every platform has them; only Android's dev build watches) Dev, Android: a frame that does not finish (the user's recording, 2026-11-05: after a turn the app stopped drawing, its last
     // landscape picture shown sideways, then black for 15 s until it was swiped away): where in the frame it stopped, written at once
     // to stall.txt by a watchdog; and the run before's log kept as log-previous.txt (a frozen run's log was lost on its restart)
@@ -588,7 +588,7 @@ private:
     std::atomic<int64_t> frameDoneMs_{ 0 };
     std::atomic<bool> watchdogQuit_{ false };
     std::thread watchdog_;
-    float batteryRoom_ = 0;     // the title bar's room for what shows beside the battery, last frame (Settings greys what would not fit)    // change of pace or charger speeds it up or slows it down without a jump
+    float batteryRoom_ = 0;     // the title bar's room for what shows beside the battery, last frame (Settings greys what would not fit)
     int batteryState(double pct) const;
     Rgb batteryInk(int colour, double pct) const;
     std::vector<int> batteryItems() const;             // what may show beside it, in your order (the charger's and the battery's
@@ -953,7 +953,7 @@ private:
     void drawCoverNotice();
     // The sidebar's progress cards, stacked above Settings: one per kind of work running in the background at once.
     // Slot 0: the music folder check, then tags, then the cover cache (one after another); 1: the overlay's covers; 2: levelling.
-    enum class Stoppable { None, Covers, Thumbs, Levels, Lyrics, Downloads, TagWrites, MixOrder };
+    enum class Stoppable { None, Covers, Thumbs, Levels, Lyrics, Downloads, TagWrites };
     struct Job {
         std::string label;
         int done = 0, total = 0;   // total 0: just busy
@@ -964,7 +964,7 @@ private:
         const char* icon = nullptr;  // its icon in the list of jobs, where its kind does not say (Reading lyrics: the quote)
     };
     // 3: Files' copying, moving and deleting (fileWork); 4: an update (updater); 5: reading lyrics for search (lyrIndex)
-    static constexpr int JobSlots = 10;   // 6: Automix playlists' ordering; 7: the server's downloads; 8: the self test (dev); 9: tags written into files
+    static constexpr int JobSlots = 10;   // 7: the server's downloads; 8: the self test (dev); 9: tags written into files
     struct JobCard { Job job; float shown = 0, since = 0; };
     JobCard jobCards[JobSlots];
     /** What runs in each slot now; false where nothing does (or it was stopped). */
@@ -1088,7 +1088,7 @@ private:
     void drawPicker(float x, float y, float w, float h);
     void confirmRemoveFolderPlaylist(int ref, int count);   // Delete on a folder playlist: asks first (App::confirm)
     void useMusicFolder(const std::string& path);
-    void welcomeCard(const std::string& found);
+    void welcomeCard(const std::string& found);   // the first launch, over the folder picker: use the card's Music folder?
     /** A first start (the user, 2026-11-06: "ask the user if he wants a local library or a server library"): where the music is,
      *  this device's folder (then the welcome card as before) or a server (its address, user and password, then its music In the library). */
     void firstCard(const std::string& found);
@@ -1121,7 +1121,7 @@ private:
     float tourDim = 0, tourMiss = 0;    // the dimming, coming up; how long the part has not been found
     bool tourCardSet = false;
     Route tourFrom{ View::Now, -1, {}, 0 };
-    int plusAfterHold = 0;                        // frames until a long touch opens it   // the first launch, over the folder picker: use the card's Music folder?
+    int plusAfterHold = 0;                        // frames until a long touch opens it
     int routeAlbum() const;
     int routeArtist() const;
     void openAlbum(int a);
@@ -1291,8 +1291,8 @@ public:
     float cardY(float h) const { return css::H > css::W ? std::max(8.f, float(css::H) - h - 8) : (css::H - h) / 2; }
     static constexpr float kNarrowList = 600;   // a list narrower than this (a phone upright) shows its rows without columns
     int optShowTouch_ = 0;   // dev builds: every touch area outlined ("touch" in options.txt in the settings folder)
-    float settingsCtlMax_ = 0;
-    float setSliderW() const { return settingsCtlMax_ > 0 ? settingsCtlMax_ : 180.f; }   // a Settings slider: 180, or its line's width   // Settings: the width a stacked row's control may take (segmented shrinks to it)
+    float settingsCtlMax_ = 0;   // Settings: the width a stacked row's control may take (segmented shrinks to it)
+    float setSliderW() const { return settingsCtlMax_ > 0 ? settingsCtlMax_ : 180.f; }   // a Settings slider: 180, or its line's width
     bool settingsPhoneDirect_ = false;   // narrow Settings: that page was opened from elsewhere (back returns there, not to the list)
     bool settingsPhoneOpen_ = false;   // narrow Settings: a category's page shown (else the list of categories)
 #ifdef GF_WINDOWED
@@ -1342,11 +1342,6 @@ public:
     float phoneToastBottom_ = 0;  // Now playing upright: where a toast sits (its foot: the gap above the seek bar)
     float phoneJoinMove_ = -1;   // Now playing upright: an Automix join's glide (0..1) this frame; -1 no join
     SDL_FRect phoneCoverRest_{};  // … and where its cover rests
-#ifdef GF_DEV
-    // Portrait mock-ups (view_portrait.cpp, dev only): which one, from portrait-mock.txt in the settings folder; -1 none
-    int portraitMock_ = -1;
-    void drawPortraitMock(int which);
-#endif
     bool hiddenNow() const { return SDL_GetWindowFlags(window_) & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN); }
 #endif
     double titleAt_ = 0;
@@ -1584,7 +1579,6 @@ private:
     void airplayQuestion(const std::string& name, std::function<void(int)> answer);
 #ifdef GF_AIRPLAY
     AirPlay airplay;                    // an iPhone plays here (airplay.hpp)
-#ifdef GF_AIRPLAY
     AirSend airsend;                    // … and this device plays to AirPlay speakers (airsend.hpp; the Devices sheet's Speakers)
     void airsendTick();
     int airLastTrack_ = -2;
@@ -1595,7 +1589,6 @@ private:
     double airWaitUntil_ = 0;
     bool airLastPlaying_ = false;
     double airLastPos_ = 0, airLastAt_ = 0, airMetaAt_ = -100;
-#endif
     bool airplayOn = false, airplayHadBackground = false;
 #endif
     // An outside source on screen (AirPlay): its song, artist, album and cover in now.info and now.cover, as a track's, and no
@@ -1809,9 +1802,8 @@ private:
     double srvLikeAt_ = 0;
     void serverLikesSync();
     bool serverGenreTile(Id id, const Subsonic::Genre& gn, float tx, float ty, float tileW, uint8_t flags = 0);
-    float drawServerSongs(const char* key, const std::vector<Subsonic::Song>& songs, const std::string& name, float x, float top, float w, float y, float h);
     void serverForget();   // signed out: every copy, texture and question forgotten
-    void drawServerQueue(float x, float y, float w, float h);
+    void drawServerQueue(float x, float y, float w, float h);   // the Playlist page while the server's tracks play (the user: "its not added to the temporary playlist")
     Subsonic::Song srvMenuSong_;   // the server track whose menu is open
     // the server track under focus (the D-pad, the stick's pointer, a finger held): + and a long touch open its menu, as yours
     Subsonic::Song hoverSrv_, hoverSrvShown_;
@@ -1849,7 +1841,7 @@ private:
     std::string srvInfoFor_;  // a server track whose file's format was asked (Now playing's chips)
     std::string srvFile_;     // the server track playing: its file (fetched or downloaded), for its waveform
     std::string playingFile() const { return srvq_.on ? srvFile_ : now.track >= 0 ? lib.tracks[size_t(now.track)].path : std::string(); }
-    std::string lyrHerePath() const;   // the song shown now, for the lyrics: a server track's "server:<id>", else your track's path   // the Playlist page while the server's tracks play (the user: "its not added to the temporary playlist")
+    std::string lyrHerePath() const;   // the song shown now, for the lyrics: a server track's "server:<id>", else your track's path
     // the four list views (view_tracks.cpp's: tiles, by album, with covers, the plain list) for the server's tracks; order: indexes into all
     std::vector<ListEntry> serverLayout(const std::vector<Subsonic::Song>& all, const std::vector<int>& order, float w, ListMode mode) const;
     float drawServerBody(const char* key, const std::vector<Subsonic::Song>& all, const std::vector<int>& order, float x, float top, float w, float clipY,
@@ -2017,8 +2009,8 @@ private:
     // ================= view_smart.cpp: smart playlists
     void openNewList();
     void openSleep();
-    void openDevices();
-    void openAirPlay();   // the title bar's AirPlay button: the speakers this device plays to, and receiving                 // the player bar's devices button: what can be done with other devices, from anywhere
+    void openDevices();   // the player bar's devices button: what can be done with other devices, from anywhere
+    void openAirPlay();   // the title bar's AirPlay button: the speakers this device plays to, and receiving
     // Settings → Appearance → Custom: the colour picker (view_smart.cpp). The field changes live, so the
     // interface shows the colour as it is picked; Cancel (and B) put back what it was.
     struct ColourPick {
@@ -2043,8 +2035,8 @@ private:
     const char* smartIcon(const std::string& spec) const;
     /** A sidebar playlist's icon: the one chosen (plicons.inc), else its kind's (folder, the smart recipe's, a list); −1 Liked. */
     const char* playlistIcon(int ref) const;
-    const char* playlistKind(int ref) const;
-    static bool isMoodPlaylist(const FolderPlaylist& p) { return p.path.rfind("smart:mood:", 0) == 0; }   // (a smart recipe of its own kind)   // "Automix playlist", "Smart playlist"…: the page's and the menu's kicker
+    const char* playlistKind(int ref) const;   // "Automix playlist", "Smart playlist"…: the page's and the menu's kicker
+    static bool isMoodPlaylist(const FolderPlaylist& p) { return p.path.rfind("smart:mood:", 0) == 0; }   // (a smart recipe of its own kind)
     void openPlaylistMenu(int ref);   // + on the Playlists page: Move, Icon, Rename
     void openPlaylistIcons(int ref);  // the playlist page's icon button: the icon grid at once
     void renamePlaylist(int ref);
@@ -2105,8 +2097,8 @@ private:
     double pocketHintUntil_ = 0, pocketKeyAt_ = -1, pocketFirstAt_ = -10, pocketLitAt_ = 0;
     double pocketPressAt_ = -1;   // the unlock key's press under way: since when, and the volume when it began (kept for the unlock)
     int pocketVol0_ = -1;
-    int pocketVolIdle_ = -1;
-    int pocketKeyNow_ = 0;   // the unlock key this lock: store.pocketKey, or Either when Capture could not be taken   // the volume read while the unlock key is up (the system steps it the moment the key goes down)
+    int pocketVolIdle_ = -1;   // the volume read while the unlock key is up (the system steps it the moment the key goes down)
+    int pocketKeyNow_ = 0;   // the unlock key this lock: store.pocketKey, or Either when Capture could not be taken
     bool pocketGuard_ = false;   // unlocked by the volume key still held: its volume kept until it is let go (pocketGuardTick)
     void pocketGuardTick();
     bool pocketAvailable();

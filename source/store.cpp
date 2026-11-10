@@ -254,7 +254,6 @@ void Store::load() {
         else if (k == "stopLyrics") stopLyrics = v == "1";
         else if (k == "stopDownloads") stopDownloads = v == "1";
         else if (k == "stopTagWrites") stopTagWrites = v == "1";
-        else if (k == "stopMixOrder") stopMixOrder = v == "1";
         else if (k == "pocketButton") pocketButton = v == "1";
         else if (k == "pocketHint") pocketHint = v == "1";
         else if (k == "pocketPads") pocketPads = v == "1";
@@ -539,7 +538,7 @@ void Store::save() const {
     }
     appendf(f, "stopCovers=%d\nstopThumbs=%d\nstopLevels=%d\nstopLyrics=%d\nstopDownloads=%d\n", stopCovers, stopThumbs, stopLevels, stopLyrics,
             stopDownloads);
-    appendf(f, "stopTagWrites=%d\ntagWrite=%d\nstopMixOrder=%d\n", stopTagWrites ? 1 : 0, tagWrite, stopMixOrder ? 1 : 0);
+    appendf(f, "stopTagWrites=%d\ntagWrite=%d\n", stopTagWrites ? 1 : 0, tagWrite);
     appendf(f, "pocketButton=%d\npocketHint=%d\npocketKey=%d\npocketHow=%d\npocketHold=%d\n", pocketButton ? 1 : 0, pocketHint ? 1 : 0, pocketKey,
             pocketHow, pocketHold);
     appendf(f, "pocketPads=%d\n", pocketPads ? 1 : 0);

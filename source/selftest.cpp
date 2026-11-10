@@ -95,8 +95,6 @@ void App::selfTestStart(int level) {
             if (a.ui.hasItem(id)) { a.ui.focus(id); a.ui.activate(); }
         }
     };
-    const int nt = int(lib.tracks.size());
-    (void)nt;
 
     // ---- New user: as newly installed (the folder set aside at the launch before), everything a first start meets, then all
     if (level == 3) {
