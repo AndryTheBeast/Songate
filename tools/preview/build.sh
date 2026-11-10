@@ -62,6 +62,6 @@ wait
 
 LIBS=()
 for p in SDL2-2.28.5 SDL2_ttf-2.22.0 SDL2_image-2.8.2 SDL2_mixer-2.8.0; do LIBS+=(-L"$SDL/$p/lib/x64"); done
-clang++ "${objs[@]}" "${LIBS[@]}" -lSDL2 -lSDL2main -lSDL2_ttf -lSDL2_image -lSDL2_mixer "${FFLIBS[@]}" -lshell32 -lws2_32 -lwinmm -lwininet \
+clang++ "${objs[@]}" "${LIBS[@]}" -lSDL2 -lSDL2main -lSDL2_ttf -lSDL2_image -lSDL2_mixer "${FFLIBS[@]}" -lshell32 -lws2_32 -liphlpapi -lwinmm -lwininet \
   -Xlinker /subsystem:console -o "$OUT/gatefold-preview.exe"
 echo "built $OUT/gatefold-preview.exe"

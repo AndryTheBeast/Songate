@@ -309,7 +309,7 @@ void App::drawPhone() {
         const bool off = controlsOff();
         if (live && !off && iconButton(uid("ph.sac"), ICON_PAUSE_C, kPad + 20, y, stopAfterCurrent, 44, 20)) {
             stopAfterCurrent = !stopAfterCurrent;
-            toast(stopAfterCurrent ? "Stop after the current track" : "Keep playing after this track");
+            toast(stopAfterCurrent ? "Stop after the current song" : "Keep playing after this song");
         }
         if (live && !off && iconButton(uid("ph.prev"), ICON_PREV, mid - 96, y, false, 60, 30)) prev();
         const Id pid = uid("ph.play");
@@ -375,7 +375,7 @@ void App::drawPhone() {
                 const float textW = W - kPad * 2 - 62 - 56;
                 g.text(so.title, { css::Base, Weight::SemiBold }, kPad + 62, ry + 10, k == 0 ? pal.accent : pal.text, 1, Align::Left, int(textW));
                 g.text(so.artist + (so.album.empty() ? "" : " · " + so.album), { css::Sm }, kPad + 62, ry + 33, pal.text3, 1, Align::Left, int(textW));
-                g.textC(so.duration > 0 ? fmtTime(so.duration) : "", { css::Sm }, W - kPad, ry + 30, pal.text3, 1, Align::Right);
+                g.textNumC(so.duration > 0 ? fmtTime(so.duration) : "", { css::Sm }, W - kPad, ry + 30, pal.text3, 1, Align::Right);
                 continue;
             }
             const int pos = q.pos + k, t = q.tracks[q.order[pos]];
@@ -390,7 +390,7 @@ void App::drawPhone() {
             const float textW = W - kPad * 2 - 62 - 56;
             g.text(tr.title, { css::Base, Weight::SemiBold }, kPad + 62, ry + 10, k == 0 ? pal.accent : pal.text, 1, Align::Left, int(textW));
             g.text(trackSub(t), { css::Sm }, kPad + 62, ry + 33, pal.text3, 1, Align::Left, int(textW));
-            g.textC(tr.duration > 0 ? fmtTime(tr.duration) : "", { css::Sm }, W - kPad, ry + 30, pal.text3, 1, Align::Right);
+            g.textNumC(tr.duration > 0 ? fmtTime(tr.duration) : "", { css::Sm }, W - kPad, ry + 30, pal.text3, 1, Align::Right);
         }
         g.unclip();
         ui.popArea();
@@ -426,7 +426,7 @@ void App::drawPhone() {
         if (c && !lib.tracks.empty()) { std::vector<int> all(lib.tracks.size()); for (int i = 0; i < int(all.size()); i++) all[i] = i; playTracks(all, 0, "Library", true); }
         y += 58;
         struct Row { const char* icon; const char* name; int count; };
-        const Row rows[8] = { { ICON_LIST, "Tracks", int(lib.tracks.size()) }, { ICON_ALBUMS, "Albums", int(lib.albums.size()) },
+        const Row rows[8] = { { ICON_LIST, "Songs", int(lib.tracks.size()) }, { ICON_ALBUMS, "Albums", int(lib.albums.size()) },
                               { ICON_MIC, "Artists", int(artists.size()) },     { ICON_TAG, "Genres", int(genres.size()) },
                               { ICON_FOLDER, "Folders", int(lib.folders.size()) }, { ICON_HEART, "Liked", int(store.liked.size()) },
                               { PLI_SDCARD, "Files", -1 }, { PLI_CLOUD, "Server", sv.songs } };
@@ -506,7 +506,7 @@ void App::drawPhone() {
                 if (strcasestr(artists[i].name.c_str(), qtext.c_str())) artistsFound.push_back(i);
         }
         const float py = fy + 56;
-        const std::string labels[3] = { "Tracks", "Albums · " + std::to_string(albumsFound.size()), "Artists · " + std::to_string(artistsFound.size()) };
+        const std::string labels[3] = { "Songs", "Albums · " + std::to_string(albumsFound.size()), "Artists · " + std::to_string(artistsFound.size()) };
         float px = kPad;
         for (int i = 0; i < 3; i++) {
             const float pw = g.measure(labels[i], { css::Sm, Weight::SemiBold }) + 28;

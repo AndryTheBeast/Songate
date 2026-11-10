@@ -140,7 +140,7 @@ void App::drawCanvasLyrics(float x, float y, float w, float h, int size, int lay
 
 void App::drawCanvas() {
     ui.region(Region::Overlay);
-    const bool has = now.track >= 0 || extOn;   // (an outside source: AirPlay)
+    const bool has = now.track >= 0 || extOn || srvq_.on;   // (an outside source: AirPlay; the server's queue)
     const double t = store.motion ? time : 0;
 
     // The layout shown: the user's, except that a track without lyrics gets Minimal (the user's choice is kept and

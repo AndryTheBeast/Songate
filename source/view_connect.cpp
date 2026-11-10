@@ -472,16 +472,23 @@ void App::connectTick() {
     // The arrows by the name: reading, trading, applying, sharing, and the files a sync deletes or copies (not while it asks)
     syncBusy = syncBuild.on || syncDeleteOn || (sv.state != Syncer::State::Idle && sv.state != Syncer::State::Asking && sv.state != Syncer::State::Done &&
                                                 sv.state != Syncer::State::Failed);
-    if (sv.state == Syncer::State::Asking && !syncShown) {
+    const bool askUp = sheet.page == Sheet::Confirm && sheet.askSync;
+    if (sv.state != Syncer::State::Asking) syncAskCovered_ = false;
+    if (sv.state == Syncer::State::Asking && (!syncShown || (syncAskCovered_ && sheet.page == Sheet::Closed))) {
         syncShown = true;
+        syncAskCovered_ = false;
         confirm(ICON_LINK, "Devices", "The first sync with " + sv.peer, sv.summary, "Sync with " + sv.peer + "?",
                 "This is what will change here: " + sv.summary + ". Nothing is deleted from your music, and your settings are backed up first. "
                 "After this, syncing with this device does not ask again.",
                 "Sync", [this] { syncer.accept(); });
         sheet.askSafe = true;
+        sheet.askSync = true;
         sheet.askYesIcon = ICON_CHECK;
-    } else if (sv.state == Syncer::State::Asking && sheet.page != Sheet::Confirm) {
-        syncer.decline();   // Cancel on the prompt, or anything that closed it
+    } else if (sv.state == Syncer::State::Asking && !askUp) {
+        // another card took its place (a handoff's question, a menu): it comes back when that one closes. Closed by you (Cancel, B):
+        // not synced; Settings › Devices offers it again (First sync)
+        if (sheet.page != Sheet::Closed) syncAskCovered_ = true;
+        else syncer.decline();
     } else if (sv.state == Syncer::State::Done && !syncShown) {
         syncShown = true;
         if (sv.shared) syncSharedAt = time;   // only if it really happened

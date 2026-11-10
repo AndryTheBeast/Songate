@@ -42,6 +42,7 @@ struct Row {
     float words = 0;       // a choice bar: its choices' words, measured (whether it takes two rows: App::segGrid)
     size_t nOpts = 0;
     bool fill = false;     // a choice bar: upright (narrow) it takes a line of its own, the row's whole width (sliders too: ctlW 180)
+    bool dim = false;      // greyed: the label in the hint's colour (a row with nothing to switch just now)
 };
 // The sidebar's tabs dragged by touch (the user, 2026-11-04: "you can actually grab and bring it over to the desired sorting
 // order"): the held row follows the finger; a row it passes slides into the place it left; let go, it settles into its own.
@@ -224,8 +225,12 @@ void App::openFindSetting() {
 /** A row of a list put in order by touch (the sidebar's tabs, the battery's details): a drag handle beside its switch, held and
  *  dragged. base: added to each item for its row's dragKey (two lists on one page must not share one); after: called each time
  *  it changes places. */
-void App::dragSort(std::vector<int>& order, int base, const char* key, int i, float rx, float cy, const std::function<void()>& after) {
+void App::dragSort(std::vector<int>& order, int base, const char* key, int i, float rx, float cy, const std::function<void()>& after,
+                   const std::vector<int>* rows) {
     const int n = int(order.size());
+    // rows: the items that have a row on the page (the sidebar's tabs: Server, which is in Library now, has none). The
+    // rest are stepped over with the row dragged; counted as rows of the usual height they were phantom steps under the finger
+    auto hasRow = [&](int idx) { return !rows || std::find(rows->begin(), rows->end(), order[size_t(idx)]) != rows->end(); };
     if (i < 0 || i >= n) return;
     const int me = base + order[size_t(i)];
     const float x = rx - 40 - 12;   // what comes before the switch's column
@@ -240,26 +245,28 @@ void App::dragSort(std::vector<int>& order, int base, const char* key, int i, fl
         const float myH = heightOf(me);
         int at = i;
         // past half of the next row: they change places; the row passed slides from where it was to the place left
-        while (at + 1 < n && dy - anchorY > heightOf(base + order[size_t(at + 1)]) * 0.5f) {
-            const int other = base + order[size_t(at + 1)];
+        auto nextRow = [&](int from) { int k = from + 1; while (k < n && !hasRow(k)) k++; return k; };          // n: none
+        auto prevRow = [&](int from) { int k = from - 1; while (k >= 0 && !hasRow(k)) k--; return k; };         // -1: none
+        for (int nx = nextRow(at); nx < n && dy - anchorY > heightOf(base + order[size_t(nx)]) * 0.5f; nx = nextRow(at)) {
+            const int other = base + order[size_t(nx)];
             anchorY += heightOf(other);
             tabSlide[other] += myH;
-            std::swap(order[size_t(at)], order[size_t(at + 1)]);
-            at++;
+            std::rotate(order.begin() + at, order.begin() + at + 1, order.begin() + nx + 1);   // (past it, and what has no row between)
+            at = nx;
             if (after) after();
         }
-        while (at > 0 && anchorY - dy > heightOf(base + order[size_t(at - 1)]) * 0.5f) {
-            const int other = base + order[size_t(at - 1)];
+        for (int pv = prevRow(at); pv >= 0 && anchorY - dy > heightOf(base + order[size_t(pv)]) * 0.5f; pv = prevRow(at)) {
+            const int other = base + order[size_t(pv)];
             anchorY -= heightOf(other);
             tabSlide[other] -= myH;
-            std::swap(order[size_t(at)], order[size_t(at - 1)]);
-            at--;
+            std::rotate(order.begin() + pv, order.begin() + at, order.begin() + at + 1);
+            at = pv;
             if (after) after();
         }
         // under the finger, but not far past the first or the last place
         float off = dy - anchorY;
-        if (at == 0) off = std::max(off, -10.f);
-        if (at == n - 1) off = std::min(off, 10.f);
+        if (prevRow(at) < 0) off = std::max(off, -10.f);
+        if (nextRow(at) >= n) off = std::min(off, 10.f);
         tabSlide[me] = off;
         tabHeld = me;   // drawn floating, with its shadow (App::drawSettings)
     } else if (dragging == hid) {
@@ -371,10 +378,17 @@ void App::drawSettings(float x, float y, float w, float h) {
         // was for joycons": the handle once a finger is on the screen, Move again at a button, a key or a click.
         const int sortWay = css::W < kNarrowList || byTouch_ ? 1 : 0;
         const float sortW = 40 + 12 + 44;
-        auto sortCtl = [this](int i, int, float rx, float cy) { dragSort(store.tabOrder, 0, "set.tabdrag", i, rx, cy, nullptr); };
-        for (int i = 0; i < int(store.tabOrder.size()); i++) {
+        auto sortCtl = [this](int i, int, float rx, float cy) {
+            std::vector<int> rows;   // the tabs with a row here (sidebarTabsShown), by what they are
+            for (int k : sidebarTabsShown()) rows.push_back(store.tabOrder[size_t(k)]);
+            dragSort(store.tabOrder, 0, "set.tabdrag", i, rx, cy, nullptr, &rows);
+        };
+        // The rows are the tabs the sidebar can show, in its order (App::sidebarTabsShown), and Move steps along this same list.
+        // The real store.tabOrder index is kept (i) so Move, the drag and Remove act on the right tab.
+        const std::vector<int> order = sidebarTabsShown();
+        for (int oi = 0; oi < int(order.size()); oi++) {
+            const int i = order[size_t(oi)];
             const int tab = store.tabOrder[size_t(i)];
-            if (tab == Store::TabServer) continue;   // (in Library now: Local | Server)
             const unsigned bit = Store::tabBit(tab);
             const bool held = grab.kind == Grab::Tabs && grab.pos == i;
             if (Store::isLine(tab)) {   // one of your lines: Move it, or Remove it
@@ -596,7 +610,6 @@ void App::drawSettings(float x, float y, float w, float h) {
                                                                                                            : "Larger still: less fits on each page",
                                             "set.uisize", { "Standard", "Medium", "Largest" }, store.uiSize, [this](int i) {
                                                 store.uiSize = i;
-                                                store.save();
                                                 fitPending_ = true;   // laid out again between frames
                                             }));
         // The camera's cutouts and the rounded corners, whatever the phone or tablet has (the user, 2026-11-03: "works on every android
@@ -611,7 +624,7 @@ void App::drawSettings(float x, float y, float w, float h) {
             cards.push_back({ "Screen edges",
                               { segRow("Around the camera", edgeHints[std::clamp(store.edgeMode, 0, 3)], "set.edgemode",
                                        { "Step aside", "Clear side", "Black strip", "Whole screen" }, store.edgeMode,
-                                       [this](int i) { store.edgeMode = i; store.save(); }),
+                                       [this](int i) { store.edgeMode = i; }),
                                 sliderRow("Extra room", std::to_string(extraPx) + " px",
                                           "More space around a cutout, if something is still covered", "set.edgeextra",
                                           store.edgeExtra),
@@ -636,18 +649,38 @@ void App::drawSettings(float x, float y, float w, float h) {
                                    store.mixAnimNow == 0   ? "The cover glides to the middle; everything else steps aside"
                                    : store.mixAnimNow == 1 ? "The cover glides to the middle; the bars stay"
                                                            : "The page changes from one song to the next, left to right",
-                                   "set.mixnow", { "Full", "Immersive", "Simple" }, store.mixAnimNow, [this](int i) { store.mixAnimNow = i; store.save(); }),
+                                   "set.mixnow", { "Full", "Immersive", "Simple" }, store.mixAnimNow, [this](int i) { store.mixAnimNow = i; }),
                             segRow("On the Canvas",
                                    store.mixAnimCanvas == 0 ? "The cover glides to the middle, frosted with the hint"
                                                             : "The page changes from one song to the next, left to right",
-                                   "set.mixcanvas", { "Full", "Simple" }, store.mixAnimCanvas, [this](int i) { store.mixAnimCanvas = i; store.save(); }) };
+                                   "set.mixcanvas", { "Full", "Simple" }, store.mixAnimCanvas, [this](int i) { store.mixAnimCanvas = i; }) };
         if (store.mixAnimNow == 2)
             mixRows.push_back(segRow("The hint on Now playing",
                                      store.mixHint == 1 ? "On the cover; on the Lyrics tab, in the lyrics' place"
                                                         : "Above the cover; on the Lyrics tab, in the lyrics' place",
-                                     "set.mixhint", { "Automatic", "On the cover", "Above" }, store.mixHint, [this](int i) { store.mixHint = i; store.save(); }));
+                                     "set.mixhint", { "Automatic", "On the cover", "Above" }, store.mixHint, [this](int i) { store.mixHint = i; }));
         if (css::W >= css::H) cards.push_back({ "Automix", mixRows });   // upright: Full only, nothing to choose (App::mixCanvasMode)
         cards.push_back({ "Sidebar", sidebarRows });
+        {   // the #-to-Z rail down a list's right edge, per list and per library (the user, 2026-11-09: each library its own set, the
+            // card listing the lists that library has; the title bar's switch says which): all on to begin with
+            struct RailOpt { const char* name; const char* hint; unsigned bit; };
+            static const RailOpt rails[] = { { "Albums", "By artist and by title", 1u }, { "Artists", "And an artist's page", 2u }, { "Genres", "And a genre's page", 4u },
+                                             { "Folders", "A folder's folders, or its songs", 8u }, { "Songs", "When the sort has letters", 16u } };
+            // (no row for playlists: the Playlists page and a playlist's songs are in your order, so no rail there; the user, 2026-11-10)
+            const int set = railSet();
+            std::string who = set == 0 ? std::string("Local") : subsonic.view().kind;
+            if (who.empty()) who = "the server"; else who[0] = char(toupper(uint8_t(who[0])));
+            std::vector<Row> railRows;
+            railRows.push_back(infoRow("A rail of letters down the right edge", "Tap a letter, or slide a finger along the rail, to jump through a long list. Each library keeps its own: switch up top to set another"));
+            for (const RailOpt& o : rails) {
+                const unsigned bit = o.bit;
+                Row r{ o.name, "", o.hint, 40, [this, bit, set](float rx, float cy) {
+                          if (toggle(uid("set.rail", int(bit)), rx - 40, cy, (store.letterRails[set] & bit) != 0)) { store.letterRails[set] ^= bit; persistSoon(0.3f); }
+                      } };
+                railRows.push_back(r);
+            }
+            cards.push_back({ "Letter rail · " + who, railRows });
+        }
 #ifdef GF_WINDOWED
         unsigned batteryNow = 0;
         if (plat::batteryLevel(batteryNow))   // a desktop has none
@@ -810,13 +843,22 @@ void App::drawSettings(float x, float y, float w, float h) {
                                    "set.bg", store.background));
 #else
         const bool on = player.remote();
-        bgRows.push_back(Row{ "Keep playing outside Songate", "",
-                              on ? "Connected. The music carries on on the HOME menu, in games and after Songate closes"
-                              : store.background ? "Not installed: copy atmosphere/contents/4200000047464E58 to " GF_THE_CARD " and restart"
-                                                 : "Off: the music stops when you leave Songate",
-                              40, [this](float rx, float cy) {
-                                  if (toggle(uid("set.bg"), rx - 40, cy, store.background && player.remote())) setBackground(!player.remote());
-                              } });
+        // While the server's queue plays the background player has handed the music over, since it cannot stream: the row says
+        // so, greyed, and the music goes back to it after (serverTick).
+        const bool handed = srvq_.hadBackground;
+        std::string streamer = subsonic.view().kind;
+        if (streamer.empty()) streamer = "the server";
+        streamer[0] = char(toupper(uint8_t(streamer[0])));
+        Row bgRow{ "Keep playing outside Songate", "",
+                   handed ? "Handed over while " + streamer + " plays: it cannot stream. It gets the music back after"
+                   : on ? "Connected. The music carries on on the HOME menu, in games and after Songate closes"
+                   : store.background ? "Not installed: copy atmosphere/contents/4200000047464E58 to " GF_THE_CARD " and restart"
+                                      : "Off: the music stops when you leave Songate",
+                   handed ? 0.f : 40.f, handed ? std::function<void(float, float)>() : [this](float rx, float cy) {
+                       if (toggle(uid("set.bg"), rx - 40, cy, store.background && player.remote())) setBackground(!player.remote());
+                   } };
+        bgRow.dim = handed;
+        bgRows.push_back(bgRow);
         if (bgShown()) {
             // Each game event gets an action, like sys-tune's focus options.
             // Playlist (GfbgAct_Playlist, 4): one of your playlists, chosen on the row under it.
@@ -850,7 +892,7 @@ void App::drawSettings(float x, float y, float w, float h) {
             actRow("Back to the game", "Going back from the HOME menu to a game that never closed", "set.bgreturn", &BgConfig::onReturn, 3);
             actRow("When a game closes", "", "set.bgclose", &BgConfig::onClose, 2);
             bgRows.push_back(segRow("Action playlists", bgs.cfg.listStart ? "Shuffled afresh each time a game event plays one"
-                                                                          : "Each carries on at the track and time it was left at",
+                                                                          : "Each carries on at the song and time it was left at",
                                     "set.bglstart", { "Continue", "Shuffle" }, bgs.cfg.listStart ? 1 : 0, [this](int i) {
                                         bgs.cfg.listStart = i;
                                         bg.setConfig(bgs.cfg);
@@ -871,7 +913,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                 // Stop / Resume while some are missing; Make all once every one is made (or none was asked for).
                 const bool stopped = store.stopThumbs;
                 Row covers = buttonRow("Covers for the overlay",
-                                       stopped ? "Stopped. Only the track playing gets one until you resume"
+                                       stopped ? "Stopped. Only the song playing gets one until you resume"
                                        : left > 0 ? "Being made in the background while Songate is open"
                                                   : "Made for each queue sent to the player, or for the whole library here",
                                        "set.bgcovers", stopped ? ICON_PLAY : left > 0 ? ICON_X : ICON_REFRESH,
@@ -890,23 +932,35 @@ void App::drawSettings(float x, float y, float w, float h) {
         // Measured: the count beside the label; Stop / Resume while the library is not all measured.
         const size_t measured = std::min(levels.count(), lib.tracks.size());
         const std::string measuredHint =
-            store.levelMode == 0 ? "Starts once levelling is on, from the track playing"
-            : store.stopLevels       ? "Stopped. Only the track playing and the next ones are measured until you resume"
-            : levels.secondsPerTrack() > 0 ? "In the background while Songate is open, about " + oneDecimal(levels.secondsPerTrack()) + " s a track"
-                                     : "In the background while Songate is open, the track playing first";
+            store.levelMode == 0 ? "Starts once levelling is on, from the song playing"
+            : store.stopLevels       ? "Stopped. Only the song playing and the next ones are measured until you resume"
+            : levels.secondsPerTrack() > 0 ? "In the background while Songate is open, about " + oneDecimal(levels.secondsPerTrack()) + " s a song"
+                                     : "In the background while Songate is open, the song playing first";
         Row measuredRow = store.levelMode && (store.stopLevels || measured < lib.tracks.size())
                               ? buttonRow("Measured", measuredHint, "set.lvlstop", store.stopLevels ? ICON_PLAY : ICON_X,
                                           store.stopLevels ? "Resume" : "Stop",
                                           [this] { setJobStopped(Stoppable::Levels, !store.stopLevels); })
                               : infoRow("Measured", measuredHint);
         measuredRow.value = std::to_string(measured) + " of " + std::to_string(lib.tracks.size());
-        static const std::vector<std::string> orders = { "Default", "Repeat list", "Repeat track", "Shuffle" };
+        // Ordered for Automix: how many Automix playlists there are; Stop / Resume while one is being ordered or waits for it
+        int mixLists = 0;
+        for (const auto& pl : store.playlists) mixLists += pl.own() && pl.automix;
+        const int mixWaiting = int(mixOrderWaiting_.size()) + (mixOrderOn_ ? 1 : 0);
+        const std::string orderedHint = store.stopMixOrder ? "Stopped. Automix playlists keep the order they have until you resume"
+                                      : mixWaiting > 0     ? "Finding the order with the best joins, in the background"
+                                                           : "An Automix playlist is put in the order with the best joins, in the background";
+        Row orderedRow = store.stopMixOrder || mixWaiting > 0
+                             ? buttonRow("Ordered for Automix", orderedHint, "set.mixorderstop", store.stopMixOrder ? ICON_PLAY : ICON_X,
+                                         store.stopMixOrder ? "Resume" : "Stop", [this] { setJobStopped(Stoppable::MixOrder, !store.stopMixOrder); })
+                             : infoRow("Ordered for Automix", orderedHint);
+        orderedRow.value = std::to_string(mixLists - std::min(mixLists, mixWaiting)) + " of " + std::to_string(mixLists);
+        static const std::vector<std::string> orders = { "Default", "Repeat list", "Repeat song", "Shuffle" };
         sections.push_back(
             { "Playback", ICON_PLAY,
               { { "", { segRow("Order", automixQueue() ? "An Automix playlist keeps its own order: no Shuffle"
                                                     : "Also the first button in the player bar", "set.order", orders, int(store.order),
                                [this](int i) { setOrder(Order(i)); }, automixQueue() ? 1u << 3 : 0u),
-                        Row{ "Stop after the current track", "", "Then playback stops until you start it again", 40,
+                        Row{ "Stop after the current song", "", "Then playback stops until you start it again", 40,
                              [this](float rx, float cy) {
                                  if (toggle(uid("set.sac"), rx - 40, cy, stopAfterCurrent)) stopAfterCurrent = !stopAfterCurrent;
                              } },
@@ -917,10 +971,10 @@ void App::drawSettings(float x, float y, float w, float h) {
                                  if (v != volumeShown) { volumeShown = v; player.setVolume(v); }
                              } } } },
                 { "Volume levelling",
-                  { segRow("Volume levelling", "Every track about as loud as the next. Your files are not changed",
-                           "set.level", { "Off", "Track", "Album", "Auto" }, store.levelMode,
+                  { segRow("Volume levelling", "Every song about as loud as the next. Your files are not changed",
+                           "set.level", { "Off", "Song", "Album", "Auto" }, store.levelMode,
                            [this](int i) { store.levelMode = i; persistSoon(0.3f); }),
-                    segRow("Target loudness", "Quiet tracks are raised only as far as their peaks allow", "set.lvltarget",
+                    segRow("Target loudness", "Quiet songs are raised only as far as their peaks allow", "set.lvltarget",
                            { "−18", "−14", "−11 LUFS" }, store.levelTarget <= -16 ? 0 : store.levelTarget <= -12 ? 1 : 2,
                            [this](int i) {
                                static const int t[] = { -18, -14, -11 };
@@ -928,9 +982,9 @@ void App::drawSettings(float x, float y, float w, float h) {
                                persistSoon(0.3f);
                            },
                            store.levelMode ? 0u : 0x7u),
-                    measuredRow } },
+                    measuredRow, orderedRow } },
                 { "Crossfade",
-                  { segRow("Crossfade", "The end of a track fades into the next one. Automix playlists mix their own",
+                  { segRow("Crossfade", "The end of a song fades into the next one. Automix playlists mix their own",
 
                            "set.xfade", { "Off", "2", "4", "6", "8", "12 s" },
                            store.crossfade <= 0 ? 0 : store.crossfade <= 2 ? 1 : store.crossfade <= 4 ? 2 : store.crossfade <= 6 ? 3
@@ -939,12 +993,12 @@ void App::drawSettings(float x, float y, float w, float h) {
                                static const float secs[] = { 0, 2, 4, 6, 8, 12 };
                                store.crossfade = secs[i];
                            }),
-                    toggleRow("Not within an album", "An album's tracks in a row keep their gapless join"
+                    toggleRow("Not within an album", "An album's songs in a row keep their gapless join"
                                                      "",
                               "set.xfadealbum", store.xfadeNotInAlbum) } },
                 // What plays when Songate opens; the opening itself is in Appearance (the user, 2026-11-03)
                 { "Startup",
-                  { toggleRow("Resume where I left off", "The queue comes back paused at the same place in the same track", "set.resume",
+                  { toggleRow("Resume where I left off", "The queue comes back paused at the same place in the same song", "set.resume",
                               store.resume) } },
                 { "Sleep",
                   { segRow("Sleep timer", "The music fades out and pauses", "set.sleep",
@@ -986,15 +1040,16 @@ void App::drawSettings(float x, float y, float w, float h) {
             return std::string(b);
         };
         // A ±12 dB value on a flat slider, in steps of 0.5 dB
-        auto dbRow = [&](const std::string& label, const std::string& hint, const char* key, float GfbgEq::*field) {
-            return Row{ label, dbText(store.eq.*field), hint, 180, [this, key, field](float rx, float cy) {
+        // curve: part of the curve (the preamp, as the bands): moved by hand it is Custom; bass and treble are global, a preset of yours keeps them
+        auto dbRow = [&](const std::string& label, const std::string& hint, const char* key, float GfbgEq::*field, bool curve = false) {
+            return Row{ label, dbText(store.eq.*field), hint, 180, [this, key, field, curve](float rx, float cy) {
                            const float cur = (store.eq.*field + 12) / 24;
                            float nv = cur;
                            slider(uid(key), rx - setSliderW(), cy, setSliderW(), cur, &nv);
                            if (nv != cur) {
                                GfbgEq e = store.eq;
                                e.*field = std::round((nv * 24 - 12) * 2) / 2;
-                               if (e.preset >= GFEQ_PRESETS) gfEqKeepCustom(&e);   // your preset keeps these too: now an edit of it
+                               if (curve || e.preset >= GFEQ_PRESETS) gfEqKeepCustom(&e);   // (the user, 2026-11-08: the preamp did not make a Custom)
                                setEq(e);
                            }
                        } };
@@ -1077,7 +1132,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                 }
             };
             cards.push_back({ "Bands", { bands, dbRow("Preamp", "Everything louder or quieter; a limiter holds the peaks", "set.eqpre",
-                                                      &GfbgEq::preamp) } });
+                                                      &GfbgEq::preamp, true) } });
         }
         cards.push_back({ "", { buttonRow("Reset", "Flat, with bass, treble and the preamp at 0 dB", "set.eqreset", ICON_REFRESH, "Reset",
                                           [this] {
@@ -1116,7 +1171,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                                       folderFor = -1;
                                       navigate(View::PickFolder, -1, plat::parentDir(store.musicRoot));
                                   }),
-                        infoRow("Tracks", "Albums and artists come from the tags, however the folders are organised",
+                        infoRow("Songs", "Albums and artists come from the tags, however the folders are organised",
                                 std::to_string(lib.tracks.size()) + " · " + std::to_string(lib.albums.size()) + " albums"),
                         infoRow("Tags read", "Kept " GF_ON_CARD " for next time", std::to_string(done) + "%"),
                         coversRow,
@@ -1160,13 +1215,10 @@ void App::drawSettings(float x, float y, float w, float h) {
             } else {
                 rows.push_back(infoRow("Server", (kind.empty() ? std::string("Server") : kind + (sv.version.empty() ? "" : " " + sv.version)) + " at " + sv.server +
                                                               " · " + sv.user, "Signed in"));
-                if (sv.songs >= 0) rows.push_back(infoRow("Tracks on it", "", std::to_string(sv.songs)));
-                rows.push_back(segRow("Its music", store.serverPlace == 0 ? "Apart, in Library › Server"
-                                                                          : "Among your own albums, artists and genres, marked as the server's; also in Library › Server",
-                                      "set.subplace", { "Apart", "Mixed in" }, store.serverPlace, [this](int p) { store.serverPlace = p; }));
+                if (sv.songs >= 0) rows.push_back(infoRow("Songs on it", "", std::to_string(sv.songs)));
                 {   // Downloads (stage 4; the user: "User's choice"): where, and what is here
                     const bool noMusic = store.musicRoot.empty();
-                    rows.push_back(segRow("Downloads", store.serverDlPlace == 1 && !noMusic ? "In your music folder, under Songate downloads: they become your own tracks"
+                    rows.push_back(segRow("Downloads", store.serverDlPlace == 1 && !noMusic ? "In your music folder, under Songate downloads: they become your own songs"
                                                      : noMusic ? "In Songate's own folder (no music folder chosen)"
                                                                : "In Songate's own folder: played from here, shown as the server's",
                                           "set.subdl", { "Songate's folder", "Music folder" }, noMusic ? 0 : store.serverDlPlace,
@@ -1177,7 +1229,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                     subsonic.dlProgress(done, total);
                     const bool working = total > 0 && done < total;
                     const std::string hint = store.stopDownloads ? "Stopped. What is downloaded stays; Resume gets the rest"
-                                           : working ? "Albums you downloaded, one track at a time"
+                                           : working ? "Albums you downloaded, one song at a time"
                                                      : "Albums you downloaded from the server: Download on an album's page";
                     Row r = store.stopDownloads || working
                                 ? buttonRow("Downloaded", hint, "set.subdlstop", store.stopDownloads ? ICON_PLAY : ICON_X, store.stopDownloads ? "Resume" : "Stop",
@@ -1196,12 +1248,12 @@ void App::drawSettings(float x, float y, float w, float h) {
     // Lyrics
     sections.push_back({ "Lyrics", ICON_QUOTE,
                          { { "", { toggleRow("Lyrics in the Canvas", "Also the quote button in the Canvas", "set.cvlyr", store.canvasLyrics),
-                                   toggleRow("Timing control", "Earlier · 0.0 s · Later above synced lyrics, kept for each track",
+                                   toggleRow("Timing control", "Earlier · 0.0 s · Later above synced lyrics, kept for each song",
                                              "set.lyrtime", store.lyricTiming),
                                    segRow("Show it for", "Where the lyrics come from", "set.lyrtimefor", { "Tags", ".lrc files", "Both" },
                                           store.lyricTimingFor, [this](int i) { store.lyricTimingFor = i; }, store.lyricTiming ? 0u : 0x7u),
                                    infoRow("Where lyrics come from",
-                                           "An .lrc file named as the track, or its LYRICS tag. " GF_CAP_TAP " a synced line to jump there"),
+                                           "An .lrc file named as the song, or its LYRICS tag. " GF_CAP_TAP " a synced line to jump there"),
                                    // as Measured and Tags read (the user, 2026-11-05: "We should have something like this in lyrics settings too")
                                    [&] {   // Stop / Resume while not all read, as Measured and Covers ready
                                        const LyricIndex::Progress lp = lyrIndex.progress();
@@ -1227,12 +1279,21 @@ void App::drawSettings(float x, float y, float w, float h) {
                       "set.lyronline", store.lyricsOnline),
             segRow("When found", "Play them at once (Keep or Not these), or show them on a card first (Save or Not these)", "set.lyrway", { "Play them", "Ask first" },
                    store.lyricsOnlineWay, [this](int i) { store.lyricsOnlineWay = i; }, store.lyricsOnline ? 0u : 0x3u),
-            segRow("Save them",
-                   store.lyricsSaveTo == 0   ? "An .lrc beside the song: other players see it too"
-                   : store.lyricsSaveTo == 2 ? "Written inside the song file, once it is not playing (the rest of the file as it was)"
-                                             : "Kept in Songate's folder: your music folder is not touched",
-                   "set.lyrsave", { "Beside the song", "Inside the song", "In Songate's folder" }, store.lyricsSaveTo == 2 ? 1 : store.lyricsSaveTo == 1 ? 2 : 0,
-                   [this](int i) { store.lyricsSaveTo = i == 1 ? 2 : i == 2 ? 1 : 0; }, store.lyricsOnline ? 0u : 0x7u) } });
+            // The server showing: its lyrics can only go to Songate's folder (no file of yours to write beside or into), so the
+            // row shows that, the other two greyed; your own songs keep your choice (the user, 2026-11-09)
+            [&] {
+                const bool stream = store.libSource == 1 && subsonic.view().state == Subsonic::SignedIn;
+                std::string who = subsonic.view().kind;
+                if (who.empty()) who = "The server"; else who[0] = char(toupper(uint8_t(who[0])));
+                return segRow("Save them",
+                              stream ? who + "'s songs are not files of yours: their lyrics go to Songate's folder. Your own songs keep your choice"
+                              : store.lyricsSaveTo == 0   ? "An .lrc beside the song: other players see it too"
+                              : store.lyricsSaveTo == 2 ? "Written inside the song file, once it is not playing (the rest of the file as it was)"
+                                                        : "Kept in Songate's folder: your music folder is not touched",
+                              "set.lyrsave", { "Beside the song", "Inside the song", "In Songate's folder" },
+                              stream ? 2 : store.lyricsSaveTo == 2 ? 1 : store.lyricsSaveTo == 1 ? 2 : 0,
+                              [this](int i) { store.lyricsSaveTo = i == 1 ? 2 : i == 2 ? 1 : 0; }, !store.lyricsOnline ? 0x7u : stream ? 0x3u : 0u);
+            }() } });
 
     // Canvas
     {
@@ -1257,10 +1318,10 @@ void App::drawSettings(float x, float y, float w, float h) {
         sections.push_back(
             { "Canvas", ICON_CANVAS,
               { { "", { segRow("Layout",
-                               canvasLayoutsOff() == 0b011 ? "This track has no lyrics: Minimal until one that has them"
+                               canvasLayoutsOff() == 0b011 ? "This song has no lyrics: Minimal until one that has them"
                                                            : "Also at the bottom of the Canvas",
                                "set.cvlayout", layouts, canvasLayoutShown(), [this](int i) { store.canvasLayout = i; }, canvasLayoutsOff()),
-                        toggleRow("Minimal when there are no lyrics", "Your layout comes back with the next track that has lyrics",
+                        toggleRow("Minimal when there are no lyrics", "Your layout comes back with the next song that has lyrics",
                                   "set.cvauto", store.canvasAutoMinimal) } },
                 { "Cover motion",
                   { toggleRow("Float", "The cover rises and settles slowly", "set.cvfloat", store.canvasFloat),
@@ -1304,30 +1365,30 @@ void App::drawSettings(float x, float y, float w, float h) {
         std::vector<Row> keys;
 #ifdef GF_ANDROID
         // a touch screen first; a keyboard or a pad when one is attached (no window here: no full screen key, no window buttons)
-        const std::pair<const char*, const char*> map[] = { { "Hold a track", "Its menu: tags, cover, queue, delete" },
+        const std::pair<const char*, const char*> map[] = { { "Hold a song", "Its menu: tags, cover, queue, delete" },
                                                             { "Hold a button", "What it does" },
                                                             { "Enter  ·  pad A", "Select" },           { "Esc  ·  pad B", "Back" },
                                                             { "Space  ·  pad X", "Play / pause" },    { "Ctrl F  ·  pad Y", "Search" },
-                                                            { "Ctrl ← →  ·  LB RB", "Previous / next track" },
+                                                            { "Ctrl ← →  ·  LB RB", "Previous / next song" },
                                                             { "Shift ← →  ·  LT RT", "Seek 10 seconds" },
                                                             { "C  ·  View", "Canvas (full screen)" },
                                                             { "Arrows  ·  D-pad", "Move around" } };
 #elif defined(GF_WINDOWED)
         const std::pair<const char*, const char*> map[] = { { "Enter  ·  pad A", "Select" },           { "Esc  ·  pad B", "Back" },
                                                             { "Space  ·  pad X", "Play / pause" },    { "Ctrl F  ·  pad Y", "Search" },
-                                                            { "Ctrl ← →  ·  LB RB", "Previous / next track" },
+                                                            { "Ctrl ← →  ·  LB RB", "Previous / next song" },
                                                             { "Shift ← →  ·  LT RT", "Seek 10 seconds" },
                                                             { "C  ·  View", "Canvas (full screen)" },
                                                             { "F11  ·  Alt Enter", "Full screen" },
                                                             { "Mouse to the top left corner", "The window's close, minimise and full screen buttons" },
-                                                            { "Right-click  ·  Menu", "Track menu: tags, cover, queue, delete" },
+                                                            { "Right-click  ·  Menu", "Song menu: tags, cover, queue, delete" },
                                                             { "Arrows  ·  D-pad", "Move around" },
                                                             { "Wheel  ·  right stick", "Scroll" } };
 #else
         const std::pair<const char*, const char*> map[] = { { "A", "Select" },           { "B", "Back" },        { "X", "Play / pause" },
-                                                            { "Y", "Search" },           { "L  R", "Previous / next track" },
+                                                            { "Y", "Search" },           { "L  R", "Previous / next song" },
                                                             { "ZL  ZR", "Seek 10 seconds" }, { "−", "Canvas (full screen)" },
-                                                            { "+", "Track menu: tags, cover, queue, delete" },
+                                                            { "+", "Song menu: tags, cover, queue, delete" },
                                                             { "HOME", "Leave Songate (close it from the HOME menu)" },
                                                             { "Right stick", "Scroll" } };
 #endif
@@ -1386,7 +1447,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                             &store.importDir },
                           { "Playlist exports open in", "The music folder's Playlists folder, then where you last exported",
                             &store.exportDir },
-                          { "Cover picker opens in", "The track's own folder", &store.coverDir },
+                          { "Cover picker opens in", "The song's own folder", &store.coverDir },
                           { "Backups go to", backupsDflt.c_str(), &store.backupDir } };
         static const char* chooseKeys[5] = { "set.dir0", "set.dir1", "set.dir2", "set.dir3", "set.dir4" };
         static const char* defaultKeys[5] = { "set.dirdef0", "set.dirdef1", "set.dirdef2", "set.dirdef3", "set.dirdef4" };
@@ -1403,13 +1464,13 @@ void App::drawSettings(float x, float y, float w, float h) {
         }
         struct K { const char* label; const char* hint; };
         const K ks[9] = { { "Covers cache", "Small copies of every cover, so lists open with their covers (" GF_CONFIG_NAME "/art)" },
-                          { "Covers for the overlay", "What the overlay shows for each track (thumbs)" },
-                          { "Loudness measurements", "Each track's levelling, Automix and mood measurements" },
+                          { "Covers for the overlay", "What the overlay shows for each song (thumbs)" },
+                          { "Loudness measurements", "Each song's levelling, Automix and mood measurements" },
                           { "Tag cache", "The tags read from your files, so opening is quick" },
                           { "Backups", "Your settings as they were before each install or restore" },
                           { "Update downloads", GF_DOWNLOADS_WORDS },
                           { "Lyrics found online", "Kept in Songate's folder (Settings › Lyrics › Online). Those beside the songs stay" },
-                          { "Tracks kept from the server", "The server's tracks played lately, so they start at once (Subsonic server)" },
+                          { "Songs kept from the server", "The server's songs played lately, so they start at once (Subsonic server)" },
                           { "Server downloads", "Albums downloaded from the server into Songate's folder (Subsonic server)" } };
         static const char* clearKeys[9] = { "set.clr0", "set.clr1", "set.clr2", "set.clr3", "set.clr4", "set.clr5", "set.clr6", "set.clr7", "set.clr8" };
         const bool server = subsonic.view().state != Subsonic::SignedOut;
@@ -1768,8 +1829,8 @@ void App::drawSettings(float x, float y, float w, float h) {
                                                    lastfm.signOut();
                                                    toast("Signed out of Last.fm");
                                                }) } });
-                cards.push_back({ "Sending", { toggleRow("Scrobbling", "Each tagged track, after half of it or 4 minutes", "set.lfscrob", store.lastfmScrobble),
-                                               toggleRow("Now playing", "Shows the track on your Last.fm profile while it plays", "set.lfnow", store.lastfmNow) } });
+                cards.push_back({ "Sending", { toggleRow("Scrobbling", "Each tagged song, after half of it or 4 minutes", "set.lfscrob", store.lastfmScrobble),
+                                               toggleRow("Now playing", "Shows the song on your Last.fm profile while it plays", "set.lfnow", store.lastfmNow) } });
             }
             if (lf.signedIn || lf.lapsed || lf.waiting > 0)
                 cards.push_back({ "Waiting", { infoRow("Waiting to be sent", lf.status.empty() ? "Sent oldest first, as soon as Last.fm can be reached" : lf.status, std::to_string(lf.waiting)) } });
@@ -1849,12 +1910,17 @@ void App::drawSettings(float x, float y, float w, float h) {
                 syncKeys[slot] = "set.cnsync" + std::to_string(slot);
                 forgetKeys[slot] = "set.cnforget" + std::to_string(slot);
                 std::vector<Btn> btns;
-                if (p.linked) btns.push_back({ syncKeys[slot].c_str(), ICON_REFRESH, syncBusy ? "Syncing…" : "Sync now", [this, id = p.id, busy = syncBusy] { if (!busy) syncNow(id, false); } });
+                // (a device never synced with: First sync, which asks before anything changes; the question closed without an answer
+                // is asked again from here)
+                const bool waits = sv.peerAsks && sv.peer == p.name, firstSync = !syncer.met(p.id);
+                if (p.linked) btns.push_back({ syncKeys[slot].c_str(), ICON_REFRESH, waits ? "Waiting…" : syncBusy ? "Syncing…" : firstSync ? "First sync" : "Sync now",
+                                               [this, id = p.id, busy = syncBusy] { if (!busy) syncNow(id, false); } });
                 btns.push_back({ forgetKeys[slot].c_str(), nullptr, "Forget", [this, id = p.id, name = p.name] {
                     connect.forget(id);
                     toast(name + " forgotten: pair again to link");
                 } });
-                paired.push_back(buttonsRow(p.name, syncNote.empty() ? state : syncNote, btns));
+                paired.push_back(buttonsRow(p.name, waits ? "Waiting for " + p.name + " to confirm" : !syncNote.empty() ? syncNote
+                                                    : firstSync && p.linked ? state + " · not synced yet" : state, btns));
             }
             if (paired.empty()) paired.push_back(infoRow("None yet", "Add a device: one shows a code, the other types it"));
             cards.push_back({ "Paired devices", paired });
@@ -1976,7 +2042,19 @@ void App::drawSettings(float x, float y, float w, float h) {
                                    if (toggle(uid("set.airplay"), rx - 40, cy, store.airplayReceive)) { store.airplayReceive = !store.airplayReceive; persistSoon(0.3f); }
                                } };
                         ar.focus = uid("set.airplay");
-                        std::vector<Row> rows = { ar };
+                        // ... and the other way (the user, 2026-11-10: Receive had a switch, playing on speakers had none)
+                        Row sr{ "Play on AirPlay speakers", "", store.airplaySpeakers ? "Speakers and TVs on this network are listed under the title bar's AirPlay button"
+                                                                                       : "Off: Songate does not look for speakers, and plays only here", 40, [this](float rx, float cy) {
+                                   if (toggle(uid("set.airspk"), rx - 40, cy, store.airplaySpeakers)) {
+                                       store.airplaySpeakers = !store.airplaySpeakers;
+#ifdef GF_AIRPLAY
+                                       if (!store.airplaySpeakers) airsend.chooseNone();   // what was playing on speakers comes back here
+#endif
+                                       persistSoon(0.3f);
+                                   }
+                               } };
+                        sr.focus = uid("set.airspk");
+                        std::vector<Row> rows = { sr, ar };
                         if (apStreaming) rows.push_back(infoRow(apTitle.empty() ? "Playing" : apTitle, "From " + apPeer));
                         // the devices that play without asking (Always), each forgotten on its own
                         static const char* const forgetKeys[] = { "set.apf0", "set.apf1", "set.apf2", "set.apf3", "set.apf4", "set.apf5", "set.apf6", "set.apf7",
@@ -2087,7 +2165,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                               toast("The music pauses in 1 minute");
                           }),
                 infoRow("Background player memory", "Free on its heap (1.5 MB in all). A crossfade needs 320 KB of it for the second "
-                                                    "track, else the join stays gapless",
+                                                    "song, else the join stays gapless",
                         player.remote() ? std::to_string(bg.state().heapFree / 1024) + " KB" : std::string("Not connected")) } } } });
     {   // Connections' first stage, measured on the console (identity.hpp): nothing runs it in a release yet
         const Identity::Progress ip = identity.progress();
@@ -2095,7 +2173,7 @@ void App::drawSettings(float x, float y, float w, float h) {
         if (ip.running) snprintf(hint, sizeof hint, "%d of %d, %d of them read", ip.done, ip.total, ip.hashed);
         else if (ip.total) snprintf(hint, sizeof hint, "%d tracks, %d read, %d failed: %.2f ms each, %.1f s in all", ip.total, ip.hashed, ip.failed,
                                     ip.hashed ? ip.hashSeconds * 1000 / ip.hashed : 0.0, ip.seconds);
-        else snprintf(hint, sizeof hint, "Reads what makes each track the same one on two devices, into identity.tsv");
+        else snprintf(hint, sizeof hint, "Reads what makes each song the same one on two devices, into identity.tsv");
         std::vector<Row> rows = { buttonRow("Identity", hint, "set.identity", ICON_REFRESH, "Measure", [this] { identityMeasure(); }) };
         sections.back().cards.push_back({ "Devices", rows });
     }
@@ -2110,7 +2188,6 @@ void App::drawSettings(float x, float y, float w, float h) {
                                            "on a playlist to see its order by it. A release plays the newest",
                                   "set.mixmodel", models, int(mixModel()), [this](int i) {
                                       store.automixModel = automix::name(automix::Model(i));
-                                      store.save();
                                       toast(std::string(automix::name(automix::Model(i))) + " for the next join");
                                   }) } });
     }
@@ -2126,6 +2203,7 @@ void App::drawSettings(float x, float y, float w, float h) {
             g.glow(bx + 30, by + 38, 30, pal.glow, 0.5f);
             g.icon(ICON_BRAND_ARCH, bx + 30, by + 38, 34, pal.accent);
             g.icon(ICON_BRAND_NOTE, bx + 30, by + 38, 34, note);
+
             g.text("Songate for " GF_PLATFORM, { css::Xl, Weight::Bold }, bx + 76, by + 12, pal.text);
             g.text("Version " GF_VERSION, { css::Base }, bx + 76, by + 46, pal.text2);
             g.text("by AndryTheBeast", { css::Sm }, bx + 76, by + 68, pal.text3);   // (its own line: upright it ran off the side)
@@ -2430,7 +2508,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                     float ty = l.stacked ? ry + 14 : ry + (l.h - textH) / 2;
                     int lw2 = 0;
                     for (size_t k = 0; k < l.label.size(); k++) {
-                        lw2 = g.text(l.label[k], labelF, px + pad, ty, pal.text, 1, Align::Left, int(l.labelW));
+                        lw2 = g.text(l.label[k], labelF, px + pad, ty, r.dim ? pal.text3 : pal.text, 1, Align::Left, int(l.labelW));
                         if (k + 1 < l.label.size()) ty += 24;
                     }
                     if (!r.value.empty()) {
@@ -2481,4 +2559,14 @@ void App::drawSettings(float x, float y, float w, float h) {
     sa.content = py + sa.y - y + 24;
     g.unclip();
     ui.popArea();
+}
+
+
+std::vector<int> App::sidebarTabsShown() const {
+    std::vector<int> order;
+    for (int idx = 0; idx < int(store.tabOrder.size()); idx++) {
+        if (store.tabOrder[size_t(idx)] == Store::TabServer) continue;   // (Server is in Library now: Local | Server)
+        order.push_back(idx);
+    }
+    return order;
 }

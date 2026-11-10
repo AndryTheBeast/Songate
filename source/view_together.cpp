@@ -467,6 +467,7 @@ void App::togetherSendQueue() {
 
 /** The starter: this song, from here, on both. natural: the track playing plays out first. */
 void App::togetherPrepare(int song, double position, bool natural) {
+    if (song < 0 || song >= int(tog.tracks.size())) return;   // nothing every device holds: what plays stays, the session with it
     tog.serial++;
 #ifdef GF_DEV
     logLine("Together: prepare song " + std::to_string(song) + " at " + std::to_string(int(position)) + " s" + (natural ? ", after this one" : ""));
@@ -885,7 +886,7 @@ void App::togetherHandle(const Message& m) {
         if (tog.stage != Tog::Off) {
             Message no;
             no.kind = Kind::Taken;
-            togetherSend(no);
+            togetherSendTo(togFrom_, no);   // (to the one that asked: a session's starter would tell every device in it)
             return;
         }
         std::string name = "The other device";
@@ -903,7 +904,7 @@ void App::togetherHandle(const Message& m) {
         return;
     }
     case Kind::Taken:
-        if (handoffPeer.empty()) return;
+        if (handoffPeer.empty() || togFrom_ != handoffPeer) return;   // only the device asked answers
         if (m.flag) {
             if (isPlaying()) player.togglePause();
             toast("Handed off to " + handoffName);
@@ -971,7 +972,7 @@ void App::togetherHandle(const Message& m) {
         r.kind = Kind::Ready;
         r.serial = m.serial;
         togetherSend(r);
-        if (m.song < 0 || m.song >= int(tog.tracks.size()) || tog.tracks[size_t(m.song)] < 0) return;
+        if (!togHere(m.song)) return;   // (the server's copy counts as here)
         if (connect.clock().samples < kClockEnough) {   // just in: its clock first (the tick acts on it then)
             tog.heldResume = m;
             tog.resumeHeld = true;
@@ -1012,11 +1013,10 @@ void App::togetherHandle(const Message& m) {
             Order o = Order(m.song);
             if (o == Order::Shuffle && automixQueue()) o = Order::Default;   // an Automix playlist: no Shuffle (holdOrderForAutomix)
             setOrder(o);
-            static const char* names[] = { "Default order", "Repeat playlist", "Repeat track", "Shuffle" };
+            static const char* names[] = { "Default order", "Repeat playlist", "Repeat song", "Shuffle" };
             std::string from = tog.peerName;
             if (const Tog::Member* mb = togMember(togFrom_)) from = mb->name;
-            toast(std::string(names[int(store.order)]) + ", from " + from);
-            store.save();
+            toast(std::string(names[int(store.order)]) + ", from " + from);   // (setOrder saves it)
         }
         return;
     case Kind::Leave:
@@ -1380,9 +1380,10 @@ void App::extBegin(const std::string& from) {
     now.info.bitsPerSample = 16;
     now.info.sampleRate = 44100;
     now.lyrics.clear();
-    TrackLoader::Result none;   // no cover until it sends one: the placeholder and the default colours
-    none.gen = ++loadGen;
-    applyCover(none);
+    // The cover it shows stays until the source sends the new one, which then crossfades in as a song of yours (the user, 2026-11-09:
+    // the server's tracks flashed "no cover" and lost the fade); none within a moment, blank (extTick)
+    ++loadGen;   // (a cover still loading for the song before is dropped)
+    extClearAt = time + 1.5;
 }
 
 void App::extInfo(const std::string& title, const std::string& artist, const std::string& album) {
@@ -1479,7 +1480,7 @@ std::vector<std::string> App::airplayIds() const {
  *  it is heard at once (a song's change is not: Automix's joins and gapless play reach them whole, two seconds later); the song's
  *  details for speakers with a screen. */
 void App::airsendTick() {
-    airsend.browse(sheet.page == Sheet::Devices || sheet.page == Sheet::AirPlay);
+    airsend.browse(store.airplaySpeakers && (sheet.page == Sheet::Devices || sheet.page == Sheet::AirPlay));   // (Settings › Devices › Play on AirPlay speakers)
 #ifdef GF_DEV
     if (sheet.page == Sheet::Devices || sheet.page == Sheet::AirPlay) {   // (dev: the search, in the log, as it changes; at most every 3 s)
         static double at = 0;

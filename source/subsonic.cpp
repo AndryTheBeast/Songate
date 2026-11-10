@@ -211,14 +211,8 @@ void Subsonic::signIn(const std::string& server, const std::string& user, std::s
         view_.gen++;
         salt_ = salt;
         token_ = t;
-        artists_.clear();
-        haveArtists_ = false;
-        allAlbums_.clear();
-        haveAllAlbums_ = false;
-        clearLists();
-        artistAlbums_.clear();
-        albums_.clear();
-        covers_.clear();
+        sess_++;
+        clearSession();
         tasks_.clear();
         tasks_.push_back({ Task::Ping });
     }
@@ -235,20 +229,26 @@ void Subsonic::signOut() {
         wipe(salt_);
         tasks_.erase(std::remove_if(tasks_.begin(), tasks_.end(), [](const Task& t) { return t.kind != Task::DlWipe; }), tasks_.end());
         dlDone_ = dlTotal_ = 0;
-        starred_.clear();
-        starredIds_.clear();
-        haveStarred_ = false;
-        starGen_++;
-        artists_.clear();
-        haveArtists_ = false;
-        allAlbums_.clear();
-        haveAllAlbums_ = false;
-        clearLists();
-        artistAlbums_.clear();
-        albums_.clear();
-        covers_.clear();
+        sess_++;
+        clearSession();
     }
     saveAccount();   // (no token: the file goes)
+}
+
+void Subsonic::clearSession() {
+    later_.clear();
+    starred_.clear();
+    starredIds_.clear();
+    haveStarred_ = false;
+    starGen_++;
+    artists_.clear();
+    haveArtists_ = false;
+    allAlbums_.clear();
+    haveAllAlbums_ = false;
+    clearLists();
+    artistAlbums_.clear();
+    albums_.clear();
+    covers_.clear();
 }
 
 void Subsonic::askArtists() { std::lock_guard<std::mutex> g(m_); tasks_.push_back({ Task::Artists }); wake_.notify_all(); }
@@ -692,7 +692,7 @@ bool Subsonic::call(const std::string& method, const std::string& extra, std::st
     std::string url = base(method, extra);
     const bool ok = net::get(url, body, err);
     wipe(url);   // (it held the token)
-    if (!ok) err = "Can't reach the server";
+    if (!ok) { err = "Can't reach the server"; unreached_ = true; }
     return ok;
 }
 
@@ -701,27 +701,52 @@ bool Subsonic::call(const std::string& method, const std::string& extra, std::st
 void Subsonic::run() {
     cores::moveHere(cores::Net);
     std::unique_lock<std::mutex> g(m_);
+    // Lists asked while the server could not be reached wait in later_ and are asked again (2 s, 4 s … 30 s apart): dropped,
+    // their pages said "Asking the server…" until the next sign-in
+    auto isList = [](Task::Kind k) {
+        return k == Task::Artists || k == Task::AllAlbums || k == Task::Genres || k == Task::GenreAlbums || k == Task::Folders || k == Task::Dir
+            || k == Task::AllSongs || k == Task::Artist || k == Task::Album || k == Task::Starred || k == Task::Playlists || k == Task::PlaylistOne;
+    };
+    auto again = [&](const Task& t, unsigned sess) {   // m_ held
+        if (!isList(t.kind) || sess != sess_ || token_.empty()) return;
+        Task n = t;
+        n.tries++;
+        later_.push_back({ n, std::chrono::steady_clock::now() + std::chrono::seconds(std::min(30, 1 << std::min(n.tries, 5))) });
+    };
     while (!quit_) {
-        wake_.wait(g, [&] { return quit_ || runnable(); });
+        for (;;) {
+            const auto nowAt = std::chrono::steady_clock::now();
+            for (size_t i = 0; i < later_.size();) {
+                if (later_[i].at <= nowAt) { tasks_.push_back(later_[i].task); later_.erase(later_.begin() + long(i)); }
+                else i++;
+            }
+            if (quit_ || runnable()) break;
+            if (later_.empty()) wake_.wait(g);
+            else wake_.wait_for(g, std::chrono::milliseconds(500));
+        }
         if (quit_) break;
         auto pick = std::find_if(tasks_.begin(), tasks_.end(), [](const Task& k) { return k.kind == Task::Song && k.now; });   // the song wanted now first
         if (pick == tasks_.end()) pick = std::find_if(tasks_.begin(), tasks_.end(), [](const Task& k) { return k.kind != Task::DlAlbum && k.kind != Task::DlSong; });
         if (pick == tasks_.end()) pick = tasks_.begin();   // (downloads: runnable() said they may go)
         const Task t = *pick;
         tasks_.erase(pick);
+        const unsigned sess = sess_;
         g.unlock();
+        unreached_ = false;
         std::string err, body;
         if (!net::begin(err)) {
             g.lock();   // (held from here, as at the loop's top)
-            if (t.kind == Task::Ping) { view_.state = Failed; view_.error = "No network"; view_.gen++; }
+            if (t.kind == Task::Ping) { if (sess == sess_) { view_.state = Failed; view_.error = "No network"; view_.gen++; } }
+            else again(t, sess);
             continue;
         }
         json::Json r;
         if (t.kind == Task::Ping) {
-            const bool ok = call("ping", "", body, err) && answer(body, r, err);
+            bool ok = call("ping", "", body, err) && answer(body, r, err);
             {
                 std::lock_guard<std::mutex> v(m_);
-                if (ok) {
+                if (sess != sess_) ok = false;   // signed out, or into another server, meanwhile: that one's own answer counts
+                else if (ok) {
                     view_.state = SignedIn;
                     view_.kind = r.s("type");
                     view_.version = r.s("serverVersion");
@@ -878,6 +903,7 @@ void Subsonic::run() {
                     x.cover = s.s("coverArt");
                     x.suffix = s.s("suffix");
                     x.contentType = s.s("contentType");
+                    x.genre = s.s("genre");   // (the album page's genre button)
                     x.track = int(s.i("track"));
                     x.disc = int(s.i("discNumber"));
                     x.year = int(s.i("year"));
@@ -1178,7 +1204,7 @@ void Subsonic::run() {
                 long long total = 0;
                 for (const Cached& c : idx) total += c.size;
                 std::vector<std::string> gone;
-                while (total > 512LL * 1024 * 1024 && idx.size() > 1) {
+                while (total > 512LL * 1024 * 1024 && idx.size() > 3) {   // (the newest three stay: this one, the one playing, the one before)
                     remove((dir_ + "/server-cache/" + idx.front().file).c_str());
                     gone.push_back(dir_ + "/server-cache/" + idx.front().file);
                     total -= idx.front().size;
@@ -1214,5 +1240,13 @@ void Subsonic::run() {
             view_.gen++;
         }
         g.lock();
+        if (sess != sess_) {   // the session ended while this ran: what it brought belongs to no one
+            const std::vector<Later> keep = std::move(later_);   // (the new session's own, asked meanwhile)
+            clearSession();
+            later_ = keep;
+            view_.gen++;
+        } else if (unreached_) {
+            again(t, sess);
+        }
     }
 }

@@ -543,7 +543,7 @@ void App::linkLyrics(const std::string& file, int track) {
     const std::string dest = (dot == std::string::npos ? tp : tp.substr(0, dot)) + ".lrc";
     const std::string title = lib.tracks[size_t(track)].title;
     auto doIt = [this, file, dest, track, title] {
-        if (!copyFile(file, dest)) { toast("Could not write the lyrics next to the track"); return; }
+        if (!copyFile(file, dest)) { toast("Could not write the lyrics next to the song"); return; }
         files.gen++;
         if (track == now.track) reloadNowTrack();
         toast("Lyrics linked to “" + title + "”" + (track == now.track ? "" : ": they show when it plays"));
@@ -551,7 +551,7 @@ void App::linkLyrics(const std::string& file, int track) {
     if (strcasecmp(file.c_str(), dest.c_str()) == 0) { toast("These are already its lyrics"); return; }
     if (exists(dest)) {
         confirm(ICON_QUOTE, "Lyrics", title, baseName(dest), "Replace its lyrics file?",
-                "The track already has an .lrc file next to it. It is replaced by this one.", "Replace", doIt);
+                "The song already has an .lrc file next to it. It is replaced by this one.", "Replace", doIt);
         return;
     }
     doIt();
@@ -780,7 +780,7 @@ void App::openFileMenu(const std::string& path) {
                 }()) {
                 if (SDL_Surface* small = Gfx::shrink(s, 128)) {
                     sheet.preview = SDL_CreateTextureFromSurface(renderer_, small);
-                    if (sheet.preview) SDL_SetTextureScaleMode(sheet.preview, SDL_ScaleModeLinear);
+                    if (sheet.preview) { SDL_SetTextureScaleMode(sheet.preview, SDL_ScaleModeLinear); SDL_SetTextureBlendMode(sheet.preview, SDL_BLENDMODE_BLEND); }
                     SDL_FreeSurface(small);
                 }
                 SDL_FreeSurface(s);
@@ -794,9 +794,9 @@ void App::fileSheetHeader(const char*& icon, std::string& kick, std::string& tit
     const bool dir = !sheet.memo["dir"].empty();
     const Kind k = kindOf(baseName(p), dir);
     icon = kindIcon(k);
-    kick = sheet.page == Sheet::FileLink ? "Lyrics for a track" : sheet.page == Sheet::FileInfo ? "Details" : kindName(k, baseName(p));
+    kick = sheet.page == Sheet::FileLink ? "Lyrics for a song" : sheet.page == Sheet::FileInfo ? "Details" : kindName(k, baseName(p));
     title = isRoot(p) ? GF_CARD_NAME : shownName(p);
-    if (sheet.page == Sheet::FileLink) { sub = sheet.arg.empty() ? "Every track" : "Tracks matching “" + sheet.arg + "”"; return; }
+    if (sheet.page == Sheet::FileLink) { sub = sheet.arg.empty() ? "Every song" : "Songs matching “" + sheet.arg + "”"; return; }
     sub = dir ? parentOf(p) : sheet.memo["sub"];
 }
 
@@ -847,9 +847,9 @@ void App::fileSheetRows(std::vector<SheetRow>& rows) {
             for (char& c : hay) c = char(tolower((unsigned char)c));
             if (q.empty() || hay.find(q) != std::string::npos) found.push_back(i);
         }
-        rows.push_back({ Row::Action, ICON_SEARCH, sheet.arg.empty() ? "Find a track…" : "Find another…", "By title, artist, album or file name", "", [this] {
+        rows.push_back({ Row::Action, ICON_SEARCH, sheet.arg.empty() ? "Find a song…" : "Find another…", "By title, artist, album or file name", "", [this] {
                              std::string q2 = sheet.arg;
-                             if (keyboard("Find the track", q2, q2)) sheet.arg = trimmed(q2);
+                             if (keyboard("Find the song", q2, q2)) sheet.arg = trimmed(q2);
                          } });
         for (int t : found) {
             const Track& tr = lib.tracks[size_t(t)];
@@ -859,7 +859,7 @@ void App::fileSheetRows(std::vector<SheetRow>& rows) {
                                  linkLyrics(p, t);
                              } });
         }
-        if (found.empty()) { rows.push_back({ Row::Group, nullptr, "No track matches" }); rows.back().h = 40; }
+        if (found.empty()) { rows.push_back({ Row::Group, nullptr, "No song matches" }); rows.back().h = 40; }
         return;
     }
 
@@ -918,7 +918,7 @@ void App::fileSheetRows(std::vector<SheetRow>& rows) {
                              } });
             if (tr.albumIdx >= 0)
                 rows.push_back({ Row::Action, ICON_V_GRID, "Show its album", tr.album, "", [this, a = tr.albumIdx] { closeSheet(); goToAlbum(a); } });
-            rows.push_back({ Row::Action, ICON_MORE, "Track menu…", "Tags, cover, details", "", [this, t] { openTrackMenu(t); } });
+            rows.push_back({ Row::Action, ICON_MORE, "Song menu…", "Tags, cover, details", "", [this, t] { openTrackMenu(t); } });
         } else {
             rows.push_back({ Row::Action, ICON_INFO, "Not in your library", "Songate plays what is in its music folder (Settings · Library)", "", nullptr });
         }
@@ -931,7 +931,7 @@ void App::fileSheetRows(std::vector<SheetRow>& rows) {
                                      closeSheet();
                                      setCoverFor(img, lib.albums[size_t(lib.tracks[size_t(now.track)].albumIdx)].tracks);
                                  } });
-            rows.push_back({ Row::Action, ICON_DISC, "Cover of the track playing", tr.title, "", [this, img] {
+            rows.push_back({ Row::Action, ICON_DISC, "Cover of the song playing", tr.title, "", [this, img] {
                                  closeSheet();
                                  setCoverFor(img, { now.track });
                              } });
@@ -946,17 +946,17 @@ void App::fileSheetRows(std::vector<SheetRow>& rows) {
         rows.push_back({ Row::Action, ICON_INFO, "Kept by Songate", "A copy goes in Songate's folder; your music files are not changed", "", nullptr });
     } else if (k == Kind::Lyrics) {
         if (now.track >= 0)
-            rows.push_back({ Row::Action, ICON_DISC, "Lyrics of the track playing", lib.tracks[size_t(now.track)].title, "", [this, p] {
+            rows.push_back({ Row::Action, ICON_DISC, "Lyrics of the song playing", lib.tracks[size_t(now.track)].title, "", [this, p] {
                                  closeSheet();
                                  linkLyrics(p, now.track);
                              } });
-        rows.push_back({ Row::Action, ICON_QUOTE, "Lyrics of a track…", "Copied next to it as an .lrc file with its name", "", [this] {
+        rows.push_back({ Row::Action, ICON_QUOTE, "Lyrics of a song…", "Copied next to it as an .lrc file with its name", "", [this] {
                              sheet.page = Sheet::FileLink;
                              sheet.arg.clear();
                              ui.focusDefault();
                          } });
     } else if (k == Kind::Playlist) {
-        rows.push_back({ Row::Action, ICON_PLAY, "Play or import…", "Its tracks found in your library", "", [this, p] { openPlaylistFile(p); } });
+        rows.push_back({ Row::Action, ICON_PLAY, "Play or import…", "Its songs found in your library", "", [this, p] { openPlaylistFile(p); } });
     }
 
     // ---- what every file browser does

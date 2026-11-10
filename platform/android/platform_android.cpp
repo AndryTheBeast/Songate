@@ -385,8 +385,15 @@ void mediaInfo(const std::string& title, const std::string& artist, const std::s
     if (!cls) return;
     if (jmethodID m = env->GetStaticMethodID(cls, "mediaInfo", "([B[B[B[BII)V")) {
         jbyteArray t = bytes(env, title), ar = bytes(env, artist), al = bytes(env, album);
-        const jsize n = rgba && w > 0 && h > 0 ? jsize(size_t(w) * size_t(h) * 4) : 0;
+        jsize n = rgba && w > 0 && h > 0 ? jsize(size_t(w) * size_t(h) * 4) : 0;
         jbyteArray cover = env->NewByteArray(n);
+        if (env->ExceptionCheck()) {   // no memory for its 4 MB: told without the cover (no call into Java with an exception pending)
+            env->ExceptionClear();
+            if (cover) env->DeleteLocalRef(cover);
+            n = 0;
+            cover = env->NewByteArray(0);   // (empty, as a song with no cover)
+            if (env->ExceptionCheck()) { env->ExceptionClear(); cover = nullptr; }
+        }
         if (cover && n > 0) env->SetByteArrayRegion(cover, 0, n, reinterpret_cast<const jbyte*>(rgba));
         env->CallStaticVoidMethod(cls, m, t, ar, al, cover, jint(n > 0 ? w : 0), jint(n > 0 ? h : 0));
         for (jbyteArray a : { t, ar, al, cover }) if (a) env->DeleteLocalRef(a);

@@ -21,6 +21,7 @@ void App::lyrOnlineReset() {
     }
     if (path == lyrOn.path && lyrOn.state == LyrOnline::Saved) return;   // (its lyrics read again after a save)
     if (path != lyrOn.path || !now.lyrics.empty()) lyrOn = LyrOnline{};
+    else if (lyrOn.state == LyrOnline::Failed) lyrOn.state = LyrOnline::None;   // not reached the last time: asked again now it plays again, as its card says
 }
 
 void App::lyrMemoSet(const std::string& path, const lyrnet::Found* found, const std::string& why) {
@@ -272,15 +273,15 @@ void App::lyrOnlineRemove() {
 }
 
 void App::lyrOnlineNotThese() {
-    if (now.track < 0) return;
-    const Track& t = lib.tracks[now.track];
+    const Track* t = now.track >= 0 && now.track < int(lib.tracks.size()) ? &lib.tracks[size_t(now.track)] : nullptr;   // (a server's song has none of yours)
+    if (lyrOn.path.empty() || (!t && now.info.artist.empty())) return;
     lyrnet::Query q;
     q.kind = lyrnet::Ask::List;
     q.ticket = ++lyrOn.ticket;
     q.path = lyrOn.path;
-    q.title = !now.info.title.empty() ? now.info.title : t.title;
-    q.artist = !now.info.artist.empty() ? now.info.artist : t.artist;
-    q.duration = now.info.duration > 0 ? now.info.duration : t.duration;
+    q.title = !now.info.title.empty() ? now.info.title : t ? t->title : std::string();
+    q.artist = !now.info.artist.empty() ? now.info.artist : t ? t->artist : std::string();
+    q.duration = now.info.duration > 0 ? now.info.duration : t ? t->duration : 0;
     lyrOn.state = LyrOnline::Listing;
     lyrNet.ask(q);
     lyrFocusNext_ = uid("lyr.pick", 0);   // (while it looks there is nothing to hold it: it waits for the list)
@@ -339,8 +340,9 @@ bool App::lyrOnlineBar(float x, float y, float w) {
 
 bool App::drawLyrOnline(float x, float y, float w, float h) {
     if (lyrOn.path.empty() || lyrHerePath() != lyrOn.path) return false;
-    const Track& t = lib.tracks[now.track];
-    const std::string song = !now.info.title.empty() ? now.info.title : t.title;
+    const Track* t = now.track >= 0 && now.track < int(lib.tracks.size()) ? &lib.tracks[size_t(now.track)] : nullptr;   // (a server's song has none of yours)
+    const std::string song = !now.info.title.empty() ? now.info.title : t ? t->title : std::string();
+    const bool stream = srvq_.on;   // no .lrc file to put anywhere for a server's song
     auto words = [&](const std::string& head, const std::string& line) {
         g.text(head, { css::Lg, Weight::SemiBold }, x, y + 28, pal.text2, 1, Align::Left, int(w));
         float ty = y + 56;
@@ -362,8 +364,9 @@ bool App::drawLyrOnline(float x, float y, float w, float h) {
                                        : "Taken out of the song. Found online again the next time Songate starts.");
             return true;
         }
-        words("No lyrics", lyrOn.why.empty() ? "None found online either. An .lrc file with the track's name next to it, or a LYRICS tag, still works."
-                                             : lyrOn.why + ". An .lrc file with the track's name next to it, or a LYRICS tag, still works.");
+        words("No lyrics", stream ? (lyrOn.why.empty() ? std::string("None found online either.") : lyrOn.why + ".")
+                           : lyrOn.why.empty() ? "None found online either. An .lrc file with the song's name next to it, or a LYRICS tag, still works."
+                                               : lyrOn.why + ". An .lrc file with the song's name next to it, or a LYRICS tag, still works.");
         return true;
     case LyrOnline::Failed:
         words("No lyrics", "Could not ask LRCLIB: " + lyrOn.why + ". It is asked again the next time the song plays.");
@@ -377,7 +380,7 @@ bool App::drawLyrOnline(float x, float y, float w, float h) {
         sa.content = (n + 1) * rowH + 8;
         ui.pushArea(&sa);
         g.clip(x - 8, top, w + 16, vh);
-        const double len = now.info.duration > 0 ? now.info.duration : t.duration;
+        const double len = now.info.duration > 0 ? now.info.duration : t ? t->duration : 0;
         int picked = -2;
         for (int i = 0; i <= n; i++) {   // the records, then None of these
             const float ry = top + i * rowH - sa.y;
@@ -440,7 +443,7 @@ bool App::drawLyrOnline(float x, float y, float w, float h) {
         ty += 20;
         g.text("Lyrics for " + song, { css::Md, Weight::Bold }, x + 18, ty, pal.text, 1, Align::Left, int(cw - 36));
         ty += 24;
-        const double len = now.info.duration > 0 ? now.info.duration : t.duration;
+        const double len = now.info.duration > 0 ? now.info.duration : t ? t->duration : 0;
         const bool fits = len <= 0 || std::fabs(f.duration - len) <= 2;
         g.text(std::string(f.synced.empty() ? "Plain text" : "Synced") + " · LRCLIB · " + f.artist + " · " +
                    (fits ? "matches its length" : fmtTime(f.duration) + ", the song is " + fmtTime(len)),

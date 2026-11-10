@@ -73,6 +73,11 @@ struct Store {
     // The list views (ListMode) of the playlists, Folders and Library → Tracks, and the Library's tab
     int viewPlaylist = 1, viewFolders = 2, viewTracks = 1, viewGenre = 1;   // viewGenre: a genre's or an artist's Tracks tab
     int viewPlaylists = 2;     // the Playlists page: tiles
+    int viewGenres = 2;        // the Genres page: tiles, rows with covers, the plain list (as Folders')
+    int viewArtists = 2;       // the Artists page: the same three
+    int viewAlbums = 2;        // the Albums pages and search's Albums: the same three (the user, 2026-11-09)
+    unsigned letterRails[2] = { 31, 31 };      // the #-to-Z rail per list, for each library (Local, Server): 1 Albums, 2 Artists,
+                                                // 4 Genres, 8 Folders, 16 Tracks (32 the Playlists page and 64 a playlist's page were dropped: your order)
     int libTab = 1;            // 0 Albums, 1 Tracks, 2 Folders, 3 Artists, 4 Genres (in Library too: the sidebar's may be hidden)
     int tracksSort = 0;        // by artist, title, album, year, genre, length
     bool tracksDesc = false;
@@ -134,6 +139,7 @@ struct Store {
     // Background work stopped by hand (the progress stack's menu, Settings) until resumed: the cover cache, the overlay's covers, measuring loudness
     bool stopCovers = false, stopThumbs = false, stopLevels = false, stopLyrics = false, stopDownloads = false;
     bool stopTagWrites = false;
+    bool stopMixOrder = false;   // Automix playlists' ordering, stopped until resumed
     // the pocket lock (the Switch; Settings › Controls): its button on Now playing; the unlock: 0 Volume −, 1 Volume +, 3 Capture (twice); 2 either is only the fallback when Capture is refused,
     // held (pocketHold seconds) or pressed twice; a hint lit on a press while locked
     bool pocketButton = true, pocketHint = true;
@@ -197,6 +203,7 @@ struct Store {
     bool syncFiles = false;         // take the songs this device lacks: off until you turn it on
     int togetherOutput = 0;         // listening together: 0 speakers, 1 headphones, 2 Bluetooth
     bool airplayReceive = false;    // an iPhone may play here: off until you turn it on
+    bool airplaySpeakers = true;    // this device may play on AirPlay speakers: the title bar's list looks for them
     std::string airSpeakerVol;      // AirPlay speakers this device played to, and how loud: "id\tvolume" a line (airsend.hpp)
     std::string handoffFrom;        // devices whose handoffs are taken without asking, by their ids
     static constexpr int kTimingMax = 1000;   // ms either way: a Bluetooth speaker was 415 ms behind (2026-11-05), past the ±300 before
@@ -219,7 +226,6 @@ struct Store {
     int plSource = 0;           // the Playlists page and the sidebar's list: 0 yours, 1 the server's (shown only while signed in)
     int libSource = 0;          // Library's Local | Server (the user, 2026-11-06: "two options, Local or Server")
     int serverTab = 0;          // the Server tab's view: 0 Albums, 1 Artists, 2 Genres, 3 Folders, 4 Tracks
-    int serverPlace = 0;        // Settings › Library › Subsonic server › Its music: 0 its own tab (Server), 1 in the library with yours
     int uiSize = 1;             // Settings › Appearance › Layout › Size (Android), sideways only: 0 Standard (720 tall), 1 Medium (660, the default), 2 Largest (600); upright is always Standard
 
     void load();

@@ -4,6 +4,7 @@
 #include "library.hpp"
 #include "metadata.hpp"
 #include "platform.hpp"
+#include "tagwrite.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -47,8 +48,10 @@ void walk(const std::string& dir, std::vector<std::string>& out, int depth, std:
     if (depth > 10) return;
     DIR* d = opendir(dir.c_str());
     if (!d) return;
+    std::vector<std::string> leftovers;   // of a tag write cut by a power loss: settled once the folder is read
     while (dirent* e = readdir(d)) {
         const std::string name = e->d_name;
+        if (name.rfind(".songate-", 0) == 0) leftovers.push_back(name);
         if (name.empty() || name[0] == '.') continue;
         const std::string full = dir + "/" + name;
         bool isDir = e->d_type == DT_DIR;
@@ -63,6 +66,12 @@ void walk(const std::string& dir, std::vector<std::string>& out, int depth, std:
         out.push_back(full);
     }
     closedir(d);
+    for (const std::string& l : leftovers) {
+        const std::string back = tagwrite::settleLeftover(dir, l);
+        if (back.empty()) continue;
+        const std::string ext = extOf(back);
+        if (std::any_of(std::begin(kAudioExt), std::end(kAudioExt), [&](const char* x) { return ext == x; })) out.push_back(back);
+    }
 }
 
 /** A track as the file name and folders tell it, until its tags arrive. */

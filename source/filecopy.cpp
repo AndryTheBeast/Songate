@@ -616,7 +616,7 @@ void Copier::run() {
             if (kind == 'L' && sessionOn_) takeList(std::string(m.begin() + 2, m.end()));
             else if (kind == 'E' && sessionOn_) listIn = true;
             else if (kind == 'D') chunk(m);
-            else if (kind == 'N' && waiting_ && sessionOn_) {
+            else if (kind == 'N' && waiting_ && sessionOn_ && out_ && at_ < plan_.size()) {   // (a file asked for: not while the list is awaited)
                 badThisRun_.insert(plan_[at_].exact);
                 {
                     std::lock_guard<std::mutex> g(m_);

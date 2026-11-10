@@ -178,14 +178,14 @@ void Ui::endFrame() {
     if (wantDefault_) {
         // No DefaultFocus item in this view: take the first item in the main area.
         for (const Item& it : cur_)
-            if (it.region == fallbackRegion()) { focus_ = it.id; scrollToFocus_ = true; break; }
+            if (it.region == fallbackRegion() && !(it.flags & NoDefault)) { focus_ = it.id; scrollToFocus_ = true; break; }
         wantDefault_ = false;
     }
     const Item* f = find(cur_, focus_);
     if (!f) {
         // The focused item disappeared (view change, list refresh): fall back sensibly.
         if (!cur_.empty() && focus_) {
-            for (const Item& it : cur_) if (it.region == fallbackRegion()) { focus_ = it.id; break; }
+            for (const Item& it : cur_) if (it.region == fallbackRegion() && !(it.flags & NoDefault)) { focus_ = it.id; break; }
         }
         return;
     }
@@ -207,9 +207,12 @@ void Ui::navigate(int dx, int dy) {
     engaged_ = 0;
     const Item* f = find(prev_, focus_);
     if (!f) {
-        for (const Item& it : prev_) if (it.flags & DefaultFocus) { focus_ = it.id; scrollToFocus_ = true; return; }
-        for (const Item& it : prev_) if (it.region == Region::Main) { focus_ = it.id; scrollToFocus_ = true; return; }
-        if (!prev_.empty()) focus_ = prev_.front().id;
+        // (the region a vanished focus falls back to first: a card open keeps the D-pad on the card, never under it)
+        const Region fr = fallbackRegion();
+        for (const Item& it : prev_) if (it.region == fr && (it.flags & DefaultFocus)) { focus_ = it.id; scrollToFocus_ = true; return; }
+        for (const Item& it : prev_) if (it.region == fr && !(it.flags & NoDefault)) { focus_ = it.id; scrollToFocus_ = true; return; }
+        for (const Item& it : prev_) if ((it.flags & DefaultFocus) && !(it.flags & NoDefault)) { focus_ = it.id; scrollToFocus_ = true; return; }
+        for (const Item& it : prev_) if (!(it.flags & NoDefault)) { focus_ = it.id; scrollToFocus_ = true; return; }
         return;
     }
     bool blocked = false;

@@ -444,6 +444,16 @@ void App::coverBox(int track, float x, float y, float size, float rad, float alp
     }
 }
 
+const std::vector<std::pair<char, int>>& App::railLettersFor(const char* key, const std::string& stamp, const std::function<std::vector<std::string>()>& names) {
+    static std::unordered_map<std::string, std::pair<std::string, std::vector<std::pair<char, int>>>> kept;
+    auto& k = kept[key];
+    if (k.first != stamp || k.second.empty()) {
+        k.first = stamp;
+        k.second = lettersOf(names());
+    }
+    return k.second;
+}
+
 void App::listHead(float x, float y, float w, bool showAlbum) {
     if (w < kNarrowList) { g.rect(x, y + 29, w, 1, pal.text, 0.09f); return; }   // narrow: no columns to name
     const Font f{ css::Xs, Weight::SemiBold };
@@ -476,10 +486,10 @@ bool App::trackRow(Id id, int track, int number, float x, float y, float w, floa
     if (w < kNarrowList) {   // narrow (a phone upright): the number, the title over the artist, the length
         const float cy = y + h / 2, tx = x + 12 + 28 + 12, tw = w - (tx - x) - 64;
         if (playing) eqGlyph(x + 12 + 28 - 13, cy, pal.accentInk);
-        else g.textC(std::to_string(number), { css::Sm }, x + 12 + 28, cy, pal.text3, 1, Align::Right);
+        else g.textNumC(std::to_string(number), { css::Sm }, x + 12 + 28, cy, pal.text3, 1, Align::Right);
         g.text(t.title, { css::Base, playing ? Weight::SemiBold : Weight::Regular }, tx, cy - 20, playing ? pal.accentInk : pal.text, 1, Align::Left, int(tw));
         g.text(t.artist + (showAlbum && !t.album.empty() ? " · " + t.album : ""), { css::Sm }, tx, cy + 2, pal.text3, 1, Align::Left, int(tw));
-        g.textC(t.duration > 0 ? fmtTime(t.duration) : "", { css::Sm }, x + w - 16, cy, pal.text3, 1, Align::Right);
+        g.textNumC(t.duration > 0 ? fmtTime(t.duration) : "", { css::Sm }, x + w - 16, cy, pal.text3, 1, Align::Right);
         return hit;
     }
 
@@ -490,7 +500,7 @@ bool App::trackRow(Id id, int track, int number, float x, float y, float w, floa
     const float cy = y + h / 2;
     float cx = x + pad;
     if (playing) eqGlyph(cx + 44 - 13, cy, pal.accentInk);
-    else g.textC(std::to_string(number), { css::Sm }, cx + 44, cy, pal.text3, 1, Align::Right);
+    else g.textNumC(std::to_string(number), { css::Sm }, cx + 44, cy, pal.text3, 1, Align::Right);
     cx += 44 + gap;
     g.textC(t.title, { css::Base, playing ? Weight::SemiBold : Weight::Regular }, cx, cy, playing ? pal.accentInk : pal.text, 1, Align::Left,
             int(fr * 1.6f));
@@ -498,7 +508,7 @@ bool App::trackRow(Id id, int track, int number, float x, float y, float w, floa
     g.textC(t.artist, { css::Base }, cx, cy, pal.text2, 1, Align::Left, int(fr));
     cx += fr + gap;
     if (showAlbum) { g.textC(t.album, { css::Base }, cx, cy, pal.text2, 1, Align::Left, int(fr)); cx += fr + gap; }
-    g.textC(t.duration > 0 ? fmtTime(t.duration) : "", { css::Sm }, cx + 64, cy, pal.text3, 1, Align::Right);
+    g.textNumC(t.duration > 0 ? fmtTime(t.duration) : "", { css::Sm }, cx + 64, cy, pal.text3, 1, Align::Right);
     return hit;
 }
 
@@ -564,4 +574,64 @@ bool App::toggle(Id id, float x, float cy, bool on, float alpha) {
     g.roundRect(x, cy - 11, 40, 22, 11, on ? pal.accent : pal.text, (on ? 1.f : 0.16f) * alpha);
     g.circle(on ? x + 29 : x + 11, cy, 8, on ? pal.onAccent : pal.text, alpha);
     return hit;
+}
+
+
+std::vector<std::pair<char, int>> App::lettersOf(const std::vector<std::string>& names) {
+    std::vector<std::pair<char, int>> out;
+    for (int i = 0; i < int(names.size()); i++) {
+        const std::string& n = names[size_t(i)];
+        size_t k = 0;
+        while (k < n.size() && (n[k] == ' ' || n[k] == '"' || n[k] == '\'' || n[k] == '(' || n[k] == '[')) k++;   // leading quotes and brackets
+        const unsigned char c = k < n.size() ? (unsigned char)n[k] : '#';
+        const char L = (c >= 'a' && c <= 'z') ? char(c - 32) : (c >= 'A' && c <= 'Z') ? char(c) : '#';
+        bool seen = false;
+        for (const auto& p : out) if (p.first == L) { seen = true; break; }
+        if (!seen) out.push_back({ L, i });
+    }
+    std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) { return (a.first == '#' ? ' ' : a.first) < (b.first == '#' ? ' ' : b.first); });
+    return out;
+}
+
+void App::letterRail(const char* key, float railX, float top, float h, const std::vector<std::pair<char, int>>& L, ScrollArea& sa,
+                     const std::function<float(int)>& rowY) {
+    if (L.empty()) return;
+    const float top2 = top + 8, avail = h - 16;
+    const float step = std::min(22.f, avail / float(L.size()));
+    const float railH = step * float(L.size()), lw = kRailW - 4;
+    int cur = 0;   // the section showing: the last letter whose first row is at or above the scroll
+    for (int i = 0; i < int(L.size()); i++) if (rowY(L[size_t(i)].second) <= sa.y + 1) cur = i;
+    auto jump = [&](int i) { sa.target = rowY(L[size_t(i)].second); sa.clamp(); };
+    // each letter an item the D-pad lands on (A glides there), the one showing in the accent
+    for (int i = 0; i < int(L.size()); i++) {
+        const float ly = top2 + i * step;
+        const Id id = uid(std::string(key) + ".az", L[size_t(i)].first);
+        if (ui.item(id, { railX, ly, lw, step }, 6)) jump(i);
+        const bool hot = ui.focused(id) && ui.showFocusRing(), on = i == cur;
+        g.textC(std::string(1, L[size_t(i)].first), { css::Xs, on || hot ? Weight::Bold : Weight::SemiBold }, railX + lw / 2, ly + step / 2,
+                hot ? pal.text : on ? pal.accentInk : pal.text2, 1, Align::Center);
+    }
+    // one wide touch zone over the whole rail, on top (registered last, so a finger finds it first): tapped or slid along, it takes
+    // the letter under the finger; the D-pad never lands on it, the letters above are its stops
+    const Id zone = uid(std::string(key) + ".az.zone");
+    // (its right edge the letters' own: past the screen's, its focus ring was cut there)
+    ui.item(zone, { railX - 20, top2 - 6, lw + 20, railH + 12 }, 10, Slider | Slider2D | NoSideEntry | NoUpDownEntry);
+    int under = -1;
+    if (const float dy = ui.sliderDragY(zone); dy >= 0) {
+        under = std::clamp(int((dy - top2) / step), 0, int(L.size()) - 1);
+        jump(under);
+        railBubble_ = { zone, L[size_t(under)].first, std::clamp(dy, std::min(top2 + 30, top2 + railH / 2), std::max(top2 + railH - 30, top2 + railH / 2)), time };   // (a rail of a letter or two is shorter than the bubble)
+    }
+    // a finger on the zone gives it the focus; the D-pad would then ring the whole rail, wide of the screen (the user, 2026-11-09:
+    // "the outline in letter rows is too wide and is clipping"): the focus goes to the letter under the finger, else the one showing
+    if (ui.focusedId() == zone) ui.focus(uid(std::string(key) + ".az", L[size_t(under >= 0 ? under : cur)].first));
+    // the bubble: the letter under the finger, big, beside the rail, staying a moment after the finger lifts
+    const double since = time - railBubble_.at;
+    if (railBubble_.zone == zone && since < 0.45) {
+        const float a = since < 0.3 ? 1.f : float(1 - (since - 0.3) / 0.15);
+        const float bx = railX - 46, by = railBubble_.y;
+        g.circle(bx, by + 2, 30, { 0, 0, 0 }, 0.25f * a);
+        g.circle(bx, by, 30, pal.accent, a);
+        g.textC(std::string(1, railBubble_.letter), { css::Xl, Weight::Bold }, bx, by, pal.onAccent, a, Align::Center);
+    }
 }

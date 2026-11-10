@@ -299,6 +299,7 @@ bool measureFile(const std::string& path, Meter::Result& out, const std::atomic<
                 int r = avcodec_receive_frame(dec, frame);
                 if (r == 0) {
                     const int cap = swr_get_out_samples(swr, frame->nb_samples);
+                    if (cap <= 0) { av_frame_unref(frame); continue; }   // an error (negative) is no size to resize to
                     buf.resize(size_t(cap) * ch);
                     uint8_t* outp = reinterpret_cast<uint8_t*>(buf.data());
                     const int got = swr_convert(swr, &outp, cap, const_cast<const uint8_t**>(frame->extended_data), frame->nb_samples);

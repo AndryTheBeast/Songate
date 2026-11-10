@@ -17,6 +17,7 @@
 #include <string_view>
 
 #include "cores.hpp"
+#include "safefile.hpp"
 #include "metadata.hpp"
 
 namespace {
@@ -220,6 +221,11 @@ std::string tagText(std::string s) {
     return out;
 }
 std::string tagText(std::string_view v) { return tagText(std::string(v)); }
+/** A tag that reads as nothing (empty, or only spaces): the file's name stays, as for a song without the tag. */
+bool blank(const std::string& s) {
+    for (unsigned char c : s) if (c > ' ') return false;
+    return true;
+}
 }  // namespace
 
 bool MetaCache::pump(SDL_Renderer* r) {
@@ -237,15 +243,16 @@ bool MetaCache::pump(SDL_Renderer* r) {
     for (auto& t : tags) {
         Track& tr = lib_->tracks[t.idx];
         if (!t.ok) { tagged_++; continue; }
-        if (!t.title.empty()) tr.title = tagText(t.title);
-        if (!t.artist.empty()) tr.artist = tagText(t.artist);
-        if (!t.album.empty()) tr.album = tagText(t.album);
+        const std::string title = tagText(t.title), artist = tagText(t.artist), album = tagText(t.album);
+        if (!blank(title)) tr.title = title;
+        if (!blank(artist)) tr.artist = artist;
+        if (!blank(album)) tr.album = album;
         tr.date = tagText(t.date);
         tr.albumArtist = tagText(t.albumArtist);
         tr.genre = tagText(t.genre);
         tr.trackNo = t.trackNo;
         if (t.duration > 0) tr.duration = t.duration;
-        tr.fromName = (t.title.empty() ? 1 : 0) | (t.artist.empty() ? 2 : 0) | (t.album.empty() ? 4 : 0);
+        tr.fromName = (blank(title) ? 1 : 0) | (blank(artist) ? 2 : 0) | (blank(album) ? 4 : 0);
         if (overlay) overlay(tr);
         if (!tr.tagged) tagged_++;
         tr.tagged = true;
@@ -505,6 +512,7 @@ void MetaCache::loadArtMap() {
     artMap_.clear();
     artByKey_.clear();
     artNew_ = 0;
+    safefile::recover(artDir_ + "/map.tsv");
     std::vector<uint8_t> raw = readAll(artDir_ + "/map.tsv");   // in one go, split in place (see load)
     const char* p = reinterpret_cast<const char*>(raw.data());
     const char* const end = p + raw.size();
@@ -537,18 +545,18 @@ void MetaCache::loadArtMap() {
 
 void MetaCache::saveArtMap() {
     artNew_ = 0;
-    const std::string tmp = artDir_ + "/map.tmp", dst = artDir_ + "/map.tsv";
+    const std::string dst = artDir_ + "/map.tsv", tmp = dst + ".tmp";
     FILE* f = fopen(tmp.c_str(), "wb");
     if (!f) return;
     fprintf(f, "#covers %d\n", kCoverReader);
     for (const auto& [h, e] : artMap_) fprintf(f, "%s\t%s\t%s\n", hex16(h).c_str(), e.file.c_str(), e.key.c_str());
     const bool ok = !ferror(f);
     if (fclose(f) != 0 || !ok) { remove(tmp.c_str()); return; }   // a full SD card: the old map stays whole
-    remove(dst.c_str());
-    rename(tmp.c_str(), dst.c_str());
+    safefile::swapIn(tmp, dst);
 }
 
 void MetaCache::load() {
+    safefile::recover(cacheFile_);   // a save cut between its renames
     // Read in one go and split in place: line by line, with a string for every column, this took a third of a
     // second of the console's launch for a few thousand tracks.
     std::string data;
@@ -584,15 +592,17 @@ void MetaCache::load() {
         auto it = byPath.find(cols[0]);
         if (it == byPath.end()) continue;
         Track& t = lib_->tracks[it->second];
-        if (!cols[1].empty()) t.title = tagText(cols[1]);   // (a cache from before: its NULs dropped too)
-        if (!cols[2].empty()) t.artist = tagText(cols[2]);
-        if (!cols[3].empty()) t.album = tagText(cols[3]);
+        // (a cache from before: its NULs dropped too, and a title of spaces alone is no title: the file's name stays)
+        const std::string title = tagText(cols[1]), artist = tagText(cols[2]), album = tagText(cols[3]);
+        if (!blank(title)) t.title = title;
+        if (!blank(artist)) t.artist = artist;
+        if (!blank(album)) t.album = album;
         t.date = tagText(cols[4]);
         t.duration = strtod(std::string(cols[5]).c_str(), nullptr);
         t.albumArtist = tagText(cols[6]);
         t.trackNo = atoi(std::string(cols[7]).c_str());
         t.genre = tagText(cols[8]);
-        t.fromName = (unsigned char)atoi(std::string(cols[9]).c_str());
+        t.fromName = (unsigned char)(atoi(std::string(cols[9]).c_str()) | (blank(title) ? 1 : 0) | (blank(artist) ? 2 : 0) | (blank(album) ? 4 : 0));
         if (overlay) overlay(t);
         if (!t.tagged) tagged_++;
         t.tagged = true;
@@ -619,9 +629,7 @@ void MetaCache::save() {
     if (!f) return;
     const bool ok = fwrite(out.data(), 1, out.size(), f) == out.size() && !ferror(f);
     if (fclose(f) != 0 || !ok) { remove(tmp.c_str()); return; }
-    remove(cacheFile_.c_str());
-    rename(tmp.c_str(), cacheFile_.c_str());
-    dirty_ = false;
+    if (safefile::swapIn(tmp, cacheFile_)) dirty_ = false;
 }
 
 void MetaCache::clearCovers() {

@@ -313,10 +313,10 @@ void App::serverTick() {
         const Subsonic::View fv = subsonic.view();
         if (fv.state == Subsonic::SignedIn) {
             firstServer_ = false;
-            store.serverPlace = 1;
+            store.libSource = 1;   // the switch on Server: its music, apart (the user, 2026-11-09: separate libraries)
             persistSoon(0.3f);
-            if (store.musicRoot.empty()) navigate(View::Albums, -1, std::string(), false);
-            toast("Signed in: your server's music is in your library");
+            navigate(View::Library, -1, std::string(), false);
+            toast("Signed in: your server's music is under Server");
             if (tourAsk) { tourAsk = false; offerTour(); }   // a first start: the tour, offered as after choosing a folder (the user, 2026-11-06)
         } else if (fv.state == Subsonic::Failed) {
             firstServer_ = false;
@@ -495,9 +495,46 @@ const App::SrvPage& App::serverPage(char kind, const std::string& id, int slot) 
 const std::vector<Subsonic::Playlist>* App::serverPlaylistList() {
     unsigned gen = 0;
     std::vector<Subsonic::Playlist> list;
-    if (subsonic.playlists(list, gen)) { if (gen != srvPlaylistsGen_) { srvPlaylists_ = std::move(list); srvPlaylistsGen_ = gen; } }
+    if (subsonic.playlists(list, gen)) { if (gen != srvPlaylistsGen_) { srvPlaylists_ = std::move(list); srvPlaylistsGen_ = gen; applyServerPlaylistOrder(); } }
     else if (serverAsked_.insert("PL").second) subsonic.askPlaylists();
     return srvPlaylistsGen_ == ~0u ? nullptr : &srvPlaylists_;
+}
+
+/** The server's playlists in your order (the Playlists page's Move; the sidebar reads the same list): the ids the order file knows
+ *  first, as it has them, then the rest as the server sent them. The server itself keeps no order (the user, 2026-11-10). */
+void App::applyServerPlaylistOrder() {
+    if (!srvPlOrderRead_) {   // (a small file, read once)
+        srvPlOrderRead_ = true;
+        if (FILE* f = fopen(store.path("server-playlist-order.tsv").c_str(), "rb")) {
+            char line[512];
+            while (fgets(line, sizeof line, f)) {
+                std::string l = line;
+                while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+                if (!l.empty()) srvPlOrder_.push_back(l);
+            }
+            fclose(f);
+        }
+    }
+    if (srvPlOrder_.empty()) return;
+    auto rank = [&](const Subsonic::Playlist& p) {
+        const auto it = std::find(srvPlOrder_.begin(), srvPlOrder_.end(), p.id);
+        return it == srvPlOrder_.end() ? int(srvPlOrder_.size()) : int(it - srvPlOrder_.begin());
+    };
+    std::stable_sort(srvPlaylists_.begin(), srvPlaylists_.end(), [&](const Subsonic::Playlist& a, const Subsonic::Playlist& b) { return rank(a) < rank(b); });
+}
+
+/** Move on the server's Playlists page: the playlist goes from one place to another, and the whole order is written (once a move,
+ *  through the writer thread) so the page and the sidebar keep it. */
+void App::moveServerPlaylist(int from, int to) {
+    const int n = int(srvPlaylists_.size());
+    if (from < 0 || from >= n || to < 0 || to >= n || from == to) return;
+    const Subsonic::Playlist moved = srvPlaylists_[size_t(from)];
+    srvPlaylists_.erase(srvPlaylists_.begin() + from);
+    srvPlaylists_.insert(srvPlaylists_.begin() + to, moved);
+    srvPlOrder_.clear();
+    std::string out;
+    for (const auto& p : srvPlaylists_) { srvPlOrder_.push_back(p.id); out += p.id + "\n"; }
+    store.writeFile("server-playlist-order.tsv", std::move(out));
 }
 
 /** A playlist of yours sent to the server (the user: playlists "both ways"): its tracks the server also has (by artist and title), as a
@@ -522,7 +559,7 @@ void App::sendPlaylistToServer(const std::string& name, const std::vector<int>& 
     }
     std::string kind = subsonic.view().kind;
     kind = kind.empty() ? std::string("the server") : std::string(1, char(toupper(uint8_t(kind[0])))) + kind.substr(1);
-    if (ids.empty()) { toast("None of these tracks are on " + kind); return; }
+    if (ids.empty()) { toast("None of these songs are on " + kind); return; }
     std::string existing;
     for (const auto& p : *pls) if (p.name == name) { existing = p.id; break; }
     subsonic.sendPlaylist(name, existing, ids);
@@ -538,7 +575,7 @@ void App::savePlaylistHere(const std::string& name, const std::vector<Subsonic::
     for (const Track& t : lib.tracks) if (!t.title.empty()) byKey.emplace(low(t.artist) + "\x1f" + low(t.title), t.path);
     std::vector<std::string> paths;
     for (const auto& so : songs) if (auto it = byKey.find(low(so.artist) + "\x1f" + low(so.title)); it != byKey.end()) paths.push_back(it->second);
-    if (paths.empty()) { toast("None of its tracks are on " GF_THIS_CARD ": download them first"); return; }
+    if (paths.empty()) { toast("None of its songs are on " GF_THIS_CARD ": download them first"); return; }
     const std::string as = store.freePlaylistName(name);
     store.playlists.push_back({ as, std::string(), paths });
     store.save();
@@ -546,10 +583,11 @@ void App::savePlaylistHere(const std::string& name, const std::vector<Subsonic::
 }
 
 /** The Playlists page with Server chosen: the server's playlists, in the page's views (tiles, with covers, the list); a press opens one. */
-void App::drawServerPlaylists(float x, float y, float w, float h, float cy, float oy, ListMode mode) {
-    const std::vector<Subsonic::Playlist>* pls = serverPlaylistList();
+void App::drawServerPlaylists(float x, float y, float w, float h, float cy, float oy, ListMode mode, const std::vector<Subsonic::Playlist>* list) {
+    const std::vector<Subsonic::Playlist>* pls = list ? list : serverPlaylistList();
+    auto hov = [&](int k) { if (!list) hoverSrvPl_ = k; };   // (search's own list: the Playlists page's + must not read these rows' places)
     if (!pls) { g.textC("Asking the server…", { css::Lg, Weight::SemiBold }, x + w / 2, cy + 60, pal.text2, 1, Align::Center); area("playlists").content = cy - oy + 120; return; }
-    if (pls->empty()) {
+    if (!list && pls->empty()) {
         g.textC("No playlists on the server", { css::Lg, Weight::SemiBold }, x + w / 2, cy + 60, pal.text2, 1, Align::Center);
         g.textC("New playlist makes one; a playlist of yours can be sent from its page", { css::Base }, x + w / 2, cy + 92, pal.text3, 1, Align::Center);
         area("playlists").content = cy - oy + 140;
@@ -557,17 +595,22 @@ void App::drawServerPlaylists(float x, float y, float w, float h, float cy, floa
     }
     const int n = int(pls->size());
     auto info = [](const Subsonic::Playlist& p) { return std::to_string(p.songs) + (p.songs == 1 ? " track" : " tracks"); };
+    // picked up with its menu's Move (the server's own list, not search's): lifted, the accent around it, as yours
+    const int held = !list && grab.kind == Grab::SrvPlaylists ? grab.pos : -1;
     if (mode == ListMode::Grid || mode == ListMode::Albums) {
         const float inner = w - 32;
         const int cols = std::max(2, int(inner / 200));
         const float tw = inner / cols, th = 10 + (tw - 20) + 8 + 20 + 2 + 18 + 10;
+        if (held >= 0) grab.cols = cols;   // the D-pad moves a held tile along the grid
         for (int k = 0; k < n; k++) {
             const float tx = x + 16 + (k % cols) * tw, ty = cy + (k / cols) * th;
             const Subsonic::Playlist& p = (*pls)[size_t(k)];
-            if (ty + th < y - 40 || ty > y + h + 40) continue;
+            if (ty + th < y - th || ty > y + h + th) continue;   // (a row past each edge stays an item: the D-pad's next stop)
             const Id tid = uid("pls.srv", int(uid(p.id) & 0x7fffffff));
+            if (k == held) g.roundRect(tx, ty, tw, th, 14, pal.accent, 0.14f);
             if (serverTile(tid, p.cover, tx, ty, tw, false, p.name, info(p), k == 0 ? DefaultFocus : 0, ICON_LIST)) openServer(5, p.id, p.name);
-            if (ui.focused(tid)) hoverSrvPl_ = k;
+            if (k == held) g.roundStroke(tx, ty, tw, th, 14, 2, pal.accent, 0.95f);
+            if (ui.focused(tid)) hov(k);
             g.roundRect(tx + 18, ty + 18, 30, 30, 9, pal.bg, 0.72f);   // its icon, small, over the cover's corner: what the sidebar shows (as yours)
             g.icon(serverPlaylistIcon(p.id), tx + 33, ty + 33, 16, pal.text);
         }
@@ -575,14 +618,18 @@ void App::drawServerPlaylists(float x, float y, float w, float h, float cy, floa
         return;
     }
     const float rowH = mode == ListMode::List ? 52 : 64, cov = rowH - 4 - 16;
+    if (held >= 0) grab.cols = 1;
     for (int k = 0; k < n; k++) {
         const Subsonic::Playlist& p = (*pls)[size_t(k)];
         const float ry = cy + k * rowH, rx = x + 14, rw = w - 28;
         const Id id = uid("pls.srv", int(uid(p.id) & 0x7fffffff));
         if (ui.item(id, { rx, ry, rw, rowH - 4 }, 10, k == 0 ? DefaultFocus : 0)) openServer(5, p.id, p.name);
-        if (ui.focused(id)) hoverSrvPl_ = k;
+        if (ui.focused(id)) hov(k);
         if (ry + rowH < y - rowH || ry > y + h + rowH) continue;
-        if (ui.pressed(id) || (ui.focused(id) && ui.showFocusRing())) g.roundRect(rx, ry, rw, rowH - 4, 10, pal.text, 0.065f);
+        if (k == held) {
+            g.roundRect(rx, ry, rw, rowH - 4, 10, pal.accent, 0.14f);
+            g.roundStroke(rx, ry, rw, rowH - 4, 10, 2, pal.accent, 0.95f);
+        } else if (ui.pressed(id) || (ui.focused(id) && ui.showFocusRing())) g.roundRect(rx, ry, rw, rowH - 4, 10, pal.text, 0.065f);
         const float mid = ry + (rowH - 4) / 2;
         g.roundRect(rx + 16, mid - cov / 2, cov, cov, 8, pal.surface2);   // its icon in its square, as yours
         g.icon(serverPlaylistIcon(p.id), rx + 16 + cov / 2, mid, cov * 0.5f, pal.text2);
@@ -663,7 +710,7 @@ void App::serverSignOutCard() {
     if (!sv.kind.empty()) kind[0] = char(toupper(uint8_t(kind[0])));
     std::string what = songs ? "Downloaded: " + std::to_string(songs) + (songs == 1 ? " track" : " tracks") + ", " + mb(bytes) + ". " : std::string("Nothing downloaded. ");
     what += "Kept to play again: " + mb(cache) + ". Remove everything takes all of it away, with the server's settings: Songate is as it was before the "
-            "server. Keep downloads leaves the downloaded tracks here (in your music folder they stay in your library).";
+            "server. Keep downloads leaves the downloaded songs here (in your music folder they stay in your library).";
     confirm(PLI_CLOUD, "Subsonic server", "Sign out of " + kind + "?", sv.server, "What should stay on this device?", what, "Remove everything",
             [this] { serverSignedOut(true); });
     sheet.askAlt = "Keep downloads";
@@ -679,13 +726,14 @@ void App::serverSignedOut(bool removeAll) {
         long long bytes = 0;
         subsonic.dlCounts(songs, bytes, albums);
         srvRescanAfterWipe_ = songs > 0 && store.serverDlPlace == 1;   // (tracks in the music folder: the library read again after)
-        store.serverPlace = 0;
         store.serverTab = 0;
         store.libSource = 0;
         store.serverDlPlace = 0;
         store.stopDownloads = false;
         srvPlIcons_.clear();
         store.removeFile("server-playlist-icons.tsv");   // (gone, as before the server: the user, 2026-11-06)
+        srvPlOrder_.clear();
+        store.removeFile("server-playlist-order.tsv");   // (its playlists' order, the same)
         applyJobStops();
         srvFilter_.clear();
     }
@@ -789,9 +837,16 @@ void App::drawServerQueue(float x, float y, float w, float h) {
     ui.pushArea(&sa);
     g.clip(x, y, w, h);
     const float oy = y - sa.y, cyTop = oy + 18;
-    const Subsonic::Song* cur = srvq_.pos >= 0 && srvq_.pos < int(srvq_.songs.size()) ? &srvq_.songs[size_t(srvq_.pos)] : nullptr;
-    if (SDL_Texture* t = cur ? serverCover(cur->cover, 500) : nullptr) g.image(t, x + 28, cyTop, cs, cs, 12);
-    else { g.roundRect(x + 28, cyTop, cs, cs, 12, pal.surface2); g.icon(ICON_LIST, x + 28 + cs / 2, cyTop + cs / 2, cs * 0.36f, pal.text3); }
+    {   // the queue's cover: its first four covers as one, as the local queue's (coverQuad)
+        std::vector<std::string> cv;
+        for (const auto& so : srvq_.songs) {
+            if (so.cover.empty() || std::find(cv.begin(), cv.end(), so.cover) != cv.end()) continue;
+            cv.push_back(so.cover);
+            if (cv.size() == 4) break;
+        }
+        if (!cv.empty()) serverQuad(cv, x + 28, cyTop, cs, 12);
+        else { g.roundRect(x + 28, cyTop, cs, cs, 12, pal.surface2); g.icon(ICON_LIST, x + 28 + cs / 2, cyTop + cs / 2, cs * 0.36f, pal.text3); }
+    }
     const std::string title = srvq_.name.empty() ? "From " + kind : srvq_.name;
     double secs = 0;
     for (const auto& so : srvq_.songs) secs += so.duration;
@@ -814,7 +869,18 @@ void App::drawServerQueue(float x, float y, float w, float h) {
     const float by = narrow ? cyTop + cs + 14 : cyTop + 120 - 34;
     float bx = tx;
     bool clicked = false;
-    bx += button(uid("srv.qcur"), ICON_PLAY, "Current track", bx, by, true, &clicked, false, false, DefaultFocus) + 8;
+    bx += button(uid("srv.qplay"), ICON_PLAY, "Play", bx, by, true, &clicked, false, false, DefaultFocus) + 8;
+    if (clicked && !srvq_.songs.empty()) serverPlayAt(0);
+    clicked = false;
+    bx += button(uid("srv.qshuffle"), ICON_SHUFFLE, "Shuffle", bx, by, false, &clicked) + 8;
+    if (clicked && !srvq_.songs.empty()) {   // as the local queue's Shuffle: the queue reordered, from its top
+        std::vector<Subsonic::Song> v = srvq_.songs;
+        static std::mt19937 rng{ SDL_GetTicks() };
+        std::shuffle(v.begin(), v.end(), rng);
+        playServer(v, 0, srvq_.name);
+    }
+    clicked = false;
+    bx += button(uid("srv.qcur"), ICON_DISC, "Current song", bx, by, false, &clicked) + 8;
     if (clicked && srvq_.pos >= 0) {   // glides to the one playing
         const std::vector<ListEntry> layout = serverLayout(srvq_.songs, order, w, ListMode(mode));
         sa.target = headH + listRowY(layout, srvq_.pos) - (h - 40) / 2;
@@ -824,6 +890,7 @@ void App::drawServerQueue(float x, float y, float w, float h) {
     bx += button(uid("srv.qclear"), ICON_X, "Clear", bx, by, false, &clicked) + 8;
     viewSwitch("srv.qview", x + w - 28, narrow ? by + 34 + 10 + 18 : by + 17, mode);
     store.viewPlaylist = mode;
+    // (no letter rail: the queue keeps its play order, as the library's Playlist tab)
     const float bodyH = drawServerBody("srv.q", srvq_.songs, order, x, oy + headH, w, y, h, ListMode(mode), false, [this](int i) { serverPlayAt(i); });
     sa.content = headH + bodyH;
     g.unclip();
@@ -872,7 +939,7 @@ void App::serverNewPlaylist(const std::vector<std::string>& songIds) {
     subsonic.newPlaylist(name, songIds);
     serverPlaylistChanged("");
     if (songIds.empty()) srvOpenNew_ = name;   // (opened once the server lists it)
-    toast("Made the playlist “" + name + "”" + (songIds.empty() ? std::string() : ", with this track"));
+    toast("Made the playlist “" + name + "”" + (songIds.empty() ? std::string() : ", with this song"));
 }
 
 void App::serverRenamePlaylist(const std::string& id, const std::string& old) {
@@ -893,7 +960,7 @@ void App::serverDeletePlaylist(const std::string& id, const std::string& name, i
     std::string kind = subsonic.view().kind;
     kind = kind.empty() ? std::string("the server") : std::string(1, char(toupper(uint8_t(kind[0])))) + kind.substr(1);
     confirm(PLI_CLOUD, "Delete", name, kind + " · " + std::to_string(songs) + (songs == 1 ? " track" : " tracks"), "Delete this playlist?",
-            "It leaves " + kind + ", for every app that uses it. The tracks stay on the server and in your library.", "Delete",
+            "It leaves " + kind + ", for every app that uses it. The songs stay on the server and in your library.", "Delete",
             [this, id, name] {
                 subsonic.deletePlaylist(id);
                 srvPlaylists_.erase(std::remove_if(srvPlaylists_.begin(), srvPlaylists_.end(), [&](const auto& p) { return p.id == id; }), srvPlaylists_.end());
@@ -955,7 +1022,7 @@ void App::serverGenrePlaylistButton(const std::string& genre, float& bx, float b
     if (!c) return;
     if (have) { serverDeletePlaylist(have->id, have->name, have->songs); return; }
     const std::vector<std::string> ids = serverGenreSongIds(genre);
-    if (ids.empty()) { toast("Asking the server for its tracks: try again in a moment"); return; }
+    if (ids.empty()) { toast("Asking the server for its songs: try again in a moment"); return; }
     subsonic.newPlaylist(genre, ids);
     serverPlaylistChanged("");
     toast("Added “" + genre + "” to the server's playlists");
@@ -978,7 +1045,7 @@ void App::addServerGenresAsPlaylists() {
     const int n = int(add.size());
     const std::string count = std::to_string(n) + (n == 1 ? " genre" : " genres");
     confirm(ICON_LIST, "Genres", kind + "'s genres", count + " not in its playlists yet", "Add " + count + " as playlists?",
-            "Each becomes a playlist on " + kind + ", named after its genre, with its tracks as they are now (a playlist on the server does not "
+            "Each becomes a playlist on " + kind + ", named after its genre, with its songs as they are now (a playlist on the server does not "
             "follow the genre later). Genres already in its playlists stay as they are.",
             "Add all", [this, add] {
                 int added = 0;
@@ -1005,7 +1072,7 @@ void App::serverQueueAdd(const Subsonic::Song& s, bool next) {
 /** Library's switch pressed. Its music Mixed in: nothing more. Apart: what plays now finishes, or is paused; then the other side's last
  *  track comes back, paused where it was (each side's queue kept). Nothing playing: at once. */
 void App::libSourceChanged() {
-    if (store.serverPlace != 0 || subsonic.view().state != Subsonic::SignedIn) { libSwitchTo_ = -1; return; }
+    if (subsonic.view().state != Subsonic::SignedIn) { libSwitchTo_ = -1; return; }
     const int playingSide = srvq_.on ? 1 : 0;
     if (playingSide == store.libSource) { libSwitchTo_ = -1; return; }   // (back to the side playing: nothing to do)
     libSwitchTo_ = store.libSource;
@@ -1018,7 +1085,7 @@ void App::libSourceChanged() {
  *  inside the albums tab, artists, etc does not refresh when I switch from local to server"). Only when its music is Apart (Mixed in: one
  *  library, its pages show both). Library itself already shows whichever side; a playlist goes to Playlists (the sidebar's list changed). */
 void App::libSourceFollow() {
-    if (store.serverPlace != 0 || subsonic.view().state != Subsonic::SignedIn) return;
+    if (subsonic.view().state != Subsonic::SignedIn) return;
     const View v = route.view;
     if (store.libSource == 1) {   // to the server's
         if (v == View::Albums || (v == View::Album && libFrom != View::Library)) openServerSection(0);
@@ -1046,7 +1113,7 @@ void App::libSourceFollow() {
 
 void App::libSwitchTick() {
     if (libSwitchTo_ < 0) return;
-    if (store.serverPlace != 0 || subsonic.view().state != Subsonic::SignedIn) { libSwitchTo_ = -1; return; }
+    if (subsonic.view().state != Subsonic::SignedIn) { libSwitchTo_ = -1; return; }
     // the song ended (another began, or nothing plays), or it was paused
     const bool moved = libSwitchTo_ == 1 ? (srvq_.on || now.track != libSwitchTrack_) : (!srvq_.on || srvq_.pos != libSwitchPos_);
     if (moved || !isPlaying()) libSwitchNow();
@@ -1085,6 +1152,8 @@ void App::serverForget() {
     srvPage_[1] = SrvPage{};
     srvGenreCovers_.clear();
     serverAsked_.clear();
+    srvPlaylists_.clear();   // (another server's playlists stayed listed after signing into the next)
+    srvPlaylistsGen_ = ~0u;
     for (auto& [k, t] : serverCovers_) if (t) SDL_DestroyTexture(t);
     serverCovers_.clear();
 }
@@ -1115,13 +1184,6 @@ float App::drawServerSongs(const char* key, const std::vector<Subsonic::Song>& s
     return float(songs.size()) * rowH;
 }
 
-std::string App::serverCountNote() {
-    if (store.serverPlace != 1 || serverAlbums().empty()) return {};
-    const Subsonic::View sv = subsonic.view();
-    std::string kind = sv.kind.empty() ? std::string("your server") : sv.kind;
-    kind[0] = char(toupper(uint8_t(kind[0])));
-    return " · " + std::to_string(serverAlbums_.size()) + " on " + kind;
-}
 
 /** Covers decoded on the worker: textures from them, three a frame at most (each frame; nothing while none came). */
 void App::serverCoverPump() {
@@ -1133,6 +1195,9 @@ void App::serverCoverPump() {
         if (s) {
             t = SDL_CreateTextureFromSurface(renderer_, s);
             if (t) SDL_SetTextureScaleMode(t, SDL_ScaleModeLinear);
+            // (blended: a cover decoded from a JPEG keeps the surface's "no blending", and the shapes' soft edge, drawn through the
+            // vertices' alpha, came out as steps on the round artist covers; the user, 2026-11-10)
+            if (t) SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
             SDL_FreeSurface(s);
         }
         if (auto it = serverCovers_.find(id); it != serverCovers_.end() && it->second) SDL_DestroyTexture(it->second);
@@ -1186,17 +1251,17 @@ bool App::serverRow(Id id, const Subsonic::Song& t, int number, float x, float y
             if (playing) { g.roundRect(x + 12, cy - cov / 2, cov, cov, 7, { 0, 0, 0 }, 0.38f); eqGlyph(x + 12 + cov / 2 - 9, cy, { 1, 1, 1 }); }
             tx = x + 12 + cov + 12;
         } else if (playing) eqGlyph(x + 12 + 28 - 13, cy, pal.accentInk);
-        else g.textC(std::to_string(number), { css::Sm }, x + 12 + 28, cy, pal.text3, 1, Align::Right);
+        else g.textNumC(std::to_string(number), { css::Sm }, x + 12 + 28, cy, pal.text3, 1, Align::Right);
         const float tw = w - (tx - x) - 64;
         g.text(t.title, { css::Base, playing ? Weight::SemiBold : Weight::Regular }, tx, cy - 20, playing ? pal.accentInk : pal.text, 1, Align::Left, int(tw));
         g.text(t.artist + (t.album.empty() ? "" : " · " + t.album), { css::Sm }, tx, cy + 2, pal.text3, 1, Align::Left, int(tw));
-        g.textC(dur, { css::Sm }, x + w - 16, cy, pal.text3, 1, Align::Right);
+        g.textNumC(dur, { css::Sm }, x + w - 16, cy, pal.text3, 1, Align::Right);
         return hit;
     }
     const float pad = 16, gap = 14, inner = w - pad * 2;
     float cx = x + pad;
     if (playing) eqGlyph(cx + 44 - 13, cy, pal.accentInk);
-    else g.textC(std::to_string(number), { css::Sm }, cx + 44, cy, pal.text3, 1, Align::Right);
+    else g.textNumC(std::to_string(number), { css::Sm }, cx + 44, cy, pal.text3, 1, Align::Right);
     cx += 44 + gap;
     if (covers) {
         const float fixed = 44 + 64 + gap * (extended ? 5 : 3) + (extended ? 64 : 0);
@@ -1215,7 +1280,7 @@ bool App::serverRow(Id id, const Subsonic::Song& t, int number, float x, float y
             cx += 64 + gap;
             g.textC(t.genre, { css::Base }, cx, cy, pal.text2, 1, Align::Left, int(fr));
         }
-        g.textC(dur, { css::Sm }, x + w - pad, cy, pal.text3, 1, Align::Right);
+        g.textNumC(dur, { css::Sm }, x + w - pad, cy, pal.text3, 1, Align::Right);
         return hit;
     }
     const float fixed = 44 + 64 + gap * 4, fr = (inner - fixed) / 3.6f;
@@ -1225,7 +1290,7 @@ bool App::serverRow(Id id, const Subsonic::Song& t, int number, float x, float y
     cx += fr + gap;
     g.textC(t.album, { css::Base }, cx, cy, pal.text2, 1, Align::Left, int(fr));
     cx += fr + gap;
-    g.textC(dur, { css::Sm }, cx + 64, cy, pal.text3, 1, Align::Right);
+    g.textNumC(dur, { css::Sm }, cx + 64, cy, pal.text3, 1, Align::Right);
     return hit;
 }
 
@@ -1314,29 +1379,30 @@ float App::serverFolders(const char* key, const std::vector<const Subsonic::Entr
     const int n = int(dirs.size());
     if (!n) return 0;
     if (mode == ListMode::Grid || mode == ListMode::Albums) {
-        const float inner = w - 32;
+        // (the album tile's geometry, as the library's folder tiles: App::tile, gridOf)
+        const float inner = w - 36;
         const int cols = std::max(2, int(inner / 200));
-        const float tw = inner / cols, cover = tw - 16, th = 8 + cover + 10 + 20 + 18 + 16;
+        const float tw = inner / cols, cover = tw - 20, th = 10 + cover + 8 + 20 + 2 + 18 + 10;
         const int rows = (n + cols - 1) / cols;
         for (int r = 0; r < rows; r++) {
             const float ry = cy + r * th;
             if (ry + th < y - 40 || ry > y + h + 40) continue;
             for (int c2 = 0; c2 < cols && r * cols + c2 < n; c2++) {
                 const Subsonic::Entry& e = *dirs[size_t(r * cols + c2)];
-                const float tx = x + 16 + c2 * tw;
+                const float tx = x + 18 + c2 * tw;
                 const Id id = uid(key, int(uid(e.id) & 0x7fffffff));
-                const bool hit = ui.item(id, { tx, ry, tw, th - 8 }, 14);
+                const bool hit = ui.item(id, { tx, ry, tw, th }, 14);
                 const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
-                if (hot) g.roundRect(tx, ry, tw, th - 8, 14, pal.text, ui.pressed(id) ? 0.11f : 0.065f);
-                if (SDL_Texture* tex = serverCover(e.cover)) g.image(tex, tx + 8, ry + 8, cover, cover, 12);
-                else { g.roundRect(tx + 8, ry + 8, cover, cover, 12, pal.surface2); g.icon(ICON_FOLDER, tx + 8 + cover / 2, ry + 8 + cover / 2, cover * 0.3f, pal.text3); }
-                g.roundStroke(tx + 8, ry + 8, cover, cover, 12, 1, pal.text, 0.09f);
-                g.text(e.name, { css::Base, Weight::SemiBold }, tx + 8, ry + 8 + cover + 10, pal.text, 1, Align::Left, int(cover));
-                g.text("Folder", { css::Sm }, tx + 8, ry + 8 + cover + 32, pal.text3, 1, Align::Left, int(cover));
+                if (hot) g.roundRect(tx, ry, tw, th, 14, pal.text, ui.pressed(id) ? 0.11f : 0.065f);
+                if (SDL_Texture* tex = serverCover(e.cover)) g.image(tex, tx + 10, ry + 10, cover, cover, 10);
+                else { g.roundRect(tx + 10, ry + 10, cover, cover, 10, pal.surface2); g.icon(ICON_FOLDER, tx + 10 + cover / 2, ry + 10 + cover / 2, cover * 0.3f, pal.text3); }
+                g.roundStroke(tx + 10, ry + 10, cover, cover, 10, 1, pal.text, 0.09f);
+                g.text(e.name, { css::Base, Weight::SemiBold }, tx + 10, ry + 10 + cover + 8, pal.text, 1, Align::Left, int(cover));
+                g.text("Folder", { css::Sm }, tx + 10, ry + 10 + cover + 30, pal.text3, 1, Align::Left, int(cover));
                 if (hit) openServer(4, e.id, e.name);
             }
         }
-        return rows * th + 8;
+        return rows * th;
     }
     const float rowH = mode == ListMode::List ? 48 : 60, cov = rowH - 4 - 16;
     for (int i = 0; i < n; i++) {
@@ -1375,7 +1441,7 @@ void App::drawServer(float x, float y, float w, float h, bool inLibrary) {
     };
     const auto [id, name] = idName(route.query);
     const int level = inLibrary ? 0 : std::clamp(route.ref, 0, 6);   // 6: one view on its own (the sidebar's), route.query its number
-    const Grid gl = gridOf(x, w);
+    Grid gl = gridOf(x, w);
     const bool narrow = w < kNarrowList;
     // a grid of n tiles under `top` in its own scroll area; draw(i, tx, ty) draws one
     auto grid = [&](const char* key, int sid, float top, int n, const std::function<void(int, float, float)>& draw) {
@@ -1395,6 +1461,38 @@ void App::drawServer(float x, float y, float w, float h, bool inLibrary) {
         g.unclip();
         ui.popArea();
     };
+    // rows in place of the tiles (the views' rows with covers, and the plain list), as the library's artist and genre rows
+    auto nameRows = [&](const char* key, float top, int n, float rowH, float lw, const std::function<void(int, float, float, float)>& draw) {
+        ScrollArea& sa = area(key, 0);
+        sa.view = { x, top, w, y + h - top };
+        sa.content = n * rowH + 24;
+        ui.pushArea(&sa);
+        g.clip(x, top, w, y + h - top);
+        for (int i = 0; i < n; i++) {
+            const float ry = top + i * rowH - sa.y;
+            if (ry + rowH < top - rowH || ry > y + h + rowH) continue;
+            draw(i, x + 14, ry, lw - 28);   // (lw: the page less the letter rail, where it shows)
+        }
+        g.unclip();
+        ui.popArea();
+    };
+    auto nameRow = [&](Id id, float rx, float ry, float rw, float rowH, bool list, uint8_t flags, const std::string& name, const std::string& info,
+                       const std::function<void(float, float, float)>& cover) {
+        const bool hit = ui.item(id, { rx, ry, rw, rowH - 4 }, 10, flags);
+        if (ui.pressed(id) || (ui.focused(id) && ui.showFocusRing())) g.roundRect(rx, ry, rw, rowH - 4, 10, pal.text, ui.pressed(id) ? 0.11f : 0.065f);
+        const float mid = ry + (rowH - 4) / 2, cov = rowH - 4 - 16;
+        cover(rx + 16, mid - cov / 2, cov);
+        const float tx = rx + 16 + cov + 14;
+        if (list) {
+            g.textC(name, { css::Base, Weight::SemiBold }, tx, mid, pal.text, 1, Align::Left, int(rw * 0.5f));
+            g.textC(info, { css::Sm }, rx + rw - 48, mid, pal.text3, 1, Align::Right, int(rw * 0.35f));
+        } else {
+            g.text(name, { css::Base, Weight::SemiBold }, tx, mid - 19, pal.text, 1, Align::Left, int(rw - 140));
+            g.text(info, { css::Sm }, tx, mid + 1, pal.text3, 1, Align::Left, int(rw - 140));
+        }
+        g.icon(ICON_CHEV, rx + rw - 24, mid, 18, pal.text3);
+        return hit;
+    };
     auto shuffled = [](std::vector<Subsonic::Song> v) {
         static std::mt19937 rng{ SDL_GetTicks() };
         std::shuffle(v.begin(), v.end(), rng);
@@ -1402,7 +1500,7 @@ void App::drawServer(float x, float y, float w, float h, bool inLibrary) {
     };
 
     if (level == 0 || level == 6) {   // the tab: Albums, Artists, Genres, Folders, Tracks, as Library's switch (6: one, the sidebar's)
-        static const char* tabs[] = { "Albums", "Artists", "Genres", "Folders", "Tracks" };
+        static const char* tabs[] = { "Albums", "Artists", "Genres", "Folders", "Songs" };
         const bool single = level == 6;
         const int tab = single ? std::clamp(atoi(route.query.c_str()), 0, 4) : std::clamp(store.serverTab, 0, 4);   // (its playlists: the Playlists tab's Server)
         const std::vector<Subsonic::Album>* albums = tab == 0 ? &serverAlbums() : nullptr;
@@ -1423,6 +1521,15 @@ void App::drawServer(float x, float y, float w, float h, bool inLibrary) {
             sub = count(songs->size(), "track", "tracks") + " · " + (m >= 60 ? std::to_string(m / 60) + " h " + std::to_string(m % 60) + " min" : std::to_string(m) + " min");
             if (!srvFilter_.empty()) sub += " · matching “" + srvFilter_ + "”";
         }
+        // the #-to-Z rail on Albums (by artist / by title), Artists and Genres (Settings › Appearance › Letter rail, the Server set)
+        const bool railTab = tab == 0 ? (railOn(1u) && srvSort_ <= 1) : tab == 1 ? railOn(2u) : tab == 2 ? railOn(4u) : false;
+        if (railTab) gl = gridOf(x, w - kRailW);
+        static std::vector<std::pair<char, int>> railLetters;
+        static std::string railKey;
+        auto railFor = [&](const char* key, float top, const std::function<std::vector<std::string>()>& names, const char* stamp, float rowH) {
+            if (railKey != stamp) { railKey = stamp; railLetters = lettersOf(names()); }
+            letterRail(key, x + w - 24, top, y + h - top, railLetters, area(key, 0), [&, rowH](int row) { return rowH > 0 ? float(row) * rowH : float(row / gl.cols) * gl.tileH; });
+        };
         const int room = int(w - 56 - (narrow ? 0 : inLibrary ? 700 : 520));
         float cy = y + 18 + 8;
         kicker(inLibrary ? std::string("Library") : kind, x + 28, cy, pal.text3);
@@ -1432,21 +1539,32 @@ void App::drawServer(float x, float y, float w, float h, bool inLibrary) {
         g.text(sub, { css::Sm }, x + 28, cy + 4, pal.text3, 1, Align::Left, room);
         int picked = -1;
         float top = cy + 22 + 14;
-        const std::vector<std::string> names = { "Albums", "Artists", "Genres", "Folders", "Tracks" };
+        // the switch's order: Songs, Albums, Artists, Genres, Folders, as Library's (the user, 2026-11-09); store.serverTab keeps its numbers
+        static const int shown[5] = { 4, 0, 1, 2, 3 };
+        int cur = 0;
+        for (int i = 0; i < 5; i++) if (shown[i] == tab) cur = i;
+        const std::vector<std::string> names = { "Songs", "Albums", "Artists", "Genres", "Folders" };
         if (single) {}   // (the sidebar's: no switch, as your own Albums, Artists, Genres and Folders pages)
         else if (!narrow) {
-            segmented(uid("srv.tab"), x + w - 28, y + 52, names, tab, &picked);   // (Local | Server: the title bar's)
+            segmented(uid("srv.tab"), x + w - 28, y + 52, names, cur, &picked);   // (Local | Server: the title bar's)
         }
-        else { segmented(uid("srv.tab"), x + w - 28, top + 17, names, tab, &picked, 0, w - 56, 1); top += 34 + 16; }
-        if (picked >= 0 && picked != tab) { store.serverTab = picked; persistSoon(0.5f); }
+        else { segmented(uid("srv.tab"), x + w - 28, top + 17, names, cur, &picked, 0, w - 56, 1); top += 34 + 16; }
+        if (picked >= 0 && shown[picked] != tab) { store.serverTab = shown[picked]; persistSoon(0.5f); }
 
         if (tab == 0) {   // the library's album grid, with its sort select
             static const char* sorts[] = { "By artist", "By title", "By year" };
             const Font sf{ css::Sm };
             // in the header, right of the count, the grid just under it, as your Albums' (drawAlbumGrid); a row of its own under the views
             // when they take the header's line (narrow)
-            const bool inHead = !narrow || single;
-            const float sw = g.measure(sorts[srvSort_], sf) + 20 + 26, sx = x + w - 28 - sw, sy = inHead ? top - 14 - 32 : top;
+            // (under Library's tabs: a row of their own, as the library's Albums; the user, 2026-11-10: "Row under the tabs")
+            const bool inHead = single;
+            // the three views at the right (tiles, rows with covers, the plain list), the sort select left of them, as your Albums
+            int amode = store.viewAlbums;
+            const float vsw = viewSwitch("srv.aview", x + w - 28, inHead ? top - 30 : top + 17, amode, 1u) + 8;   // (the row: on its other tabs' line)
+            if (amode != store.viewAlbums) { store.viewAlbums = amode; persistSoon(0.3f); }
+            const bool atiles = amode == int(ListMode::Grid) || amode == int(ListMode::Albums);
+            const float arow = amode == int(ListMode::List) ? 48.f : 60.f, atop = inHead ? top : top + 46;
+            const float sw = g.measure(sorts[srvSort_], sf) + 20 + 26, sx = x + w - 28 - vsw - sw, sy = inHead ? top - 14 - 32 : top + 1;
             const Id sid = uid("srv.sort");
             if (ui.item(sid, { sx, sy, sw, 32 }, 8)) srvSort_ = (srvSort_ + 1) % 3;
             g.roundRect(sx, sy, sw, 32, 8, pal.text, ui.focused(sid) && ui.showFocusRing() ? 0.11f : 0.065f);
@@ -1471,31 +1589,94 @@ void App::drawServer(float x, float y, float w, float h, bool inLibrary) {
                 }
                 std::stable_sort(order.begin(), order.end(), [&](int p, int q) { return k[size_t(p)] < k[size_t(q)]; });
             }
-            grid("srv.albums", 0, inHead ? top : top + 46, int(order.size()), [&](int i, float tx, float ty) {
+            if (atiles) grid("srv.albums", 0, atop, int(order.size()), [&](int i, float tx, float ty) {
                 const Subsonic::Album& al = (*albums)[size_t(order[size_t(i)])];
                 const Id tid = uid("srv.al", int(uid(al.id) & 0x7fffffff));
                 if (i < gl.cols) ui.link(tid, 0, -1, sid);
                 if (serverTile(tid, al.cover, tx, ty, gl.tileW, false, al.name, al.artist, i == 0 ? DefaultFocus : 0)) openServer(2, al.id, al.name);
                 if (subsonic.albumDownload(al.id).state == 2) serverBadge(tx, ty, gl.tileW, true);   // downloaded: the arrow
             });
-        } else if (tab == 1 && arts) {   // its artists, round
-            grid("srv.artists", 0, top, int(arts->size()), [&](int i, float tx, float ty) {
+            else {   // rows, as your Albums'
+                ScrollArea& sa = area("srv.albums", 0);
+                sa.view = { x, atop, w, y + h - atop };
+                sa.content = float(order.size()) * arow + 24;
+                ui.pushArea(&sa);
+                g.clip(x, atop, w, y + h - atop);
+                const float lw2 = railTab ? w - kRailW : w;
+                for (int i = 0; i < int(order.size()); i++) {
+                    const float ry = atop + i * arow - sa.y;
+                    if (ry + arow < atop - arow || ry > y + h + arow) continue;
+                    const Subsonic::Album& al = (*albums)[size_t(order[size_t(i)])];
+                    const Id tid = uid("srv.al", int(uid(al.id) & 0x7fffffff));
+                    if (i == 0) ui.link(tid, 0, -1, sid);
+                    if (serverAlbumRow(tid, al, x + 14, ry, lw2 - 28, arow, amode == int(ListMode::List), i == 0 ? DefaultFocus : 0)) openServer(2, al.id, al.name);
+                }
+                g.unclip();
+                ui.popArea();
+            }
+            if (railTab) railFor("srv.albums", atop, [&] {
+                std::vector<std::string> names;
+                for (int i : order) names.push_back(srvSort_ == 1 ? (*albums)[size_t(i)].name : (*albums)[size_t(i)].artist);
+                return names;
+            }, ("A" + std::to_string(serverAlbumsGen_) + ":" + std::to_string(srvSort_) + ":" + std::to_string(order.size())).c_str(), atiles ? 0.f : arow);
+        } else if (tab == 1 && arts) {   // its artists, round: tiles, rows with their picture, or the plain list, as the library's Artists
+            int gmode = store.viewArtists;
+            if (single) viewSwitch("srv.arview", x + w - 28, top - 30, gmode, 1u);   // (the sidebar's page: in the head's line, as your Artists)
+            else { viewSwitch("srv.arview", x + w - 28, top + 17, gmode, 1u); top += 46; }   // (in Library: the row under its tabs)
+            if (gmode != store.viewArtists) { store.viewArtists = gmode; persistSoon(0.3f); }
+            const bool tiles = gmode == int(ListMode::Grid) || gmode == int(ListMode::Albums);
+            const float rowH = gmode == int(ListMode::List) ? 48.f : 60.f;
+            auto albumsOf = [](const Subsonic::Artist& a) { return std::to_string(a.albums) + (a.albums == 1 ? " album" : " albums"); };
+            if (tiles) grid("srv.artists", 0, top, int(arts->size()), [&](int i, float tx, float ty) {
                 const Subsonic::Artist& a = (*arts)[size_t(i)];
-                if (serverTile(uid("srv.ar", int(uid(a.id) & 0x7fffffff)), a.cover, tx, ty, gl.tileW, true, a.name,
-                               std::to_string(a.albums) + (a.albums == 1 ? " album" : " albums"), i == 0 ? DefaultFocus : 0))
+                if (serverTile(uid("srv.ar", int(uid(a.id) & 0x7fffffff)), a.cover, tx, ty, gl.tileW, true, a.name, albumsOf(a), i == 0 ? DefaultFocus : 0))
                     openServer(1, a.id, a.name);
             });
-        } else if (tab == 2 && gens) {   // its genres, four covers each, as the library's
-            {   // as Folders' Add all as playlists
+            else nameRows("srv.artists", top, int(arts->size()), rowH, railTab ? w - kRailW : w, [&](int i, float rx, float ry, float rw) {
+                const Subsonic::Artist& a = (*arts)[size_t(i)];
+                if (nameRow(uid("srv.ar", int(uid(a.id) & 0x7fffffff)), rx, ry, rw, rowH, gmode == int(ListMode::List), i == 0 ? DefaultFocus : 0, a.name, albumsOf(a),
+                            [&](float cx, float cy, float cov) {
+                                if (SDL_Texture* t = serverCover(a.cover)) g.image(t, cx, cy, cov, cov, cov / 2);
+                                else { g.roundRect(cx, cy, cov, cov, cov / 2, pal.surface2); g.icon(ICON_MIC, cx + cov / 2, cy + cov / 2, cov * 0.5f, pal.text2); }
+                            }))
+                    openServer(1, a.id, a.name);
+            });
+            if (railTab) railFor("srv.artists", top, [&] { std::vector<std::string> names; for (const auto& a : *arts) names.push_back(a.name); return names; },
+                                 ("R" + std::to_string(srvl_.gen) + ":" + std::to_string(arts->size())).c_str(), tiles ? 0.f : rowH);
+        } else if (tab == 2 && gens) {   // its genres, four covers each, as the library's: Play, Shuffle, Add all as playlists, the views
+            int gmode = store.viewGenres;
+            {
+                const std::vector<Subsonic::Song>* every = serverSongList();
                 bool c = false;
-                button(uid("sgen.addall"), ICON_PLUS, narrow ? "Add all" : "Add all as playlists", x + 28, top, false, &c, false, false, DefaultFocus);
+                float bx = x + 28;
+                bx += button(uid("sgen.play"), ICON_PLAY, "Play", bx, top, true, &c, false, false, DefaultFocus) + 8;
+                if (c && every && !every->empty()) playServer(*every, 0, "Genres");
+                c = false;
+                bx += button(uid("sgen.shuffle"), ICON_SHUFFLE, "Shuffle", bx, top, false, &c) + 8;
+                if (c && every && !every->empty()) playServer(shuffled(*every), 0, "Genres");
+                c = false;
+                button(uid("sgen.addall"), ICON_PLUS, narrow ? "Add all" : "Add all as playlists", bx, top, false, &c);
                 if (c) addServerGenresAsPlaylists();
+                if (!narrow) viewSwitch("srv.gview", x + w - 28, top + 17, gmode, 1u);
+                else { viewSwitch("srv.gview", x + w - 28, top + 34 + 10 + 17, gmode, 1u); top += 44; }   // (upright: on a line of their own)
+                if (gmode != store.viewGenres) { store.viewGenres = gmode; persistSoon(0.3f); }
                 top += 34 + 16;
             }
-            grid("srv.genres", 0, top, int(gens->size()), [&](int i, float tx, float ty) {
+            const bool tiles = gmode == int(ListMode::Grid) || gmode == int(ListMode::Albums);
+            const float rowH = gmode == int(ListMode::List) ? 48.f : 60.f;
+            if (tiles) grid("srv.genres", 0, top, int(gens->size()), [&](int i, float tx, float ty) {
                 const Subsonic::Genre& gn = (*gens)[size_t(i)];
-                if (serverGenreTile(uid("srv.gn", int(uid(gn.name) & 0x7fffffff)), gn, tx, ty, gl.tileW, i == 0 ? DefaultFocus : 0)) openServer(3, gn.name, gn.name);
+                if (serverGenreTile(uid("srv.gn", int(uid(gn.name) & 0x7fffffff)), gn, tx, ty, gl.tileW, 0)) openServer(3, gn.name, gn.name);   // (the focus starts on Play, above)
             });
+            else nameRows("srv.genres", top, int(gens->size()), rowH, railTab ? w - kRailW : w, [&](int i, float rx, float ry, float rw) {
+                const Subsonic::Genre& gn = (*gens)[size_t(i)];
+                const std::string info = std::to_string(gn.albums) + (gn.albums == 1 ? " album · " : " albums · ") + std::to_string(gn.songs) + (gn.songs == 1 ? " track" : " tracks");
+                if (nameRow(uid("srv.gn", int(uid(gn.name) & 0x7fffffff)), rx, ry, rw, rowH, gmode == int(ListMode::List), 0, gn.name, info,
+                            [&](float cx, float cy, float cov) { serverQuad(serverGenreCovers(gn.name), cx, cy, cov, 6); }))
+                    openServer(3, gn.name, gn.name);
+            });
+            if (railTab) railFor("srv.genres", top, [&] { std::vector<std::string> names; for (const auto& gn : *gens) names.push_back(gn.name); return names; },
+                                 ("G" + std::to_string(srvl_.gen) + ":" + std::to_string(gens->size())).c_str(), tiles ? 0.f : rowH);
         } else if (tab == 3 && folds) {   // as Library › Folders: Play, Shuffle (everything), the views without by album, the folders
             const std::vector<Subsonic::Song>* every = serverSongList();
             bool clicked = false;
@@ -1512,20 +1693,30 @@ void App::drawServer(float x, float y, float w, float h, bool inLibrary) {
             std::vector<Subsonic::Song> loose;
             for (const auto& e : *folds) { if (e.dir) dirs.push_back(&e); else loose.push_back(e.song); }
             const float lt = top + 34 + 14;
+            const bool railF = railOn(8u) && !dirs.empty();
+            const float lw = railF ? w - kRailW : w;
             ScrollArea& sa = area("srv.folders");
             sa.view = { x, lt, w, y + h - lt };
             ui.pushArea(&sa);
             g.clip(x, lt, w, y + h - lt);
-            float hh = serverFolders("srv.fo", dirs, x, lt - sa.y, w, lt, y + h - lt, ListMode(m));
+            float hh = serverFolders("srv.fo", dirs, x, lt - sa.y, lw, lt, y + h - lt, ListMode(m));
             if (!loose.empty()) {
                 std::vector<int> order(loose.size());
                 for (size_t i = 0; i < order.size(); i++) order[i] = int(i);
-                hh += 16 + drawServerBody("srv.floose", loose, order, x, lt - sa.y + hh + 16, w, lt, y + h - lt, ListMode(m), false,
+                hh += 16 + drawServerBody("srv.floose", loose, order, x, lt - sa.y + hh + 16, lw, lt, y + h - lt, ListMode(m), false,
                                           [&](int i) { playServer(loose, i, kind); });
             }
             sa.content = hh + 24;
             g.unclip();
             ui.popArea();
+            if (railF) {
+                std::vector<std::string> names;
+                for (const Subsonic::Entry* e : dirs) names.push_back(e->name);
+                const bool tiles = m == int(ListMode::Grid) || m == int(ListMode::Albums);
+                const int cols = std::max(2, int((lw - 36) / 200));
+                const float tw = (lw - 36) / cols, th = 10 + (tw - 20) + 8 + 20 + 2 + 18 + 10, rowH = m == int(ListMode::List) ? 48 : 60;
+                letterRail("srv.fo", x + w - 24, lt, y + h - lt, lettersOf(names), sa, [&](int row) { return tiles ? float(row / cols) * th : float(row) * rowH; });
+            }
         } else if (tab == 4 && songs) {   // as Library › Tracks: Play, Shuffle · filter, sort, direction, the four views; the letters
             // sorted and filtered once a change, as Library's (tracksort.hpp)
             if (srvTracks_.gen != srvl_.gen || srvTracks_.sort != store.tracksSort || srvTracks_.desc != store.tracksDesc || srvTracks_.filter != srvFilter_) {
@@ -1552,10 +1743,10 @@ void App::drawServer(float x, float y, float w, float h, bool inLibrary) {
             float bx = x + 28;
             const float by = top;
             bx += button(uid("srv.tplay"), ICON_PLAY, "Play", bx, by, true, &clicked, false, false, DefaultFocus) + 8;
-            if (clicked && !list.empty()) playServer(inOrder(false), 0, "Tracks");
+            if (clicked && !list.empty()) playServer(inOrder(false), 0, "Songs");
             clicked = false;
             bx += button(uid("srv.tshuffle"), ICON_SHUFFLE, "Shuffle", bx, by, false, &clicked) + 8;
-            if (clicked && !list.empty()) playServer(inOrder(true), 0, "Tracks");
+            if (clicked && !list.empty()) playServer(inOrder(true), 0, "Songs");
             float ty = narrow ? by + 34 + 10 : by;
             const float fx0 = narrow ? x + 28 : bx;
             float rx = x + w - 28;
@@ -1599,36 +1790,24 @@ void App::drawServer(float x, float y, float w, float h, bool inLibrary) {
             g.textC(ft, sf, rx - fw + 30, ty + 17, srvFilter_.empty() ? pal.text3 : pal.text, 1, Align::Left, int(fw - 40));
 
             const float lt = ty + 34 + 14;
-            const bool index = !srvTracks_.letters.empty() && store.viewTracks != int(ListMode::Grid);
-            const float lw = w - (index ? 26 : 0);
+            const bool index = !srvTracks_.letters.empty() && store.viewTracks != int(ListMode::Grid) && railOn(16u);
+            const float lw = w - (index ? kRailW : 0);
             ScrollArea& sa = area("srv.tracks");
             sa.view = { x, lt, w, y + h - lt };
             ui.pushArea(&sa);
             g.clip(x, lt, w, y + h - lt);
             if (list.empty()) {
-                g.textC(srvFilter_.empty() ? "No tracks on the server" : "No tracks match", { css::Lg, Weight::SemiBold }, x + w / 2, lt + 80, pal.text2, 1, Align::Center);
+                g.textC(srvFilter_.empty() ? "No songs on the server" : "No songs match", { css::Lg, Weight::SemiBold }, x + w / 2, lt + 80, pal.text2, 1, Align::Center);
                 sa.content = 0;
             } else {
                 sa.content = drawServerBody("srv.trk", *songs, list, x, lt - sa.y, lw, lt, y + h - lt, ListMode(store.viewTracks), true,
-                                            [&](int i) { std::vector<Subsonic::Song> v = inOrder(false); playServer(v, i, "Tracks"); });
+                                            [&](int i) { std::vector<Subsonic::Song> v = inOrder(false); playServer(v, i, "Songs"); });
             }
             g.unclip();
             ui.popArea();
-            if (index) {   // #-to-Z down the side, only the letters present
-                const auto& L = srvTracks_.letters;
-                const float top2 = lt + 8, avail = y + h - top2 - 8;
-                const float step = std::min(22.f, avail / L.size());
+            if (index) {   // #-to-Z down the side, only the letters present (App::letterRail)
                 const std::vector<ListEntry> layout = serverLayout(*songs, list, lw, ListMode(store.viewTracks));
-                for (int i = 0; i < int(L.size()); i++) {
-                    const float ly = top2 + i * step;
-                    const Id id = uid("srv.az", L[size_t(i)].first);
-                    if (ui.item(id, { x + w - 24, ly, 22, step }, 6)) {
-                        sa.target = listRowY(layout, L[size_t(i)].second);
-                        sa.clamp();
-                    }
-                    const bool hot = ui.focused(id) && ui.showFocusRing();
-                    g.textC(std::string(1, L[size_t(i)].first), { css::Xs, Weight::SemiBold }, x + w - 13, ly + step / 2, hot ? pal.text : pal.text2, 1, Align::Center);
-                }
+                letterRail("srv", x + w - 24, lt, y + h - lt, srvTracks_.letters, sa, [&](int row) { return listRowY(layout, row); });
             }
         }
 
@@ -1691,7 +1870,7 @@ void App::drawServer(float x, float y, float w, float h, bool inLibrary) {
             const bool hot = ui.pressed(iid) || (ui.focused(iid) && ui.showFocusRing());
             g.roundRect(bx, by, 34, 34, 17, pal.accent, hot ? 0.24f : 0.14f);
             g.roundStroke(bx, by, 34, 34, 17, 1, pal.accent, 0.45f);
-            g.icon(serverPlaylistIcon(id), bx + 17, by + 17, 17, pal.accentInk);
+            g.icon(serverPlaylistIcon(id), bx + 17, by + 17, 18, pal.accentInk);   // (18: an even size lands on whole pixels; at 17 a round mark sat half a pixel off)
             bx += 34 + 8;
         }
         clicked = false;
@@ -1703,10 +1882,11 @@ void App::drawServer(float x, float y, float w, float h, bool inLibrary) {
         std::vector<int> order(pg.songs.size());
         for (size_t i = 0; i < order.size(); i++) order[i] = int(i);
         bodyGrab = grab.kind == Grab::SrvList && srvGrabPl_ == id ? grab.pos : -1;
+        // (no letter rail: a playlist has its own order; the user, 2026-11-10)
         const float bodyH = drawServerBody("srv.plt", pg.songs, order, x, oy + headH, w, y, h, ListMode(mode), false, [&](int i) { playServer(pg.songs, i, title); });
         bodyGrab = -1;
         if (pg.have && pg.songs.empty())
-            g.textC("This playlist has no tracks: add them from a track's menu (" GF_MENU_KEY ")", { css::Base }, x + w / 2, oy + headH + 70, pal.text3, 1, Align::Center);
+            g.textC("This playlist has no songs: add them from a song's menu (" GF_MENU_KEY ")", { css::Base }, x + w / 2, oy + headH + 70, pal.text3, 1, Align::Center);
         sa.content = headH + bodyH;
         g.unclip();
         ui.popArea();
@@ -1740,15 +1920,40 @@ void App::drawServer(float x, float y, float w, float h, bool inLibrary) {
 
         const float ncs = std::min(w - 60, 240.f);
         const std::vector<std::string> nameLines = narrow ? g.wrap(name, { css::Xxl, Weight::Bold }, int(w - 60), 2) : std::vector<std::string>{ name };
-        const float heroH = narrow ? 22 + ncs + 18 + 24 + nameLines.size() * 38 + 8 + 22 + 16 + 34 + 12 : 26 + 220 + 22;
+        const float heroH = narrow ? 22 + ncs + 18 + 24 + nameLines.size() * 38 + 8 + 22 + 16 + 34 + 12 : 18 + 120 + 14;   // (wide: a playlist page's head, as the library's)
         static int artistTabS = 0, genreTabS = 0;
         int& chosen = genre ? genreTabS : artistTabS;
         int tab = std::clamp(chosen, 0, 2);
         if (!genre && tab == 1) tab = 0;
-        const float switchH = 56 + (narrow && tab == 2 ? 46.f : 0.f);
+        // a genre's Albums tab, as the library's: sorted by artist, title or year (the same sort), its three views (the user, 2026-11-09)
+        static const char* const kAlbumSorts[] = { "By artist", "By title", "By year" };
+        const bool genreAlbums = genre && tab == 0;
+        std::vector<int> aord(albums.size());
+        for (size_t i = 0; i < aord.size(); i++) aord[i] = int(i);
+        if (genreAlbums) {
+            auto low = [](std::string v) { for (char& c : v) c = char(tolower(uint8_t(c))); return v; };
+            std::stable_sort(aord.begin(), aord.end(), [&](int p, int q) {
+                const Subsonic::Album &A = albums[size_t(p)], &B = albums[size_t(q)];
+                if (genreSort == 2 && A.year != B.year) return A.year > 0 && (B.year <= 0 || A.year < B.year);
+                if (genreSort == 0 && low(A.artist) != low(B.artist)) return low(A.artist) < low(B.artist);
+                return low(A.name) < low(B.name);
+            });
+        }
+        const int amode = genreAlbums ? store.viewAlbums : int(ListMode::Grid);
+        const bool albumTiles = amode == int(ListMode::Grid) || amode == int(ListMode::Albums);
+        const float albumRowH = amode == int(ListMode::List) ? 48.f : 60.f;
+        std::vector<int> order(tracks.size());
+        for (size_t i = 0; i < order.size(); i++) order[i] = int(i);
+        // the #-to-Z rail (Settings › Appearance › Letter rail: Genres, or Artists for an artist's page), as the library's page
+        const bool rail = railOn(genre ? 4u : 2u) && (tab == 0 ? (genreAlbums && !aord.empty() && genreSort <= 1)
+                                                      : tab == 1 ? !inGenre.empty()
+                                                                 : (!tracks.empty() && store.viewGenre != int(ListMode::Grid)));
+        const float lw = rail ? w - kRailW : w;
+        const Grid gla = gridOf(x, lw);
+        const float switchH = 56 + (narrow && (tab == 2 || genreAlbums) ? 46.f : 0.f);
         const int gridItems = tab == 1 ? int(inGenre.size()) : int(albums.size());
-        const int rows = (gridItems + gl.cols - 1) / gl.cols;
-        const float gridH = (tab == 2 || gridItems == 0) ? 0 : 10 + rows * gl.tileH;
+        const int rows = (gridItems + gla.cols - 1) / gla.cols;
+        const float gridH = (tab == 2 || gridItems == 0) ? 0 : 10 + (tab == 0 && !albumTiles ? gridItems * albumRowH : rows * gla.tileH);
         static float pageTracksH = 0;   // the tracks' height, as drawn last frame (their layout depends on the view)
         const float songsH = tab == 2 ? pageTracksH : 0;
         ScrollArea& sa = area(genre ? "srv.genre" : "srv.artist", int(uid(id) & 0x7fffffff));
@@ -1757,18 +1962,13 @@ void App::drawServer(float x, float y, float w, float h, bool inLibrary) {
         ui.pushArea(&sa);
         g.clip(x, y, w, h);
         const float oy = y - sa.y;
-        const float cs = narrow ? ncs : 220.f;
-        const float cx = narrow ? x + (w - cs) / 2 : x + 30, cyTop = oy + (narrow ? 22 : 26);
-        if (genre) serverQuad(serverGenreCovers(id), cx, cyTop, cs, 16);
+        const float cs = narrow ? ncs : 120.f;
+        const float cx = narrow ? x + (w - cs) / 2 : x + 28, cyTop = oy + (narrow ? 22 : 18);
+        if (genre) serverQuad(serverGenreCovers(id), cx, cyTop, cs, narrow ? 16 : 12);
         else if (SDL_Texture* t = serverCover(cover, 500)) { g.image(t, cx, cyTop, cs, cs, cs / 2); g.roundStroke(cx, cyTop, cs, cs, cs / 2, 1, pal.text, 0.09f); }
         else { g.roundRect(cx, cyTop, cs, cs, cs / 2, pal.surface2); g.icon(ICON_MIC, cx + cs / 2, cyTop + cs / 2, cs * 0.28f, pal.text3); }
-        const float tx = narrow ? x + 30 : cx + 220 + 28, tw = w - (tx - x) - 30;
-        float ty = narrow ? cyTop + cs + 18 : cyTop + 220 - 34 - 16 - 22 - 8 - 48 - 6 - 18;
-        kicker(genre ? "Genre" : "Artist", tx, ty + 8, pal.text3);
-        ty += 24;
-        if (narrow) for (const auto& l : nameLines) { g.text(l, { css::Xxl, Weight::Bold }, tx - 2, ty - 4, pal.text, 1, Align::Left, int(tw)); ty += 38; }
-        else { g.text(name, { 46, Weight::ExtraBold }, tx - 2, ty - 4, pal.text, 1, Align::Left, int(tw)); ty += 48; }
-        ty += 8;
+        const float tx = narrow ? x + 30 : cx + cs + 22, tw = w - (tx - x) - (narrow ? 30 : 28);
+        float ty = narrow ? cyTop + cs + 18 : cyTop + cs - 34;   // (wide: the actions' line, the cover's last)
         std::string meta2 = !pg.have ? std::string("Asking the server…") : std::to_string(albums.size()) + (albums.size() == 1 ? " album" : " albums");
         if (pg.have && all) {
             double secs = 0;
@@ -1777,8 +1977,18 @@ void App::drawServer(float x, float y, float w, float h, bool inLibrary) {
             meta2 += " · " + std::to_string(tracks.size()) + (tracks.size() == 1 ? " track · " : " tracks · ") +
                      (m >= 60 ? std::to_string(m / 60) + " h " + std::to_string(m % 60) + " min" : std::to_string(m) + " min");
         }
-        g.text(meta2, { css::Base }, tx, ty, pal.text2, 1, Align::Left, int(tw));
-        ty += 22 + 16;
+        if (narrow) {
+            kicker(genre ? "Genre" : "Artist", tx, ty + 8, pal.text3);
+            ty += 24;
+            for (const auto& l : nameLines) { g.text(l, { css::Xxl, Weight::Bold }, tx - 2, ty - 4, pal.text, 1, Align::Left, int(tw)); ty += 38; }
+            ty += 8;
+            g.text(meta2, { css::Base }, tx, ty, pal.text2, 1, Align::Left, int(tw));
+            ty += 22 + 16;
+        } else {   // .pl-head: the kicker, name and line beside the cover, as a playlist's
+            kicker(genre ? "Genre" : "Artist", tx, cyTop + 8, pal.text3);
+            g.text(name, { css::Xxl, Weight::Bold }, tx, cyTop + 16, pal.text, 1, Align::Left, int(tw));
+            g.text(meta2, { css::Sm }, tx, cyTop + 58, pal.text3, 1, Align::Left, int(tw));
+        }
         float bx = tx;
         bool clicked = false;
         bx += button(uid("sar.play"), ICON_PLAY, "Play", bx, ty, true, &clicked, false, false, DefaultFocus) + 8;
@@ -1798,45 +2008,72 @@ void App::drawServer(float x, float y, float w, float h, bool inLibrary) {
             g.textC(count, { css::Lg, Weight::Bold }, x + 30, sy, pal.text);
             int picked = -1;
             float rx = x + w - 30;
-            if (tab == 2) {   // on Tracks the four views take the right edge, as the library's (upright: under the switch)
+            if (tab == 2) {   // on Songs the four views take the right edge, as the library's (upright: under the switch)
                 int mode = store.viewGenre;
                 if (!narrow) rx -= viewSwitch(genre ? "sgen.view" : "sar.view", rx, sy, mode) + 10;
                 else viewSwitch(genre ? "sgen.view" : "sar.view", rx, sy + 46, mode);
                 store.viewGenre = mode;
             }
-            const std::vector<std::string> names = genre ? std::vector<std::string>{ "Albums", "Artists", "Tracks" } : std::vector<std::string>{ "Albums", "Tracks" };
+            if (genreAlbums && !aord.empty()) {   // a genre's Albums: the three views and the sort, as the library's
+                int m = amode;
+                const float vy = narrow ? sy + 46 : sy;
+                float vx = narrow ? x + w - 30 : rx;
+                vx -= viewSwitch("sgen.aview", vx, vy, m, 1u) + 10;
+                if (m != amode) { store.viewAlbums = m; persistSoon(0.3f); }
+                bool c = false;
+                vx -= sortButton("sgen.sort", kAlbumSorts[genreSort], vx, vy, &c) + 10;
+                if (c) genreSort = (genreSort + 1) % 3;
+                if (!narrow) rx = vx;
+            }
+            const std::vector<std::string> names = genre ? std::vector<std::string>{ "Albums", "Artists", "Songs" } : std::vector<std::string>{ "Albums", "Songs" };
             const int shown = genre ? tab : (tab == 2 ? 1 : 0);
             segmented(uid(genre ? "sgen.tab" : "sar.tab"), rx, sy, names, shown, &picked);
             if (picked >= 0 && picked != shown) chosen = genre ? picked : (picked == 1 ? 2 : 0);
         }
         if (tab == 1) {
             for (int i = 0; i < int(inGenre.size()); i++) {
-                const float ty2 = gy + (i / gl.cols) * gl.tileH;
-                if (ty2 + gl.tileH < y - gl.tileH || ty2 > y + h + gl.tileH) continue;
+                const float ty2 = gy + (i / gla.cols) * gla.tileH;
+                if (ty2 + gla.tileH < y - gla.tileH || ty2 > y + h + gla.tileH) continue;
                 const Subsonic::Artist& a = *inGenre[size_t(i)];
-                if (serverTile(uid("sgen.ar", int(uid(a.id) & 0x7fffffff)), a.cover, gl.x0 + (i % gl.cols) * gl.tileW, ty2, gl.tileW, true, a.name,
+                if (serverTile(uid("sgen.ar", int(uid(a.id) & 0x7fffffff)), a.cover, gla.x0 + (i % gla.cols) * gla.tileW, ty2, gla.tileW, true, a.name,
                                std::to_string(a.albums) + (a.albums == 1 ? " album" : " albums")))
                     openServer(1, a.id, a.name);
             }
         } else if (tab == 0) {
-            for (int i = 0; i < int(albums.size()); i++) {
-                const float ty2 = gy + (i / gl.cols) * gl.tileH;
-                if (ty2 + gl.tileH < y - gl.tileH || ty2 > y + h + gl.tileH) continue;
-                const Subsonic::Album& al = albums[size_t(i)];
+            for (int i = 0; i < int(aord.size()); i++) {
+                const Subsonic::Album& al = albums[size_t(aord[size_t(i)])];
+                if (!albumTiles) {   // rows, as the Albums tab's
+                    const float ry = gy + i * albumRowH;
+                    if (ry + albumRowH < y - albumRowH || ry > y + h + albumRowH) continue;
+                    if (serverAlbumRow(uid("srv.alr", int(uid(al.id) & 0x7fffffff)), al, x + 14, ry, lw - 28, albumRowH, amode == int(ListMode::List))) openServer(2, al.id, al.name);
+                    continue;
+                }
+                const float ty2 = gy + (i / gla.cols) * gla.tileH;
+                if (ty2 + gla.tileH < y - gla.tileH || ty2 > y + h + gla.tileH) continue;
                 const std::string sub = genre ? al.artist : al.year > 0 ? std::to_string(al.year) : std::to_string(al.songs) + (al.songs == 1 ? " track" : " tracks");
-                if (serverTile(uid("srv.al", int(uid(al.id) & 0x7fffffff)), al.cover, gl.x0 + (i % gl.cols) * gl.tileW, ty2, gl.tileW, false, al.name, sub))
+                if (serverTile(uid("srv.al", int(uid(al.id) & 0x7fffffff)), al.cover, gla.x0 + (i % gla.cols) * gla.tileW, ty2, gla.tileW, false, al.name, sub))
                     openServer(2, al.id, al.name);
-                if (subsonic.albumDownload(al.id).state == 2) serverBadge(gl.x0 + (i % gl.cols) * gl.tileW, ty2, gl.tileW, true);
+                if (subsonic.albumDownload(al.id).state == 2) serverBadge(gla.x0 + (i % gla.cols) * gla.tileW, ty2, gla.tileW, true);
             }
         } else {
             if (!all) g.textC("Asking the server…", { css::Base }, x + w / 2, gy + 40, pal.text3, 1, Align::Center);
-            std::vector<int> order(tracks.size());
-            for (size_t i = 0; i < order.size(); i++) order[i] = int(i);
-            pageTracksH = drawServerBody(genre ? "sgen.trk" : "sar.trk", tracks, order, x, gy, w, y, h, ListMode(store.viewGenre), false,
+            pageTracksH = drawServerBody(genre ? "sgen.trk" : "sar.trk", tracks, order, x, gy, lw, y, h, ListMode(store.viewGenre), false,
                                          [&](int i) { playServer(tracks, i, name); });
         }
         g.unclip();
         ui.popArea();
+        if (rail) {   // the tab's names in its order; the rail keeps the list's unscrolled place, as the library's page
+            std::vector<std::string> names;
+            if (tab == 0) for (int i : aord) names.push_back(genreSort == 1 ? albums[size_t(i)].name : albums[size_t(i)].artist);
+            else if (tab == 1) for (const Subsonic::Artist* ar : inGenre) names.push_back(ar->name);
+            else for (const auto& so : tracks) names.push_back(so.title);
+            const float listTop = heroH + switchH;
+            const std::vector<ListEntry> layout = tab == 2 ? serverLayout(tracks, order, lw, ListMode(store.viewGenre)) : std::vector<ListEntry>{};
+            const float railTop = y + listTop;
+            letterRail(genre ? "sgen.pg" : "sar.pg", x + w - 24, railTop, y + h - railTop, lettersOf(names), sa, [&](int row) {
+                return listTop + (tab == 2 ? listRowY(layout, row) : tab == 0 && !albumTiles ? float(row) * albumRowH : float(row / gla.cols) * gla.tileH);
+            });
+        }
         return;
     }
 
@@ -1868,15 +2105,20 @@ void App::drawServer(float x, float y, float w, float h, bool inLibrary) {
             if (m != shownMode) store.viewFolders = m;
         }
         const float lt = vy + 34 + 16;
+        // the #-to-Z rail (Settings › Appearance › Letter rail): its folders' names, or, in a folder of songs alone, their titles
+        // in the folder's order (as the library's folder page; not on tiles)
+        const bool railD = railOn(8u) && !dirs.empty();
+        const bool railS = railOn(8u) && dirs.empty() && own && ListMode(shownMode) != ListMode::Grid;
+        const float lw = railD || railS ? w - kRailW : w;
+        std::vector<int> order(songs.size());
+        for (size_t i = 0; i < order.size(); i++) order[i] = int(i);
         ScrollArea& sa = area("srv.dir", int(uid(id) & 0x7fffffff));
         sa.view = { x, lt, w, y + h - lt };
         ui.pushArea(&sa);
         g.clip(x, lt, w, y + h - lt);
-        float hh = serverFolders("srv.fo", dirs, x, lt - sa.y, w, lt, y + h - lt, ListMode(shownMode));
+        float hh = serverFolders("srv.fo", dirs, x, lt - sa.y, lw, lt, y + h - lt, ListMode(shownMode));
         if (own) {
-            std::vector<int> order(songs.size());
-            for (size_t i = 0; i < order.size(); i++) order[i] = int(i);
-            hh += 16 + drawServerBody("srv.dsong", songs, order, x, lt - sa.y + hh + 16, w, lt, y + h - lt, ListMode(shownMode), false,
+            hh += 16 + drawServerBody("srv.dsong", songs, order, x, lt - sa.y + hh + 16, lw, lt, y + h - lt, ListMode(shownMode), false,
                                       [&](int i) { playServer(songs, i, title); });
         } else if (pg.have && dirs.empty()) {
             g.textC("This folder is empty", { css::Lg, Weight::SemiBold }, x + w / 2, lt + 60, pal.text2, 1, Align::Center);
@@ -1884,6 +2126,19 @@ void App::drawServer(float x, float y, float w, float h, bool inLibrary) {
         sa.content = hh + 24;
         g.unclip();
         ui.popArea();
+        if (railD) {
+            std::vector<std::string> names;
+            for (const Subsonic::Entry* e : dirs) names.push_back(e->name);
+            const bool tiles = shownMode == int(ListMode::Grid) || shownMode == int(ListMode::Albums);
+            const int cols = std::max(2, int((lw - 36) / 200));
+            const float tw = (lw - 36) / cols, th = 10 + (tw - 20) + 8 + 20 + 2 + 18 + 10, rowH = shownMode == int(ListMode::List) ? 48 : 60;
+            letterRail("srv.dfo", x + w - 24, lt, y + h - lt, lettersOf(names), sa, [&](int row) { return tiles ? float(row / cols) * th : float(row) * rowH; });
+        } else if (railS) {   // the songs begin 16 under where the folders would
+            std::vector<std::string> names;
+            for (const auto& so : songs) names.push_back(so.title);
+            const std::vector<ListEntry> layout = serverLayout(songs, order, lw, ListMode(shownMode));
+            letterRail("srv.dsong", x + w - 24, lt, y + h - lt, lettersOf(names), sa, [&](int row) { return 16 + listRowY(layout, row); });
+        }
         return;
     }
 
@@ -1892,11 +2147,16 @@ void App::drawServer(float x, float y, float w, float h, bool inLibrary) {
     std::vector<Subsonic::Song> songs;
     const bool have = subsonic.album(id, al, songs);
     if (!have) askOnce("L:" + id, [this, id = id] { subsonic.askAlbum(id); });
-    const float cs = narrow ? std::min(w - 60, 220.f) : 200.f, rowH = 46;
-    const float heroH = narrow ? 22 + cs + 18 + 24 + 38 + 30 + 12 + 46 : 26 + cs + 26;
+    // its head as the library's album page (drawAlbum; the user, 2026-11-10: "album on local and server have different head sizes and
+    // cover"): the 220 cover, the title at 46 on up to two lines, the artist in white before the rest, Play and Shuffle
+    const float cs = narrow ? std::min(w - 60, 240.f) : 220.f, rowH = 40;   // (rows as the library's album page: trackRow's)
+    const Font h1{ narrow ? css::Xxl : 46, narrow ? Weight::Bold : Weight::ExtraBold };
+    const float lineH = narrow ? 38.f : 48.f;
+    const std::vector<std::string> lines = g.wrap(have ? al.name : name, h1, int(narrow ? w - 60 : w - (30 + 220 + 28) - 30), 2);
+    const float heroH = narrow ? 22 + cs + 18 + 24 + lines.size() * lineH + 8 + 22 + 16 + 34 + 18 : 26 + 220 + 22;
     ScrollArea& sa = area("srv.album", int(uid(id) & 0x7fffffff));
     sa.view = { x, y, w, h };
-    sa.content = heroH + songs.size() * rowH + 24;
+    sa.content = heroH + 30 + 8 + songs.size() * rowH + 24;
     ui.pushArea(&sa);
     g.clip(x, y, w, h);
     const float oy = y - sa.y;
@@ -1908,72 +2168,333 @@ void App::drawServer(float x, float y, float w, float h, bool inLibrary) {
     }
     g.roundStroke(cx, cy, cs, cs, 12, 1, pal.text, 0.09f);
     const float tx = narrow ? x + 30 : cx + cs + 28, tw = w - (tx - x) - 30;
-    float ty = narrow ? cy + cs + 18 : cy + cs - 24 - 46 - 26 - 46;
+    float ty = narrow ? cy + cs + 18 : cy + 220 - 34 - 16 - 22 - 8 - lines.size() * 48 - 6 - 18;
     kicker("Album", tx, ty + 8, pal.text3);
-    ty += 24;
-    g.text(have ? al.name : name, { narrow ? css::Xxl : 40, Weight::ExtraBold }, tx - 2, ty - 4, pal.text, 1, Align::Left, int(tw));
-    ty += narrow ? 38 : 46;
-    std::string meta;
+    ty += 18 + 6;
+    for (const auto& l : lines) { g.text(l, h1, tx - 2, ty - 4, pal.text, 1, Align::Left, int(tw)); ty += lineH; }
+    ty += 8;
     if (have) {
-        meta = al.artist;
-        if (al.year > 0) meta += " · " + std::to_string(al.year);
-        meta += " · " + std::to_string(songs.size()) + (songs.size() == 1 ? " track" : " tracks");
-        if (al.duration > 0) meta += " · " + std::to_string(int(std::lround(al.duration / 60))) + " min";
+        float mx = tx;
+        if (!al.artist.empty()) mx += g.text(al.artist, { css::Base, Weight::SemiBold }, mx, ty, pal.text);
+        std::string rest;
+        if (al.year > 0) rest += " · " + std::to_string(al.year);
+        rest += " · " + std::to_string(songs.size()) + (songs.size() == 1 ? " track" : " tracks");
+        if (al.duration > 0) rest += " · " + std::to_string(int(std::lround(al.duration / 60))) + " min";
+        g.text(rest, { css::Base }, mx, ty, pal.text2, 1, Align::Left, int(tx + tw - mx));
     } else {
-        meta = "Asking the server…";
+        g.text("Asking the server…", { css::Base }, tx, ty, pal.text2, 1, Align::Left, int(tw));
     }
-    g.text(meta, { css::Base }, tx, ty, pal.text2, 1, Align::Left, int(tw));
+    ty += 22 + 16;
     const Subsonic::DlState dl = have ? subsonic.albumDownload(al.id) : Subsonic::DlState{};
     if (have && !songs.empty()) {
         bool clicked = false;
-        float bx = tx + button(uid("srv.play"), ICON_PLAY, "Play", tx, ty + 30, true, &clicked, false, false) + 8;
+        float bx = tx + button(uid("srv.play"), ICON_PLAY, "Play", tx, ty, true, &clicked, false, false, DefaultFocus) + 8;
         if (clicked) playServer(songs, 0, al.name);
         clicked = false;
+        bx += button(uid("srv.shuffle"), ICON_SHUFFLE, "Shuffle", bx, ty, false, &clicked) + 8;
+        if (clicked) playServer(shuffled(songs), 0, al.name);
+        // the rest: named, or (narrow) round with the icon only, its name as a hint, as the library's album page
+        auto more = [&](const char* key, const char* icon, const std::string& label) {
+            if (!narrow) { bool c = false; bx += button(uid(key), icon, label, bx, ty, false, &c) + 8; return c; }
+            const Id mid = uid(key);
+            hint(mid, label);
+            const bool c = ui.item(mid, { bx, ty, 34, 34 }, 17);
+            g.roundRect(bx, ty, 34, 34, 17, pal.text, ui.pressed(mid) || (ui.focused(mid) && ui.showFocusRing()) ? 0.11f : 0.065f);
+            g.roundStroke(bx, ty, 34, 34, 17, 1, pal.text, 0.15f);
+            g.icon(icon, bx + 17, ty + 17, 16, pal.text);
+            bx += 34 + 8;
+            return c;
+        };
+        // Artist and its genre, as the library's album page has them (the user, 2026-11-10); no Folder: the server's albums have none
+        if (!al.artistId.empty() && more("srv.alartist", ICON_MIC, "Artist")) openServer(1, al.artistId, al.artist);
+        {
+            const std::string& gs = songs[0].genre;
+            const std::string g1 = gs.substr(0, gs.find(';'));
+            if (!g1.empty() && more("srv.algenre", ICON_TAG, g1)) openServer(3, g1, g1);
+        }
         if (dl.state == 0) {   // Download: the whole album kept (Settings › Library › Subsonic server › Downloads: where)
-            button(uid("srv.dl"), ICON_DOWNLOAD, "Download", bx, ty + 30, false, &clicked, false, false);
-            if (clicked) {
+            if (more("srv.dl", ICON_DOWNLOAD, "Download")) {
                 subsonic.downloadAlbum(al.id, serverDlRoot());
                 toast("Downloading “" + al.name + "”");
             }
         } else if (dl.state == 1) {   // coming: Cancel (what came goes too), and how far
-            bx += button(uid("srv.dl"), ICON_X, "Cancel", bx, ty + 30, false, &clicked, false, false) + 14;
-            if (clicked) { subsonic.removeDownload(al.id); toast("Download cancelled"); }
-            const std::string where = store.stopDownloads ? "Downloads stopped · " : "Downloading · ";
-            g.textNum(where + std::to_string(dl.have) + " of " + std::to_string(dl.total > 0 ? dl.total : int(songs.size())), { css::Sm }, bx,
-                      ty + 30 + 18 - g.lineHeight({ css::Sm }) / 2.f, pal.text3);
+            if (more("srv.dl", ICON_X, "Cancel")) { subsonic.removeDownload(al.id); toast("Download cancelled"); }
+            const std::string where = narrow ? std::string() : store.stopDownloads ? "Downloads stopped · " : "Downloading · ";
+            g.textNum(where + std::to_string(dl.have) + " of " + std::to_string(dl.total > 0 ? dl.total : int(songs.size())), { css::Sm }, bx + 6,
+                      ty + 17 - g.lineHeight({ css::Sm }) / 2.f, pal.text3);
         } else {   // all here: Remove
-            bool c2 = false;
-            bx += button(uid("srv.dlx"), ICON_X, "Remove download", bx, ty + 30, false, &c2, false, false) + 14;
-            if (c2) { subsonic.removeDownload(al.id); toast("Removed “" + al.name + "” from this device"); }
-            g.icon(ICON_DOWNLOAD, bx + 8, ty + 30 + 18, 15, pal.accentInk);
-            g.textC("Downloaded", { css::Sm }, bx + 22, ty + 30 + 18, pal.text3);
+            if (more("srv.dlx", ICON_X, "Remove download")) { subsonic.removeDownload(al.id); toast("Removed “" + al.name + "” from this device"); }
+            g.icon(ICON_DOWNLOAD, bx + 14, ty + 17, 15, pal.accentInk);
+            g.textC("Downloaded", { css::Sm }, bx + 28, ty + 17, pal.text3);
         }
     }
 
-    float ry = oy + heroH;
-    for (size_t i = 0; i < songs.size(); i++, ry += rowH) {
-        if (ry + rowH < y || ry > y + h) continue;
+    // the songs as the library's album page has them (the user, 2026-11-10: "match local albums"): the column names, then
+    // trackRow's rows (the place in the list, the title, the artist, the length), with what only a server's song has: the mark of
+    // one kept on this device, and "Getting it from the server" where its artist would be while it comes
+    g.unclip();
+    const float ly = oy + heroH;
+    listHead(x, ly, w, false);
+    g.clip(x, std::max(y, ly + 30), w, y + h - std::max(y, ly + 30));
+    const float top = ly + 30 + 8;
+    for (size_t i = 0; i < songs.size(); i++) {
+        const float ry = top + float(i) * rowH;
+        if (ry + rowH < y - rowH || ry > y + h + rowH) continue;
         const Subsonic::Song& s = songs[i];
         const Id rid = uid("srv.song", int(i));
-        if (ui.item(rid, { x + 18, ry, w - 36, rowH - 4 }, 10, i == 0 ? DefaultFocus : 0)) playServer(songs, int(i), al.name);
+        const float rx = x + 14, rw = w - 28;
+        if (ui.item(rid, { rx, ry, rw, rowH }, 8)) playServer(songs, int(i), al.name);   // (the focus starts on Play, as the library's)
         hoverServer(rid, s);
         const bool hot = ui.pressed(rid) || (ui.focused(rid) && ui.showFocusRing());
         const bool playing = srvq_.on && srvq_.pos >= 0 && srvq_.songs[size_t(srvq_.pos)].id == s.id;
-        if (playing) g.roundRect(x + 18, ry, w - 36, rowH - 4, 10, pal.accent, 0.12f);
-        if (hot) g.roundRect(x + 18, ry, w - 36, rowH - 4, 10, pal.text, ui.pressed(rid) ? 0.11f : 0.065f);
-        if (playing && !srvq_.waitFor.empty()) g.textC("Getting it from the server…", { css::Xs }, x + w - 36 - 70, ry + (rowH - 4) / 2, pal.accentInk, 1, Align::Right);
-        const float my = ry + (rowH - 4) / 2;
-        g.textNum(s.track > 0 ? std::to_string(s.track) : "·", { css::Sm }, x + 52, my - g.lineHeight({ css::Sm }) / 2.f, pal.text3, 1, Align::Right);
+        const bool coming = playing && !srvq_.waitFor.empty();
+        if (playing) g.roundRect(rx, ry, rw, rowH, 8, pal.accent, 0.09f);
+        if (hot) g.roundRect(rx, ry, rw, rowH, 8, pal.text, ui.pressed(rid) ? 0.11f : 0.065f);
+        const float my = ry + rowH / 2;
         const std::string dur = s.duration > 0 ? fmtTime(s.duration) : "";
-        const float dw = float(g.measureNum(dur, { css::Sm }));
-        const bool other = !s.artist.empty() && s.artist != al.artist;   // (a guest: the song's own artist beside its title)
-        const float titleW = w - 36 - 52 - 24 - dw - 24;
-        g.textC(s.title, { css::Base, Weight::SemiBold }, x + 70, other ? my - 9 : my, pal.text, 1, Align::Left, int(titleW));
-        if (other) g.textC(s.artist, { css::Sm }, x + 70, my + 10, pal.text3, 1, Align::Left, int(titleW));
-        g.textNum(dur, { css::Sm }, x + w - 36, my - g.lineHeight({ css::Sm }) / 2.f, pal.text3, 1, Align::Right);
+        const float dw = float(g.measure(dur, { css::Sm }));
         std::string kept;
-        if (dl.state && subsonic.downloaded(s.id, kept)) g.icon(ICON_DOWNLOAD, x + w - 36 - dw - 20, my, 15, pal.accentInk);   // on this device
+        const bool here = dl.state && subsonic.downloaded(s.id, kept);   // on this device
+        const std::string second = coming ? std::string("Getting it from the server…") : s.artist;
+        if (narrow) {   // the number, the title over the artist, the length
+            const float tx = rx + 12 + 28 + 12, tw = rw - (tx - rx) - 64 - (here ? 22 : 0);
+            if (playing) eqGlyph(rx + 12 + 28 - 13, my, pal.accentInk);
+            else g.textNumC(std::to_string(i + 1), { css::Sm }, rx + 12 + 28, my, pal.text3, 1, Align::Right);
+            g.text(s.title, { css::Base, playing ? Weight::SemiBold : Weight::Regular }, tx, my - 20, playing ? pal.accentInk : pal.text, 1, Align::Left, int(tw));
+            g.text(second, { css::Sm }, tx, my + 2, coming ? pal.accentInk : pal.text3, 1, Align::Left, int(tw));
+            g.textNumC(dur, { css::Sm }, rx + rw - 16, my, pal.text3, 1, Align::Right);
+            if (here) g.icon(ICON_DOWNLOAD, rx + rw - 16 - dw - 14, my, 15, pal.accentInk);
+            continue;
+        }
+        const float pad = 16, gap = 14, inner = rw - pad * 2;
+        const float fixed = 44 + 64 + gap * 3, fr = (inner - fixed) / 2.6f;
+        float cx = rx + pad;
+        if (playing) eqGlyph(cx + 44 - 13, my, pal.accentInk);
+        else g.textNumC(std::to_string(i + 1), { css::Sm }, cx + 44, my, pal.text3, 1, Align::Right);
+        cx += 44 + gap;
+        g.textC(s.title, { css::Base, playing ? Weight::SemiBold : Weight::Regular }, cx, my, playing ? pal.accentInk : pal.text, 1, Align::Left, int(fr * 1.6f));
+        cx += fr * 1.6f + gap;
+        g.textC(second, { css::Base }, cx, my, coming ? pal.accentInk : pal.text2, 1, Align::Left, int(fr));
+        cx += fr + gap;
+        g.textNumC(dur, { css::Sm }, cx + 64, my, pal.text3, 1, Align::Right);
+        if (here) g.icon(ICON_DOWNLOAD, cx + 64 - dw - 14, my, 15, pal.accentInk);
     }
     g.unclip();
     ui.popArea();
+}
+
+
+/** The search page with the server chosen in the title bar (the user, 2026-11-09): the local page's head and filter tabs but Lyrics,
+ *  what matched among the server's songs, albums, artists, genres and playlists (its lists, asked as its tabs ask them), each as the
+ *  server's own page shows it. */
+void App::drawServerSearch(float x, float y, float w, float h) {
+    const std::vector<Subsonic::Song>* songs = serverSongList();
+    const std::vector<Subsonic::Album>& albums = serverAlbums();
+    const std::vector<Subsonic::Artist>* arts = serverArtistList();
+    const std::vector<Subsonic::Genre>* gens = serverGenreList();
+    const std::vector<Subsonic::Playlist>* pls = serverPlaylistList();
+    // what matched, made again when the words or the lists changed
+    static std::string forQ;
+    static unsigned forGen = ~0u, forAlbums = ~0u, forPls = ~0u;
+    static bool forSongs = false;
+    static std::vector<int> fSongs, fAlbums, fArts, fGens;
+    static std::vector<Subsonic::Playlist> fPls;
+    if (forQ != route.query || forGen != srvl_.gen || forAlbums != serverAlbumsGen_ || forPls != srvPlaylistsGen_ || forSongs != (songs != nullptr)) {
+        forQ = route.query; forGen = srvl_.gen; forAlbums = serverAlbumsGen_; forPls = srvPlaylistsGen_; forSongs = songs != nullptr;
+        const std::vector<std::string> words = searchWords(route.query);
+        fSongs.clear(); fAlbums.clear(); fArts.clear(); fGens.clear(); fPls.clear();
+        if (songs) for (int i = 0; i < int(songs->size()); i++) {
+            const Subsonic::Song& so = (*songs)[size_t(i)];
+            if (wordsIn(words, so.title + " " + so.artist + " " + so.album + " " + so.genre)) fSongs.push_back(i);
+        }
+        for (int i = 0; i < int(albums.size()); i++) if (wordsIn(words, albums[size_t(i)].name + " " + albums[size_t(i)].artist)) fAlbums.push_back(i);
+        if (arts) for (int i = 0; i < int(arts->size()); i++) if (wordsIn(words, (*arts)[size_t(i)].name)) fArts.push_back(i);
+        if (gens) for (int i = 0; i < int(gens->size()); i++) if (wordsIn(words, (*gens)[size_t(i)].name)) fGens.push_back(i);
+        if (pls) for (const Subsonic::Playlist& p : *pls) if (wordsIn(words, p.name)) fPls.push_back(p);
+    }
+    // (no Lyrics: the server's songs carry none to read; upright there is no tab bar, so a tab chosen on a wide screen is not kept: Songs)
+    const int tab = w < kNarrowList ? 0 : std::min(searchTab_, 4);
+    static const std::vector<std::string> names = { "Songs", "Albums", "Artists", "Genres", "Playlists" };
+    const bool loading = tab == 0 ? !songs : tab == 1 ? serverAlbumsGen_ == ~0u : tab == 2 ? !arts : tab == 3 ? !gens : !pls;
+    auto cnt = [](size_t n, const char* one, const char* many) { return std::to_string(n) + " " + (n == 1 ? one : many); };
+    std::string sub = loading ? std::string("Asking the server…")
+                    : tab == 0 ? cnt(fSongs.size(), "song", "songs") : tab == 1 ? cnt(fAlbums.size(), "album", "albums") : tab == 2 ? cnt(fArts.size(), "artist", "artists")
+                    : tab == 3 ? cnt(fGens.size(), "genre", "genres") : cnt(fPls.size(), "playlist", "playlists");
+    if (tab == 0 && !loading && !fSongs.empty()) {
+        double secs = 0;
+        for (int i : fSongs) secs += (*songs)[size_t(i)].duration;
+        const int m = int(secs / 60);
+        sub += " · " + (m >= 60 ? std::to_string(m / 60) + " h " + std::to_string(m % 60) + " min" : std::to_string(m) + " min");
+    }
+
+    // the head, the local search page's (view_lists.cpp drawTrackList): the quad, Search, the words, the count; Play, Shuffle, New search
+    const bool narrow = w < kNarrowList;
+    const float cs = narrow ? 96.f : 120.f;
+    const float headH = narrow ? 18 + cs + 14 + 34 + 16 : 18 + 120 + 14;
+    ScrollArea& sa = area("srv.search");
+    sa.view = { x, y, w, h };
+    ui.pushArea(&sa);
+    const float oy = y - sa.y, cx = x + 28, cyTop = oy + 18;
+    {
+        std::vector<std::string> cv;
+        if (songs) for (int i : fSongs) {
+            if (cv.size() >= 4) break;
+            const std::string& c = (*songs)[size_t(i)].cover;
+            if (!c.empty() && std::find(cv.begin(), cv.end(), c) == cv.end()) cv.push_back(c);
+        }
+        if (!cv.empty()) serverQuad(cv, cx, cyTop, cs, 12);
+        else {
+            g.roundRect(cx, cyTop, cs, cs, 12, pal.surface2);
+            g.icon(ICON_SEARCH, cx + cs / 2, cyTop + cs / 2, 40, pal.text3, 0.7f);
+        }
+    }
+    const float tx = cx + cs + (narrow ? 16 : 22), tw = w - (tx - x) - 28;
+    kicker("Search", tx, cyTop + 8, pal.text3);
+    g.text("“" + route.query + "”", { css::Xxl, Weight::Bold }, tx, cyTop + 16, pal.text, 1, Align::Left, int(tw));
+    g.text(sub, { css::Sm }, tx, cyTop + 58, pal.text3, 1, Align::Left, int(tw));
+    float bx = narrow ? cx : tx;
+    const float by = narrow ? cyTop + cs + 14 : cyTop + 120 - 34;
+    const std::string playName = "Search: " + route.query;
+    auto inOrder = [&] {
+        std::vector<Subsonic::Song> v;
+        v.reserve(fSongs.size());
+        for (int i : fSongs) v.push_back((*songs)[size_t(i)]);
+        return v;
+    };
+    bool clicked = false;
+    if (tab == 0) {
+        bx += button(uid("pl.play"), ICON_PLAY, "Play", bx, by, true, &clicked, false, false, DefaultFocus) + 8;
+        if (clicked && songs && !fSongs.empty()) playServer(inOrder(), 0, playName);
+        clicked = false;
+        bx += button(uid("pl.shuffle"), ICON_SHUFFLE, "Shuffle", bx, by, false, &clicked) + 8;
+        if (clicked && songs && !fSongs.empty()) {
+            std::vector<Subsonic::Song> v = inOrder();
+            static std::mt19937 rng{ SDL_GetTicks() };
+            std::shuffle(v.begin(), v.end(), rng);
+            playServer(v, 0, playName);
+        }
+    }
+    clicked = false;
+    bx += button(uid("pl.search"), ICON_SEARCH, "New search", bx, by, false, &clicked) + 8;
+    if (clicked) openSearch();
+    // the views at the right (the tab's page's), the filter tabs left of them, as the local page
+    float segRight = x + w - 28;
+    if (tab == 0) {
+        int m = store.viewPlaylist;
+        segRight -= viewSwitch("pl.view", x + w - 28, by + 17, m) + 12;
+        if (m != store.viewPlaylist) { store.viewPlaylist = m; persistSoon(0.3f); }
+    } else if (tab == 1) {
+        int m = store.viewAlbums;
+        segRight -= viewSwitch("pl.view", x + w - 28, by + 17, m, 1u) + 12;
+        if (m != store.viewAlbums) { store.viewAlbums = m; persistSoon(0.3f); }
+    } else if (tab == 4) {
+        int m = store.viewPlaylists == 0 ? 2 : store.viewPlaylists;
+        segRight -= viewSwitch("pl.view", x + w - 28, by + 17, m, 1u) + 12;
+        if (m != store.viewPlaylists) { store.viewPlaylists = m; persistSoon(0.3f); }
+    }
+    if (!narrow) {
+        segRight = x + w - 28 - (6 + 38.f * 4) - 12;   // (in one place whatever the tab's views)
+        int picked = -1;
+        segmented(uid("pl.stab"), segRight, by + 17, names, tab, &picked, 0, 0, 0, 34);
+        if (picked >= 0 && picked != tab) { searchTab_ = picked; sa.target = sa.y = 0; }
+    }
+
+    // the body: the tab's list as the server's page for it
+    const float ly = oy + headH;
+    g.clip(x, y, w, h);
+    float bodyH = 0;
+    const Grid gl = gridOf(x, w);
+    auto seen = [&](float ty, float th) { return ty + th >= y - th && ty <= y + h + th; };
+    auto none = [&](const char* msg) {
+        g.textC(loading ? "Asking the server…" : msg, { css::Lg, Weight::SemiBold }, x + w / 2, ly + 90, pal.text2, 1, Align::Center);
+        return 160.f;
+    };
+    if (tab == 0) {
+        if (!songs || fSongs.empty()) bodyH = none("No songs match");
+        else bodyH = drawServerBody("srv.srch", *songs, fSongs, x, ly, w, y, h, ListMode(store.viewPlaylist), false, [&](int i) { playServer(inOrder(), i, playName); });
+    } else if (tab == 1) {
+        if (fAlbums.empty()) bodyH = none("No albums match");
+        else {
+            const bool atiles = store.viewAlbums == int(ListMode::Grid) || store.viewAlbums == int(ListMode::Albums);
+            const float arow = store.viewAlbums == int(ListMode::List) ? 48.f : 60.f;
+            for (int i = 0; i < int(fAlbums.size()); i++) {
+                const Subsonic::Album& al = albums[size_t(fAlbums[size_t(i)])];
+                const Id tid = uid("srv.sal", int(uid(al.id) & 0x7fffffff));
+                if (atiles) {
+                    const float tx2 = gl.x0 + (i % gl.cols) * gl.tileW, ty = ly + (i / gl.cols) * gl.tileH;
+                    if (!seen(ty, gl.tileH)) continue;
+                    if (serverTile(tid, al.cover, tx2, ty, gl.tileW, false, al.name, al.artist, i == 0 ? DefaultFocus : 0)) openServer(2, al.id, al.name);
+                    if (subsonic.albumDownload(al.id).state == 2) serverBadge(tx2, ty, gl.tileW, true);
+                    continue;
+                }
+                const float ry = ly + i * arow;
+                if (!seen(ry, arow)) continue;
+                if (serverAlbumRow(tid, al, x + 14, ry, w - 28, arow, store.viewAlbums == int(ListMode::List), i == 0 ? DefaultFocus : 0)) openServer(2, al.id, al.name);
+            }
+            bodyH = (atiles ? float((int(fAlbums.size()) + gl.cols - 1) / gl.cols) * gl.tileH : float(fAlbums.size()) * arow) + 24;
+        }
+    } else if (tab == 2) {
+        if (fArts.empty()) bodyH = none("No artists match");
+        else {
+            for (int i = 0; i < int(fArts.size()); i++) {
+                const float tx2 = gl.x0 + (i % gl.cols) * gl.tileW, ty = ly + (i / gl.cols) * gl.tileH;
+                if (!seen(ty, gl.tileH)) continue;
+                const Subsonic::Artist& ar = (*arts)[size_t(fArts[size_t(i)])];
+                if (serverTile(uid("srv.sar", int(uid(ar.id) & 0x7fffffff)), ar.cover, tx2, ty, gl.tileW, true, ar.name,
+                               std::to_string(ar.albums) + (ar.albums == 1 ? " album" : " albums"), i == 0 ? DefaultFocus : 0))
+                    openServer(1, ar.id, ar.name);
+            }
+            bodyH = float((int(fArts.size()) + gl.cols - 1) / gl.cols) * gl.tileH + 24;
+        }
+    } else if (tab == 3) {
+        if (fGens.empty()) bodyH = none("No genres match");
+        else {
+            for (int i = 0; i < int(fGens.size()); i++) {
+                const float tx2 = gl.x0 + (i % gl.cols) * gl.tileW, ty = ly + (i / gl.cols) * gl.tileH;
+                if (!seen(ty, gl.tileH)) continue;
+                const Subsonic::Genre& gn = (*gens)[size_t(fGens[size_t(i)])];
+                if (serverGenreTile(uid("srv.sgn", int(uid(gn.name) & 0x7fffffff)), gn, tx2, ty, gl.tileW, i == 0 ? DefaultFocus : 0)) openServer(3, gn.name, gn.name);
+            }
+            bodyH = float((int(fGens.size()) + gl.cols - 1) / gl.cols) * gl.tileH + 24;
+        }
+    } else {
+        if (fPls.empty()) bodyH = none("No playlists match");
+        else {
+            const ListMode mode = ListMode(store.viewPlaylists == 0 ? 2 : store.viewPlaylists);
+            drawServerPlaylists(x, y, w, h, ly, oy, mode, &fPls);
+            const bool tiles = mode == ListMode::Grid || mode == ListMode::Albums;
+            const int cols = std::max(2, int((w - 32) / 200));
+            const float tw2 = (w - 32) / cols, th = 10 + (tw2 - 20) + 8 + 20 + 2 + 18 + 10, rowH = mode == ListMode::List ? 52 : 64;
+            bodyH = (tiles ? float((int(fPls.size()) + cols - 1) / cols) * th : float(fPls.size()) * rowH) + 24;
+        }
+    }
+    sa.content = headH + bodyH;
+    g.unclip();
+    ui.popArea();
+}
+
+
+bool App::serverAlbumRow(Id id, const Subsonic::Album& al, float x, float y, float w, float rowH, bool list, uint8_t flags) {
+    const float rr = rowH - 4, cov = rr - 16;
+    const bool hit = ui.item(id, { x, y, w, rr }, 10, flags);
+    if (ui.pressed(id) || (ui.focused(id) && ui.showFocusRing())) g.roundRect(x, y, w, rr, 10, pal.text, 0.065f);
+    const float mid = y + rr / 2;
+    if (SDL_Texture* t = serverCover(al.cover)) g.image(t, x + 16, mid - cov / 2, cov, cov, 6);
+    else {
+        g.roundRect(x + 16, mid - cov / 2, cov, cov, 6, pal.surface2);
+        g.icon(ICON_ALBUMS, x + 16 + cov / 2, mid, cov * 0.5f, pal.text2);
+    }
+    std::string info = al.artist;
+    if (al.year > 0) info += " · " + std::to_string(al.year);
+    if (al.songs > 0) info += " · " + std::to_string(al.songs) + (al.songs == 1 ? " track" : " tracks");
+    const float tx = x + 16 + cov + 14;
+    if (list) {
+        g.textC(al.name, { css::Base, Weight::SemiBold }, tx, mid, pal.text, 1, Align::Left, int(w * 0.5f));
+        g.textC(info, { css::Sm }, x + w - 48, mid, pal.text3, 1, Align::Right, int(w * 0.35f));
+    } else {
+        g.text(al.name, { css::Base, Weight::SemiBold }, tx, mid - 19, pal.text, 1, Align::Left, int(w - 140));
+        g.text(info, { css::Sm }, tx, mid + 1, pal.text3, 1, Align::Left, int(w - 140));
+    }
+    g.icon(ICON_CHEV, x + w - 24, mid, 18, pal.text3);
+    return hit;
 }

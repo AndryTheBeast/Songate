@@ -178,12 +178,12 @@ Plan plan(const mixan::Info* a, double dur, const mixan::Info* b, double fallbac
     if (a->keySure >= 0.5f && b->keySure >= 0.5f) p.keyDistance = mixan::keyDistance(a->key, b->key);
     const bool clash = p.keyDistance >= 3;
 
-    // ---- Auto, on the drop (v3, as Spotify's mixes do: automix-demo/reference, NEXT_SESSION.md "Automix v3, step 1"): the
+    // ---- Auto, on the drop (v3, as a streaming service's mixes do: automix-demo/reference, NEXT_SESSION.md "Automix v3, step 1"): the
     // next track starts m bars before its drop (its first four bars with full bass), so the drop lands on X, the bar after
     // this track's last bass phrase (on its 4-bar phrase grid). This track stays full; its bass is cut hard on a bar line
     // B bars before X (a bridge with no bass at all); the next one rises from the start under a low-pass that opens by X,
     // its bass held out until it slams in on the drop; this one then goes out over T bars. Whole bars on both grids; the
-    // keys left alone (Spotify's 9B into 3A sounds right: the tempo and the phrase make it)
+    // keys left alone (a streaming service's 9B into 3A sounds right: the tempo and the phrase make it)
     const bool dropSure = b->dropAt > 0 && b->dropJump >= 6;   // its drop's beat found (a downbeat, even where the bars are unsure)
     if (autoMode && sure && barsOut && (barsIn || dropSure) && a->bass.size() > 16 && b->bass.size() > 8 && a->bpm > 0 && (stretchable || asIs(12))) {
         const Digits ba{ a->bass }, bb{ b->bass }, la{ a->bars };
@@ -206,7 +206,7 @@ Plan plan(const mixan::Info* a, double dur, const mixan::Info* b, double fallbac
         }
         if (dropT > 0 && before >= 4 && lastBass > 8) {
             const double bar = 4 * P;   // this track's bar, its own time
-            // (a track with bass to its abrupt end: the last phrase boundary that leaves two bars of it, as Spotify cuts out)
+            // (a track with bass to its abrupt end: the last phrase boundary that leaves two bars of it, as a streaming service cuts out)
             const int xbEnd = int(std::floor((endA - a->barIn) / (4 * 60.0 / a->bpm) + 1e-6)) - 2;
             const int xb = a->phraseAt + 4 * int(std::floor((std::min(lastBass + 1, xbEnd) - a->phraseAt) / 4.0));
             double X = a->barIn + xb * 4 * (60.0 / a->bpm);
@@ -248,7 +248,7 @@ Plan plan(const mixan::Info* a, double dur, const mixan::Info* b, double fallbac
     // phrase ends (X, on its phrase grid, as the drop join finds it), so the change lands on a phrase of both. Where the
     // next track's bars just before that downbeat have no bass (no kick: pads, a voice, a riser), up to 8 of them play
     // under this track's last bars, rising under a low-pass that opens by X, this track's bass cut a bar or two before (a
-    // bridge, as the drop join); else a clean cut on X (30 ms), as Spotify's S&M into Heads Will Roll
+    // bridge, as the drop join); else a clean cut on X (30 ms), as a streaming service's S&M into Heads Will Roll
     if (autoMode && a->confidence >= 0.5f && barsOut && b->confidence >= 0.5f && b->periodIn > 0 && !fits(16) && a->bass.size() > 8 &&
         a->bars.size() >= a->bass.size() && a->bpm > 0 && (dropSure || barsIn)) {
         const Digits ba{ a->bass }, bb{ b->bass }, la{ a->bars };
@@ -536,12 +536,12 @@ Plan plan(const mixan::Info* a, double dur, const mixan::Info* b, double fallbac
     if (a->keySure >= 0.5f && b->keySure >= 0.5f) p.keyDistance = mixan::keyDistance(a->key, b->key);
     const bool clash = p.keyDistance >= 3;
 
-    // ---- Auto, on the drop (v3, as Spotify's mixes do: automix-demo/reference, NEXT_SESSION.md "Automix v3, step 1"): the
+    // ---- Auto, on the drop (v3, as a streaming service's mixes do: automix-demo/reference, NEXT_SESSION.md "Automix v3, step 1"): the
     // next track starts m bars before its drop (its first four bars with full bass), so the drop lands on X, the bar after
     // this track's last bass phrase (on its 4-bar phrase grid). This track stays full; its bass is cut hard on a bar line
     // B bars before X (a bridge with no bass at all); the next one rises from the start under a low-pass that opens by X,
     // its bass held out until it slams in on the drop; this one then goes out over T bars. Whole bars on both grids; the
-    // keys left alone (Spotify's 9B into 3A sounds right: the tempo and the phrase make it)
+    // keys left alone (a streaming service's 9B into 3A sounds right: the tempo and the phrase make it)
     const bool dropSure = b->dropAt > 0 && b->dropJump >= 6;   // its drop's beat found (a downbeat, even where the bars are unsure)
     if (autoMode && sure && barsOut && (barsIn || dropSure) && a->bass.size() > 16 && b->bass.size() > 8 && a->bpm > 0 && (stretchable || asIs(12))) {
         const Digits ba{ a->bass }, bb{ b->bass }, la{ a->bars };
@@ -564,7 +564,7 @@ Plan plan(const mixan::Info* a, double dur, const mixan::Info* b, double fallbac
         }
         if (dropT > 0 && before >= 4 && lastBass > 8) {
             const double bar = 4 * P;   // this track's bar, its own time
-            // (a track with bass to its abrupt end: the last phrase boundary that leaves two bars of it, as Spotify cuts out)
+            // (a track with bass to its abrupt end: the last phrase boundary that leaves two bars of it, as a streaming service cuts out)
             const int xbEnd = int(std::floor((endA - a->barIn) / (4 * 60.0 / a->bpm) + 1e-6)) - 2;
             int xb = a->phraseAt + 4 * int(std::floor((std::min(lastBass + 1, xbEnd) - a->phraseAt) / 4.0));
             if (t.noSkip) {   // (round 2: the change where this track starts to fade out, or at its end: no full music skipped)
@@ -612,7 +612,7 @@ Plan plan(const mixan::Info* a, double dur, const mixan::Info* b, double fallbac
     // phrase ends (X, on its phrase grid, as the drop join finds it), so the change lands on a phrase of both. Where the
     // next track's bars just before that downbeat have no bass (no kick: pads, a voice, a riser), up to 8 of them play
     // under this track's last bars, rising under a low-pass that opens by X, this track's bass cut a bar or two before (a
-    // bridge, as the drop join); else a clean cut on X (30 ms), as Spotify's S&M into Heads Will Roll
+    // bridge, as the drop join); else a clean cut on X (30 ms), as a streaming service's S&M into Heads Will Roll
     if (autoMode && a->confidence >= 0.5f && barsOut && b->confidence >= 0.5f && b->periodIn > 0 && !fits(16) && a->bass.size() > 8 &&
         a->bars.size() >= a->bass.size() && a->bpm > 0 && (dropSure || barsIn)) {
         const Digits ba{ a->bass }, bb{ b->bass }, la{ a->bars };
@@ -868,7 +868,7 @@ void gainsAt(const Plan& p, double t, Gains& g) {
         g.out = 1 - g.in;
         break;
     }
-    case Volume::Drop: {   // v3, as Spotify's editor draws it: the outgoing one full until the crossover, then out (most of it
+    case Volume::Drop: {   // v3, as a streaming service's editor draws it: the outgoing one full until the crossover, then out (most of it
         // in the first half of what follows); the incoming one up from the start, near full by the bass cut, full on the drop
         const float c = float(std::clamp(p.cross, 0.05, 0.98)), k = float(std::clamp(p.bassCut > 0 ? p.bassCut : p.cross * 0.75, 0.02, double(c)));
         // (the incoming level until the bass cut and the outgoing exit's shape: Plan fields, V1.0.0's 0.9 and a square by default)
@@ -904,7 +904,7 @@ void gainsAt(const Plan& p, double t, Gains& g) {
         so[k] = 0.05f + 0.95f * (1 - s);
     }
     if (p.join.eq == Eq::BassBridge) {   // v3: the outgoing bass cut hard on a bar line, the incoming one in on the drop: each
-        // within 30 ms, ending on its bar line, so the drop's first kick comes through whole; -40 dB, gone as in Spotify's mixes
+        // within 30 ms, ending on its bar line, so the drop's first kick comes through whole; -40 dB, gone as in a streaming service's mixes
         const float c = float(std::clamp(p.cross, 0.05, 0.98)), k = float(std::clamp(p.bassCut > 0 ? p.bassCut : p.cross * 0.75, 0.02, double(c)));
         const float w = float(std::clamp(0.03 / std::max(0.1, p.length), 0.001, 0.05));
         auto step = [&](float at) {
@@ -939,7 +939,7 @@ void gainsAt(const Plan& p, double t, Gains& g) {
     const float pw = power(g.in, g.lowIn, mid, g.highIn * top) + power(g.out, g.lowOut, 1, g.highOut);
     g.balance = std::clamp(1.f / std::sqrt(std::max(1e-4f, pw)), 0.5f, 1.41f);
     // the gate (Plan::gate; none in V1.0.0), after the balance so the other voice does not pump with it: 1, the incoming
-    // one in stabs of half a beat on beats 1 and 3 until the crossover (a Spotify mix: stabs of the next song over the whole
+    // one in stabs of half a beat on beats 1 and 3 until the crossover (a streaming service's mix: stabs of the next song over the whole
     // outgoing one, then the switch on the downbeat); 2, the outgoing one in a stab of a beat and a half on each bar's first
     // beat over the first half of the lead-in, then whole but high-passed away, 20 Hz to 1 kHz by the crossover (another:
     // chopped a bar at a time, then filtered out as the next one's bass comes back). The join starts on a bar.
@@ -1084,7 +1084,7 @@ namespace v1_0_0 {   // (Automix V1.0.0, frozen: the order's score and the order
 
 double joinScore(const mixan::Info* a, const mixan::Info* b) {
     if (!a || !b || !a->valid || !b->valid) return 0;
-    // v3: scored from the join Auto would make (Spotify's mixes: the tempo and the phrase make a join, not the keys): on
+    // v3: scored from the join Auto would make (a streaming service's mixes: the tempo and the phrase make a join, not the keys): on
     // the next track's drop best, then by the structure, then on the beat, then timed; the less stretch the better
     const Plan p = plan(a, a->seconds, b, 4);
     // on the beat: on the drop 6, by the structure 4.5, on the bars 3.5, on the beat 3; between tempos (v3, no tempo
@@ -1096,7 +1096,7 @@ double joinScore(const mixan::Info* a, const mixan::Info* b) {
         for (double m : { 1.0, 2.0, 0.5 }) d = std::min(d, std::fabs(b->bpm * m / a->bpm - 1));
         s -= std::min(p.drop || p.cut ? 1.5 : 3.0, 10 * d);
     }
-    // keys, when both are sure: a little only (Spotify's 9B into 3A sounds right)
+    // keys, when both are sure: a little only (a streaming service's 9B into 3A sounds right)
     if (p.keyDistance >= 0) s += p.keyDistance == 0 ? 0.75 : p.keyDistance == 1 ? 0.5 : p.keyDistance == 2 ? 0 : -0.5;
     // a fading or quiet end into a quieter start helps a timed join
     if (!p.beatmatched) {
@@ -1108,11 +1108,14 @@ double joinScore(const mixan::Info* a, const mixan::Info* b) {
     return s;
 }
 
-std::vector<int> order(const std::vector<const mixan::Info*>& t, int first) {
+std::vector<int> order(const std::vector<const mixan::Info*>& t, int first, OrderWatch* watch) {
     const int n = int(t.size());
     std::vector<int> best(static_cast<size_t>(n));
     for (int i = 0; i < n; i++) best[size_t(i)] = i;
-    if (n < 3) return best;
+    if (n < 3) {
+        if (n == 2 && first == 1) std::swap(best[0], best[1]);   // two songs: the pinned one still first
+        return best;
+    }
     std::vector<double> w(size_t(n) * size_t(n));
     for (int i = 0; i < n; i++)
         for (int j = 0; j < n; j++) w[size_t(i) * size_t(n) + size_t(j)] = i == j ? -1e9 : joinScore(t[size_t(i)], t[size_t(j)]);
@@ -1129,7 +1132,9 @@ std::vector<int> order(const std::vector<const mixan::Info*>& t, int first) {
 #ifdef GF_PREVIEW
     if (const char* e = getenv("AUTOMIX_TRIES"); e && first < 0) tries = std::clamp(atoi(e), 1, n);
 #endif
+    if (watch) watch->total = tries;
     for (int s = 0; s < tries; s++) {
+        if (watch) { watch->done = s; if (watch->stop) return {}; }
         const int start = first >= 0 ? first : s * n / tries;
         std::vector<int> p{ start };
         std::vector<bool> used(static_cast<size_t>(n), false);
@@ -1144,6 +1149,7 @@ std::vector<int> order(const std::vector<const mixan::Info*>& t, int first) {
         // improve: move one track (never a pinned first) to the place where the path gains most, while it gains
         for (bool better = true; better;) {
             better = false;
+            if (watch && watch->stop) return {};
             for (int i = first >= 0 ? 1 : 0; i < n; i++) {
                 const int x = p[size_t(i)];
                 const double out = (i > 0 ? W(p[size_t(i - 1)], x) : 0) + (i + 1 < n ? W(x, p[size_t(i + 1)]) : 0) -
@@ -1276,12 +1282,12 @@ Plan planWith(const mixan::Info* a, double dur, const mixan::Info* b, double fal
     if (a->keySure >= 0.5f && b->keySure >= 0.5f) p.keyDistance = mixan::keyDistance(a->key, b->key);
     const bool clash = p.keyDistance >= 3;
 
-    // ---- Auto, on the drop (v3, as Spotify's mixes do: automix-demo/reference, NEXT_SESSION.md "Automix v3, step 1"): the
+    // ---- Auto, on the drop (v3, as a streaming service's mixes do: automix-demo/reference, NEXT_SESSION.md "Automix v3, step 1"): the
     // next track starts m bars before its drop (its first four bars with full bass), so the drop lands on X, the bar after
     // this track's last bass phrase (on its 4-bar phrase grid). This track stays full; its bass is cut hard on a bar line
     // B bars before X (a bridge with no bass at all); the next one rises from the start under a low-pass that opens by X,
     // its bass held out until it slams in on the drop; this one then goes out over T bars. Whole bars on both grids; the
-    // keys left alone (Spotify's 9B into 3A sounds right: the tempo and the phrase make it)
+    // keys left alone (a streaming service's 9B into 3A sounds right: the tempo and the phrase make it)
     const bool dropSure = b->dropAt > 0 && b->dropJump >= 6;   // its drop's beat found (a downbeat, even where the bars are unsure)
     if (autoMode && sure && barsOut && (barsIn || dropSure) && a->bass.size() > 16 && b->bass.size() > 8 && a->bpm > 0 && (stretchable || asIs(12))) {
         const Digits ba{ a->bass }, bb{ b->bass }, la{ a->bars };
@@ -1304,7 +1310,7 @@ Plan planWith(const mixan::Info* a, double dur, const mixan::Info* b, double fal
         }
         if (dropT > 0 && before >= 4 && lastBass > 8) {
             const double bar = 4 * P;   // this track's bar, its own time
-            // (a track with bass to its abrupt end: the last phrase boundary that leaves two bars of it, as Spotify cuts out)
+            // (a track with bass to its abrupt end: the last phrase boundary that leaves two bars of it, as a streaming service cuts out)
             const int xbEnd = int(std::floor((endA - a->barIn) / (4 * 60.0 / a->bpm) + 1e-6)) - 2;
             int xb = a->phraseAt + 4 * int(std::floor((std::min(lastBass + 1, xbEnd) - a->phraseAt) / 4.0));
             if (t.noSkip) {   // (round 2: the change where this track starts to fade out, or at its end: no full music skipped)
@@ -1352,7 +1358,7 @@ Plan planWith(const mixan::Info* a, double dur, const mixan::Info* b, double fal
     // phrase ends (X, on its phrase grid, as the drop join finds it), so the change lands on a phrase of both. Where the
     // next track's bars just before that downbeat have no bass (no kick: pads, a voice, a riser), up to 8 of them play
     // under this track's last bars, rising under a low-pass that opens by X, this track's bass cut a bar or two before (a
-    // bridge, as the drop join); else a clean cut on X (30 ms), as Spotify's S&M into Heads Will Roll
+    // bridge, as the drop join); else a clean cut on X (30 ms), as a streaming service's S&M into Heads Will Roll
     if (autoMode && a->confidence >= 0.5f && barsOut && b->confidence >= 0.5f && b->periodIn > 0 && !fits(16) && a->bass.size() > 8 &&
         a->bars.size() >= a->bass.size() && a->bpm > 0 && (dropSure || barsIn)) {
         const Digits ba{ a->bass }, bb{ b->bass }, la{ a->bars };
@@ -1662,12 +1668,12 @@ Plan plan(const mixan::Info* a, double dur, const mixan::Info* b, double fallbac
     if (a->keySure >= 0.5f && b->keySure >= 0.5f) p.keyDistance = mixan::keyDistance(a->key, b->key);
     const bool clash = p.keyDistance >= 3;
 
-    // ---- Auto, on the drop (v3, as Spotify's mixes do: automix-demo/reference, NEXT_SESSION.md "Automix v3, step 1"): the
+    // ---- Auto, on the drop (v3, as a streaming service's mixes do: automix-demo/reference, NEXT_SESSION.md "Automix v3, step 1"): the
     // next track starts m bars before its drop (its first four bars with full bass), so the drop lands on X, the bar after
     // this track's last bass phrase (on its 4-bar phrase grid). This track stays full; its bass is cut hard on a bar line
     // B bars before X (a bridge with no bass at all); the next one rises from the start under a low-pass that opens by X,
     // its bass held out until it slams in on the drop; this one then goes out over T bars. Whole bars on both grids; the
-    // keys left alone (Spotify's 9B into 3A sounds right: the tempo and the phrase make it)
+    // keys left alone (a streaming service's 9B into 3A sounds right: the tempo and the phrase make it)
     const bool dropSure = b->dropAt > 0 && b->dropJump >= 6;   // its drop's beat found (a downbeat, even where the bars are unsure)
     if (autoMode && sure && barsOut && (barsIn || dropSure) && a->bass.size() > 16 && b->bass.size() > 8 && a->bpm > 0 && (stretchable || asIs(12))) {
         const Digits ba{ a->bass }, bb{ b->bass }, la{ a->bars };
@@ -1690,7 +1696,7 @@ Plan plan(const mixan::Info* a, double dur, const mixan::Info* b, double fallbac
         }
         if (dropT > 0 && before >= 4 && lastBass > 8) {
             const double bar = 4 * P;   // this track's bar, its own time
-            // (a track with bass to its abrupt end: the last phrase boundary that leaves two bars of it, as Spotify cuts out)
+            // (a track with bass to its abrupt end: the last phrase boundary that leaves two bars of it, as a streaming service cuts out)
             const int xbEnd = int(std::floor((endA - a->barIn) / (4 * 60.0 / a->bpm) + 1e-6)) - 2;
             int xb = a->phraseAt + 4 * int(std::floor((std::min(lastBass + 1, xbEnd) - a->phraseAt) / 4.0));
             if (t.noSkip) {   // (round 2: the change where this track starts to fade out, or at its end: no full music skipped)
@@ -1738,7 +1744,7 @@ Plan plan(const mixan::Info* a, double dur, const mixan::Info* b, double fallbac
     // phrase ends (X, on its phrase grid, as the drop join finds it), so the change lands on a phrase of both. Where the
     // next track's bars just before that downbeat have no bass (no kick: pads, a voice, a riser), up to 8 of them play
     // under this track's last bars, rising under a low-pass that opens by X, this track's bass cut a bar or two before (a
-    // bridge, as the drop join); else a clean cut on X (30 ms), as Spotify's S&M into Heads Will Roll
+    // bridge, as the drop join); else a clean cut on X (30 ms), as a streaming service's S&M into Heads Will Roll
     if (autoMode && a->confidence >= 0.5f && barsOut && b->confidence >= 0.5f && b->periodIn > 0 && !fits(16) && a->bass.size() > 8 &&
         a->bars.size() >= a->bass.size() && a->bpm > 0 && (dropSure || barsIn)) {
         const Digits ba{ a->bass }, bb{ b->bass }, la{ a->bars };
@@ -2036,12 +2042,12 @@ Plan plan(const mixan::Info* a, double dur, const mixan::Info* b, double fallbac
     if (a->keySure >= 0.5f && b->keySure >= 0.5f) p.keyDistance = mixan::keyDistance(a->key, b->key);
     const bool clash = p.keyDistance >= 3;
 
-    // ---- Auto, on the drop (v3, as Spotify's mixes do: automix-demo/reference, NEXT_SESSION.md "Automix v3, step 1"): the
+    // ---- Auto, on the drop (v3, as a streaming service's mixes do: automix-demo/reference, NEXT_SESSION.md "Automix v3, step 1"): the
     // next track starts m bars before its drop (its first four bars with full bass), so the drop lands on X, the bar after
     // this track's last bass phrase (on its 4-bar phrase grid). This track stays full; its bass is cut hard on a bar line
     // B bars before X (a bridge with no bass at all); the next one rises from the start under a low-pass that opens by X,
     // its bass held out until it slams in on the drop; this one then goes out over T bars. Whole bars on both grids; the
-    // keys left alone (Spotify's 9B into 3A sounds right: the tempo and the phrase make it)
+    // keys left alone (a streaming service's 9B into 3A sounds right: the tempo and the phrase make it)
     const bool dropSure = b->dropAt > 0 && b->dropJump >= 6;   // its drop's beat found (a downbeat, even where the bars are unsure)
     if (autoMode && sure && barsOut && (barsIn || dropSure) && a->bass.size() > 16 && b->bass.size() > 8 && a->bpm > 0 && (stretchable || asIs(12))) {
         const Digits ba{ a->bass }, bb{ b->bass }, la{ a->bars };
@@ -2064,7 +2070,7 @@ Plan plan(const mixan::Info* a, double dur, const mixan::Info* b, double fallbac
         }
         if (dropT > 0 && before >= 4 && lastBass > 8) {
             const double bar = 4 * P;   // this track's bar, its own time
-            // (a track with bass to its abrupt end: the last phrase boundary that leaves two bars of it, as Spotify cuts out)
+            // (a track with bass to its abrupt end: the last phrase boundary that leaves two bars of it, as a streaming service cuts out)
             const int xbEnd = int(std::floor((endA - a->barIn) / (4 * 60.0 / a->bpm) + 1e-6)) - 2;
             int xb = a->phraseAt + 4 * int(std::floor((std::min(lastBass + 1, xbEnd) - a->phraseAt) / 4.0));
             if (t.noSkip) {   // (round 2: the change where this track starts to fade out, or at its end: no full music skipped)
@@ -2112,7 +2118,7 @@ Plan plan(const mixan::Info* a, double dur, const mixan::Info* b, double fallbac
     // phrase ends (X, on its phrase grid, as the drop join finds it), so the change lands on a phrase of both. Where the
     // next track's bars just before that downbeat have no bass (no kick: pads, a voice, a riser), up to 8 of them play
     // under this track's last bars, rising under a low-pass that opens by X, this track's bass cut a bar or two before (a
-    // bridge, as the drop join); else a clean cut on X (30 ms), as Spotify's S&M into Heads Will Roll
+    // bridge, as the drop join); else a clean cut on X (30 ms), as a streaming service's S&M into Heads Will Roll
     if (autoMode && a->confidence >= 0.5f && barsOut && b->confidence >= 0.5f && b->periodIn > 0 && !fits(16) && a->bass.size() > 8 &&
         a->bars.size() >= a->bass.size() && a->bpm > 0 && (dropSure || barsIn)) {
         const Digits ba{ a->bass }, bb{ b->bass }, la{ a->bars };
@@ -2401,6 +2407,7 @@ bool ModelFile::parse(const std::string& textIn, std::string* why) {
             m.gateBars = atoi(val.c_str());
         } else if (key == "gateLen" && m.format >= 2) {
             m.gateLen = float(strtod(val.c_str(), nullptr));
+            if (!std::isfinite(m.gateLen)) return fail("gateLen: not a number");
         } else if (key == "gateOn") {
             m.gateOn = 0;
             for (size_t s0 = 0; s0 <= val.size();) {
@@ -2419,6 +2426,8 @@ bool ModelFile::parse(const std::string& textIn, std::string* why) {
             if (!f) return fail("an unknown number: " + key);
             char* base = reinterpret_cast<char*>(&m.tune) + f->at;
             const double v = strtod(val.c_str(), nullptr);
+            // (a file from the air: no NaN into the curves, nothing lround cannot hold)
+            if (f->type != 'b' && !(std::fabs(v) <= 1e6)) return fail(key + ": not a number this Songate can plan with");
             switch (f->type) {
             case 'i': *reinterpret_cast<int*>(base) = int(std::lround(v)); break;
             case 'f': *reinterpret_cast<float*>(base) = float(v); break;
@@ -2431,6 +2440,11 @@ bool ModelFile::parse(const std::string& textIn, std::string* why) {
     if (m.name.empty()) return fail("a model without a name");
     if (m.mixan > mixan::Version) return fail("it needs a newer analysis (a newer Songate)");
     if (m.order != "1.0.0") return fail("it needs a newer Songate (its playlist order)");
+    // the planners clamp to these (0 to exitBars, 2 to clashBars, 1 to half the drop's bars): never a top under its bottom
+    if (m.tune.exitBars < 0) return fail("exitBars under 0");
+    if (m.tune.clashBars < 2) return fail("clashBars under 2");
+    if (m.tune.dropBars < 2) return fail("dropBars under 2");
+    if (!(m.tune.lpFrom > 0)) return fail("lpFrom: not above 0");   // (the low-pass opens from it: 20000 / lpFrom)
     *this = m;
     return true;
 }
@@ -2519,10 +2533,10 @@ double joinScore(const mixan::Info* a, const mixan::Info* b, Model m) {
     }
 }
 
-std::vector<int> order(const std::vector<const mixan::Info*>& tracks, int first, Model m) {
+std::vector<int> order(const std::vector<const mixan::Info*>& tracks, int first, Model m, OrderWatch* watch) {
     switch (m) {
     default:   // (V1.1.0 too)
-    case Model::V1_0_0: return v1_0_0::order(tracks, first);
+    case Model::V1_0_0: return v1_0_0::order(tracks, first, watch);
     }
 }
 

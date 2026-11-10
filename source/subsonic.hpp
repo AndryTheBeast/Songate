@@ -10,6 +10,7 @@
  */
 #pragma once
 #include <SDL2/SDL.h>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -134,7 +135,13 @@ public:
 
 private:
     struct Task { enum Kind { DlAlbum, DlSong, DlRemove, DlWipe, Scrobble, Star, Starred, SaveLedger, Playlists, PlaylistOne, SendPlaylist, PlEdit, Lyrics, FileInfoTask, Ping, Artists, AllAlbums, Genres, GenreAlbums, Folders, Dir, AllSongs, Artist, Album, Cover, Song } kind; std::string id; int size = 0; std::string suffix, album, path;
-                  bool now = false; };   // (a Song: the one to play now, taken before anything else waiting)
+                  bool now = false;      // (a Song: the one to play now, taken before anything else waiting)
+                  int tries = 0; };      // (a list the server could not be reached for: asked again, later_)
+    struct Later { Task task; std::chrono::steady_clock::time_point at; };
+    std::vector<Later> later_;   // under m_: lists to ask again (no network at that moment), each when its wait is over
+    unsigned sess_ = 0;          // under m_: bumps at every sign-in and sign-out; a task that began before one never fills the next
+    bool unreached_ = false;     // the worker's: the task's last call never got to the server
+    void clearSession();         // m_ held: every list and cover of the session forgotten
     std::vector<std::pair<std::string, std::string>> songs_;   // under m_: id → its file ("" could not be had)
     void prune();
     void run();

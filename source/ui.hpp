@@ -34,6 +34,8 @@ enum ItemFlags : uint8_t {
     Hold = 8,          // a short press (A or a tap) activates it on release; held for half a second it is a long press (longPressed)
     NoSideEntry = 16,  // the D-pad's Left/Right never land on it, only Up/Down (the player bar's seek bar, under the controls)
     NoUpDownEntry = 32,   // … Up/Down never land on it, only Left/Right (a playlist's join buttons, between its rows)
+    NoDefault = 64,    // never the view's fallback focus when nothing claims it (Now playing's Lock pill, drawn before the track's
+                       // buttons: at the launch it took the ring that Add to Liked had; the user, 2026-11-10)
 };
 
 struct ScrollArea {

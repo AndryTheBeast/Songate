@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 
 #include "app.hpp"
+#include "cores.hpp"
 #include "icons.inc"
 
 /** Orders an Automix playlist (store.playlists[ref]) for the best joins; tracks gone from the library stay at its end. */
@@ -139,21 +140,84 @@ void App::orderAutomixList(int ref, bool announce) {
         here.swap(ready);
     }
     waiting = !later.empty();
+    (void)waiting;
     for (const auto& path : here) info.push_back(levels.find(path)->mix);
-    std::vector<const mixan::Info*> ptr;
-    for (const auto& i : info) ptr.push_back(&i);
     int first = -1;
     for (size_t i = 0; i < here.size(); i++) if (!p.pin.empty() && here[i] == p.pin) first = int(i);
-    const std::vector<int> ord = automix::order(ptr, first, mixModel());
-    std::vector<std::string> out;
-    for (int i : ord) out.push_back(here[size_t(i)]);
-    out.insert(out.end(), later.begin(), later.end());
-    out.insert(out.end(), gone.begin(), gone.end());
-    p.tracks = out;
-    p.waiting = waiting;
-    p.manual = false;
-    store.save();
-    if (announce) toast(waiting ? "Ordered “" + p.name + "”; again once all of its tracks are analysed" : "Ordered “" + p.name + "” for Automix");
+    // the order itself on a worker (mixOrderTick puts it in): one at a time; another asked meanwhile waits its turn
+    const bool sameRunning = mixOrderOn_ && mixOrderJob_.name == p.name && mixOrderJob_.before == p.tracks;
+    if (sameRunning) { mixOrderJob_.announce = mixOrderJob_.announce || announce; return; }
+    if (mixOrderOn_ || store.stopMixOrder) {
+        for (auto& w : mixOrderWaiting_) if (w.first == p.name) { w.second = w.second || announce; return; }
+        mixOrderWaiting_.push_back({ p.name, announce });
+        if (announce && store.stopMixOrder) toast("Ordering is stopped: Resume it in Settings › Playback");
+        return;
+    }
+    mixOrderJob_ = MixOrderJob{};
+    mixOrderJob_.name = p.name;
+    mixOrderJob_.before = p.tracks;
+    mixOrderJob_.here = std::move(here);
+    mixOrderJob_.later = std::move(later);
+    mixOrderJob_.gone = std::move(gone);
+    mixOrderJob_.info = std::move(info);
+    mixOrderJob_.first = first;
+    mixOrderJob_.model = mixModel();
+    mixOrderJob_.announce = announce;
+    mixOrderWatch_.done = 0;
+    mixOrderWatch_.total = 0;
+    mixOrderWatch_.stop = false;
+    mixOrderDone_ = false;
+    mixOrderOn_ = true;
+    if (mixOrderThread_.joinable()) mixOrderThread_.join();
+    mixOrderThread_ = std::thread([this] {
+        cores::moveHere(cores::Files);
+        std::vector<const mixan::Info*> ptr;
+        for (const auto& i : mixOrderJob_.info) ptr.push_back(&i);
+        mixOrderJob_.result = automix::order(ptr, mixOrderJob_.first, mixOrderJob_.model, &mixOrderWatch_);
+        mixOrderDone_ = true;
+    });
+}
+
+/** Every frame: the order a worker found goes into its playlist; then the next one waiting is asked. */
+void App::mixOrderTick() {
+    if (mixOrderOn_ && mixOrderDone_) {
+        if (mixOrderThread_.joinable()) mixOrderThread_.join();
+        mixOrderOn_ = false;
+        MixOrderJob j = std::move(mixOrderJob_);
+        mixOrderJob_ = MixOrderJob{};
+        int ref = -1;
+        for (int i = 0; i < int(store.playlists.size()); i++) if (store.playlists[size_t(i)].name == j.name) ref = i;
+        if (ref >= 0 && store.playlists[size_t(ref)].own() && store.playlists[size_t(ref)].automix) {
+            FolderPlaylist& p = store.playlists[size_t(ref)];
+            const bool whole = j.result.size() == j.here.size();   // (empty for a list with songs: it was stopped)
+            if (!whole || p.tracks != j.before) {
+                // stopped, or songs came or went meanwhile: asked again (at once, or when ordering is resumed)
+                mixOrderWaiting_.insert(mixOrderWaiting_.begin(), { j.name, j.announce });
+            } else {
+                std::vector<std::string> out;
+                for (int i : j.result) out.push_back(j.here[size_t(i)]);
+                out.insert(out.end(), j.later.begin(), j.later.end());
+                out.insert(out.end(), j.gone.begin(), j.gone.end());
+                p.tracks = out;
+                p.waiting = !j.later.empty();
+                p.manual = false;
+                persistSoon(0.3f);
+                if (j.announce) toast(p.waiting ? "Ordered “" + p.name + "”; again once all of its songs are analysed" : "Ordered “" + p.name + "” for Automix");
+            }
+        }
+    }
+    if (!mixOrderOn_ && !store.stopMixOrder && !mixOrderWaiting_.empty()) {
+        const auto next = mixOrderWaiting_.front();
+        mixOrderWaiting_.erase(mixOrderWaiting_.begin());
+        for (int i = 0; i < int(store.playlists.size()); i++)
+            if (store.playlists[size_t(i)].name == next.first) { orderAutomixList(i, next.second); break; }
+    }
+}
+
+void App::mixOrderEnd() {
+    mixOrderWatch_.stop = true;
+    if (mixOrderThread_.joinable()) mixOrderThread_.join();
+    mixOrderOn_ = false;
 }
 
 bool App::automixReady(const std::string& path) const {
@@ -176,7 +240,7 @@ void App::automixListsTick() {
         // the ordered ones (ready, in front), then the waiting ones
         size_t head = 0;
         while (head < p.tracks.size() && pathIndex.count(p.tracks[head]) && automixReady(p.tracks[head])) head++;
-        bool moved = false, all = true;
+        bool all = true;
         for (size_t k = head; k < p.tracks.size();) {
             const std::string path = p.tracks[k];
             if (!pathIndex.count(path)) { k++; continue; }
@@ -196,15 +260,13 @@ void App::automixListsTick() {
             p.tracks.insert(p.tracks.begin() + long(at), path);
             head++;
             k++;
-            moved = true;
         }
         if (all) {
             orderAutomixList(i, false);
             toast("“" + p.name + "” is ordered for Automix: all of its songs are analysed");
-        } else if (moved && time - automixSavedAt >= 5) {
-            automixSavedAt = time;
-            store.save();
         }
+        // (songs placed as they are analysed are saved with the next save or at the close, not every 5 s meanwhile: the order
+        // is made again from the analyses if Songate stops before)
     }
 }
 
@@ -326,7 +388,7 @@ void App::drawAutomixPicker() {
     const float ty = narrow ? Y + pad + headExtra + 46 : Y + pad + 62;
     {
         int picked = -1;
-        segmented(uid("ap.tab"), ix + iw, ty + 18, { "Tracks", "Albums", "Artists", "Genres", "Folders" }, ap.tab, &picked, 0, narrow ? iw : 0, narrow ? 2 : 0);   // (narrow: the column's width, as the text)
+        segmented(uid("ap.tab"), ix + iw, ty + 18, { "Songs", "Albums", "Artists", "Genres", "Folders" }, ap.tab, &picked, 0, narrow ? iw : 0, narrow ? 2 : 0);   // (narrow: the column's width, as the text)
         if (picked >= 0 && picked != ap.tab) ap.tab = picked;
         char b[64];
         snprintf(b, sizeof b, "%d song%s ticked", count, count == 1 ? "" : "s");

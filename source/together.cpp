@@ -19,6 +19,11 @@ namespace {
 constexpr size_t kMaxListName = 256;   // a Handoff's playlist name, in bytes
 constexpr size_t kMaxMembers = 1024;   // Members' names, in bytes
 
+bool hexText(const std::string& s) {
+    for (char c : s) if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    return !s.empty();
+}
+
 bool hexOr0(const std::string& s) {
     if (s == "-") return true;
     if (s.size() < 16 || s.size() > 64) return false;
@@ -223,7 +228,7 @@ bool unpack(const std::vector<uint8_t>& bytes, Message& out) {
         if (p[0] != "-") s.exact = p[0];
         if (p[1] != "-") s.loose = p[1];
         if (p.size() == 5) {   // a server's song
-            if (p[3] == "-" || !hexOr0(p[3]) || p[3].size() > 64 || p[4].empty() || p[4].size() % 2 || p[4].size() > kMaxSongId * 2 || !hexOr0(p[4])) return false;
+            if (p[3] == "-" || !hexOr0(p[3]) || p[3].size() > 64 || p[4].empty() || p[4].size() % 2 || p[4].size() > kMaxSongId * 2 || !hexText(p[4])) return false;   // (its id in hex, of any length: a Subsonic server's ids are short numbers)
             s.server = p[3];
             for (size_t k = 0; k < p[4].size(); k += 2) s.sid += char(std::stoi(p[4].substr(k, 2), nullptr, 16));
         }

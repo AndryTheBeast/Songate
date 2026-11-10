@@ -184,37 +184,49 @@ const std::vector<int>& App::sortedTracks() {
 
 /** Folder tile: the four covers of what is inside, its name, and how much music. */
 bool App::folderTile(Id id, int folder, float x, float y, float w, float cover) {
+    // the album tile's geometry (App::tile: 10 px padding, a 10 px-rounded cover), so a folder's tile is a genre's (the user,
+    // 2026-11-10: "genres and folders have different page sizes and cover")
     const FolderNode& fo = lib.folders[folder];
-    const float h = 8 + cover + 10 + 20 + 18 + 8;
+    const float h = 10 + cover + 8 + 20 + 2 + 18 + 10;
     const bool hit = ui.item(id, { x, y, w, h }, 14);
     const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
     if (hot) g.roundRect(x, y, w, h, 14, pal.text, ui.pressed(id) ? 0.11f : 0.065f);
-    const float cx = x + 8, cy = y + 8;
+    const float cx = x + 10, cy = y + 10;
     std::vector<int> inside;
     for (int i = fo.first; i < fo.last && i < fo.first + 400; i++) inside.push_back(i);
     if (inside.empty()) {
-        g.roundRect(cx, cy, cover, cover, 12, pal.surface2);
+        g.roundRect(cx, cy, cover, cover, 10, pal.surface2);
         g.icon(ICON_FOLDER, cx + cover / 2, cy + cover / 2, cover * 0.3f, pal.text3);
     } else {
         for (int k = 0; k < std::min<int>(int(inside.size()), 40); k++) meta.wantTags(inside[k]);
-        coverQuad(inside, cx, cy, cover, 12);
+        coverQuad(inside, cx, cy, cover, 10);
     }
     const int n = fo.last - fo.first;
-    double secs = 0;
-    for (int i = fo.first; i < fo.last; i++) secs += std::max(0.0, lib.tracks[i].duration);
+    // (its songs' lengths summed once for each index, not for every tile on every frame)
+    static std::unordered_map<uint64_t, double> lengths;
+    static unsigned lengthsFor = ~0u;
+    if (lengthsFor != indexGen) { lengthsFor = indexGen; lengths.clear(); }
+    const uint64_t lk = (uint64_t(uint32_t(fo.first)) << 32) | uint32_t(fo.last);
+    auto kept = lengths.find(lk);
+    if (kept == lengths.end()) {
+        double sum = 0;
+        for (int i = fo.first; i < fo.last; i++) sum += std::max(0.0, lib.tracks[i].duration);
+        kept = lengths.emplace(lk, sum).first;
+    }
+    const double secs = kept->second;
     std::string sub = std::to_string(n) + (n == 1 ? " track" : " tracks");
     if (secs > 0) {
         const int m = int(secs / 60);
         sub += " · " + (m >= 60 ? std::to_string(m / 60) + " h " + std::to_string(m % 60) + " min" : std::to_string(m) + " min");
     }
-    g.text(fo.name, { css::Base, Weight::SemiBold }, cx, cy + cover + 10, pal.text, 1, Align::Left, int(cover));
-    g.text(sub, { css::Sm }, cx, cy + cover + 32, pal.text3, 1, Align::Left, int(cover));
+    g.text(fo.name, { css::Base, Weight::SemiBold }, cx, cy + cover + 8, pal.text, 1, Align::Left, int(cover));
+    g.text(sub, { css::Sm }, cx, cy + cover + 30, pal.text3, 1, Align::Left, int(cover));
     return hit;
 }
 
 void App::drawAlbums(float x, float y, float w, float h) {
-    const int loose = int(std::count_if(lib.tracks.begin(), lib.tracks.end(), [](const Track& t) { return t.albumIdx < 0; }));
-    std::string sub = std::to_string(lib.albums.size()) + " albums · " + std::to_string(lib.tracks.size()) + " tracks" + serverCountNote();
+    const int loose = looseTracks();
+    std::string sub = std::to_string(lib.albums.size()) + " albums · " + std::to_string(lib.tracks.size()) + " tracks";
     if (loose && meta.taggedCount() >= int(lib.tracks.size())) sub += " · " + std::to_string(loose) + " without an album tag";
     drawAlbumGrid(x, y, w, h, viewHead("Library", "Albums", sub, x, y, w));
 }
@@ -235,26 +247,32 @@ float App::librarySourceW() {
     return 6 + g.measure("Local", f) + g.measure("Server", f) + 2 * 26;   // (as segmented's)
 }
 
-void App::libraryTabsRow(float x, float w, float y) {
-    if (w < kNarrowList) return;
-    // shown as the server's: Albums, Artists, Genres, Folders, Tracks (no Playlists: the sidebar has them; the user, 2026-11-06)
-    static const int order[5] = { 0, 3, 4, 2, 1 };
+float App::libraryTabsRow(float x, float w, float y) {
+    if (w < kNarrowList) return 0;
+    // shown as the server's: Songs, Albums, Artists, Genres, Folders (no Playlists: the sidebar has them; the user, 2026-11-06; Songs,
+    // first and so named as search's tab, 2026-11-09)
+    static const int order[5] = { 1, 0, 3, 4, 2 };
     int cur = 0;
     for (int i = 0; i < 5; i++) if (order[i] == store.libTab) cur = i;
     int picked = -1;
-    segmented(uid("lib.tab"), x + w - 28, y + 52, { "Albums", "Artists", "Genres", "Folders", "Tracks" }, cur, &picked);   // (Local | Server: the title bar's)
+    const float tw = segmented(uid("lib.tab"), x + w - 28, y + 52, { "Songs", "Albums", "Artists", "Genres", "Folders" }, cur, &picked);   // (Local | Server: the title bar's)
     if (picked >= 0 && picked != cur) { store.libTab = order[picked]; persistSoon(0.5f); }
+    return tw;
 }
 
 void App::drawLibrary(float x, float y, float w, float h) {
     if (store.libSource == 1 && subsonic.view().state == Subsonic::SignedIn) { drawServer(x, y, w, h, true); return; }
     // the views the sidebar also has (the user, 2026-11-06: "people can hide all sidebar items so the library tab should have all")
     if (store.libTab == 3 || store.libTab == 4) { drawArtists(x, y, w, h, store.libTab == 4, true); return; }
-    static const char* tabs[] = { "Albums", "Tracks", "Folders" };
+    static const char* tabs[] = { "Albums", "Songs", "Folders" };
     const int tab = store.libTab;
     std::string sub;
-    if (tab == 0) sub = std::to_string(lib.albums.size()) + " albums · " + std::to_string(lib.tracks.size()) + " tracks" + serverCountNote();
-    else if (tab == 1) {
+    if (tab == 0) {
+        sub = std::to_string(lib.albums.size()) + " albums · " + std::to_string(lib.tracks.size()) + " tracks";
+        // as the Albums page's own line
+        const int loose = looseTracks();
+        if (loose && meta.taggedCount() >= int(lib.tracks.size())) sub += " · " + std::to_string(loose) + " without an album tag";
+    } else if (tab == 1) {
         const std::vector<int>& list = sortedTracks();
         sub = fmtTotal(list);
         if (!tracksFilter.empty()) sub += " · matching “" + tracksFilter + "”";
@@ -276,7 +294,7 @@ void App::drawLibrary(float x, float y, float w, float h) {
     libraryTabsRow(x, w, y);
     const float top = cy + 22 + 14;
 
-    if (tab == 0) { drawAlbumGrid(x, y, w, h, top + 46); return; }
+    if (tab == 0) { drawAlbumGrid(x, y, w, h, top + 46, true); return; }   // (its sort and views on a row under the tabs, as Songs' tools)
     if (tab == 1) { drawTracksTab(x, y, w, h, top); return; }
     drawFoldersTab(x, y, w, h, top);
 }
@@ -340,14 +358,14 @@ void App::drawTracksTab(float x, float y, float w, float h, float top) {
 
     // the list, with the letter index down the right edge when the sort has letters
     const float lt = ty + 34 + 14;
-    const bool index = !tracksView.letters.empty() && store.viewTracks != int(ListMode::Grid);
-    const float lw = w - (index ? 26 : 0);
+    const bool index = !tracksView.letters.empty() && store.viewTracks != int(ListMode::Grid) && railOn(16u);
+    const float lw = w - (index ? kRailW : 0);
     ScrollArea& sa = area("lib.tracks");
     sa.view = { x, lt, w, y + h - lt };
     ui.pushArea(&sa);
     g.clip(x, lt, w, y + h - lt);
     if (list.empty()) {
-        g.textC(tracksFilter.empty() ? "No music found" : "No tracks match", { css::Lg, Weight::SemiBold }, x + w / 2, lt + 80, pal.text2, 1, Align::Center);
+        g.textC(tracksFilter.empty() ? "No music found" : "No songs match", { css::Lg, Weight::SemiBold }, x + w / 2, lt + 80, pal.text2, 1, Align::Center);
         sa.content = 0;
     } else {
         sa.content = drawTrackBody("trk", list, x, lt - sa.y, lw, lt, y + h - lt, ListMode(store.viewTracks), true,
@@ -355,22 +373,9 @@ void App::drawTracksTab(float x, float y, float w, float h, float top) {
     }
     g.unclip();
     ui.popArea();
-    if (index) {
-        // #-to-Z down the side, only the letters present; a tap or A glides there
-        const auto& L = tracksView.letters;
-        const float top2 = lt + 8, avail = y + h - top2 - 8;
-        const float step = std::min(22.f, avail / L.size());
+    if (index) {   // #-to-Z down the side, only the letters present (App::letterRail)
         const std::vector<ListEntry> layout = listLayout(list, lw, ListMode(store.viewTracks));
-        for (int i = 0; i < int(L.size()); i++) {
-            const float ly = top2 + i * step;
-            const Id id = uid("trk.az", L[i].first);
-            if (ui.item(id, { x + w - 24, ly, 22, step }, 6)) {
-                sa.target = listRowY(layout, L[i].second);
-                sa.clamp();
-            }
-            const bool hot = ui.focused(id) && ui.showFocusRing();
-            g.textC(std::string(1, L[i].first), { css::Xs, Weight::SemiBold }, x + w - 13, ly + step / 2, hot ? pal.text : pal.text2, 1, Align::Center);
-        }
+        letterRail("trk", x + w - 24, lt, y + h - lt, tracksView.letters, sa, [&](int row) { return listRowY(layout, row); });
     }
 }
 
@@ -383,11 +388,11 @@ void App::drawFoldersTab(float x, float y, float w, float h, float top) {
     const FolderNode& node = lib.folders[root];
     bool clicked = false;
     float bx = x + 28;
-    const std::vector<int> all = lib.tracksUnder(root);
+    // (everything is gathered at the press, not every frame)
     bx += button(uid("lfo.play"), ICON_PLAY, "Play", bx, top, true, &clicked, false, false, DefaultFocus) + 8;
-    if (clicked && !all.empty()) playTracks(all, 0, "Music");
+    if (clicked) if (const std::vector<int> all = lib.tracksUnder(root); !all.empty()) playTracks(all, 0, "Music");
     bx += button(uid("lfo.shuffle"), ICON_SHUFFLE, "Shuffle", bx, top, false, &clicked) + 8;
-    if (clicked && !all.empty()) playTracks(all, 0, "Music", true);
+    if (clicked) if (const std::vector<int> all = lib.tracksUnder(root); !all.empty()) playTracks(all, 0, "Music", true);
     // the music folder itself as one playlist, as on its Folders page
     const bool narrow = w < kNarrowList;
     auto more = [&](const char* key, const char* icon, const std::string& label, float at, bool on = false) {
@@ -419,11 +424,24 @@ void App::drawFoldersTab(float x, float y, float w, float h, float top) {
     if (m != (store.viewFolders == 0 ? 2 : store.viewFolders)) store.viewFolders = m;
 
     const float lt = top + 34 + 14;
+    const bool rail = railOn(8u) && !node.children.empty();
+    const float lw = rail ? w - kRailW : w;
     ScrollArea& sa = area("lib.folders");
     sa.view = { x, lt, w, y + h - lt };
     ui.pushArea(&sa);
     g.clip(x, lt, w, y + h - lt);
-    sa.content = drawSubfolders("lfo.tile", node, x, lt - sa.y, w, lt, y + h - lt, ListMode(m)) + 24;
+    sa.content = drawSubfolders("lfo.tile", node, x, lt - sa.y, lw, lt, y + h - lt, ListMode(m)) + 24;
     g.unclip();
     ui.popArea();
+    if (rail) {   // the sub-folders' names
+        const auto& letters = railLettersFor("lfo", std::to_string(libEpoch) + ":" + std::to_string(root) + ":" + std::to_string(node.children.size()), [&] {
+            std::vector<std::string> names;
+            for (int c : node.children) names.push_back(lib.folders[size_t(c)].name);
+            return names;
+        });
+        const bool tiles = m == int(ListMode::Grid) || m == int(ListMode::Albums);
+        const int cols = std::max(2, int((lw - 36) / 200));
+        const float tw = (lw - 36) / cols, th = 10 + (tw - 20) + 8 + 20 + 2 + 18 + 10, rowH = m == int(ListMode::List) ? 48 : 60;
+        letterRail("lfo", x + w - 24, lt, y + h - lt, letters, sa, [&](int row) { return tiles ? float(row / cols) * th : float(row) * rowH; });
+    }
 }

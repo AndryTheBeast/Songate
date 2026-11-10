@@ -18,9 +18,14 @@ namespace {
 constexpr float RowH = 40;   // .vrow is 36 px on the PC; a little taller for fingers
 }
 
+// Search's filter tabs (the user, 2026-11-09): the library's switch's names, Genres between Artists and Playlists, the lyrics last
+static const std::vector<std::string> kSearchTabs = { "Songs", "Albums", "Artists", "Genres", "Playlists", "Lyrics" };
+
 void App::drawTrackList(float x, float y, float w, float h) {
     const View v = route.view;
+    searchSync();   // (a Search page's indices follow the index and the playlists)
     if (v == View::Queue && srvq_.on) { drawServerQueue(x, y, w, h); return; }   // the server's tracks playing: their own queue
+    if (v == View::Search && store.libSource == 1 && subsonic.view().state == Subsonic::SignedIn) { drawServerSearch(x, y, w, h); return; }   // the server chosen: its lists
     const std::vector<int> tracks = listTracks(v, route.ref, route.query);
 
     std::string kick = "Playlist", title, sub, playName;
@@ -86,6 +91,25 @@ void App::drawTrackList(float x, float y, float w, float h) {
     const ListMode mode = mixable && ListMode(store.viewPlaylist) == ListMode::Grid ? ListMode::Covers : ListMode(store.viewPlaylist);
     // the joins always shown: no Mix button to hide them (the user, 2026-10-30: it read as turning the mixing off)
     const float joinGap = mixable && mode != ListMode::Grid ? 46 : 0;
+    // Search: its filter tabs (the user, 2026-11-09): Songs, Albums, Artists, Genres,
+    // Playlists, Lyrics, each as that list's own page shows it; upright (a phone) the page has its own pills, and both groups
+    const bool tabs = v == View::Search && !narrow;
+    const int stab = tabs ? searchTab_ : 0;
+    const bool playRow = !tabs || stab == 0 || stab == 5;   // Play and Shuffle: the songs found, or those whose lyrics have the words
+    float segW = 0, viewsW = 6 + 38.f * 4;
+    if (tabs) {
+        const Font sf{ css::Sm, Weight::SemiBold };
+        segW = 6;
+        for (const auto& t : kSearchTabs) segW += g.measure(t, sf) + 26;   // (as segmented's)
+        viewsW = 6 + 38.f * 4;   // (the filter keeps the four views' room on every tab)
+        if (stab != 0) {
+            auto cnt = [](size_t n, const char* one, const char* many) { return std::to_string(n) + " " + (n == 1 ? one : many); };
+            const LyricIndex::Progress lp0 = lyrIndex.progress();
+            sub = stab == 1 ? cnt(searchAlbums_.size(), "album", "albums") : stab == 2 ? cnt(searchArtists_.size(), "artist", "artists")
+                : stab == 3 ? cnt(searchGenres_.size(), "genre", "genres") : stab == 4 ? cnt(searchPlaylists_.size(), "playlist", "playlists")
+                : cnt(searchLyrics_.size(), "song with the words in its lyrics", "songs with the words in their lyrics") + (lp0.read < lp0.total ? " so far" : "");
+        }
+    }
 
     // .pl-head: cover, kicker, title, sub, actions
     const float cx = x + 28, cyTop = oy + 18;
@@ -116,8 +140,8 @@ void App::drawTrackList(float x, float y, float w, float h) {
     {
         const Font bf{ css::Sm, Weight::SemiBold };
         auto bw = [&](const char* label) { return 16 + 24 + g.measure(label, bf) + 16 + 8.f; };
-        float need = bw("Play") + (noShuffle ? 0 : bw("Shuffle"));
-        if (v == View::Queue) need += bw("Current track") + bw("Clear");
+        float need = playRow ? bw("Play") + (noShuffle ? 0 : bw("Shuffle")) : 0.f;
+        if (v == View::Queue) need += bw("Current song") + bw("Clear");
         else if (v == View::Search) need += bw("New search");
         else if (ownPage && !store.playlists[ref].folder()) need += bw("Delete") + bw("Rename") + (store.playlists[ref].automix ? bw("Order again") : 0);
         else if (ref >= 0) need += bw("Open folder") + bw("Delete");
@@ -128,7 +152,7 @@ void App::drawTrackList(float x, float y, float w, float h) {
             (ref < 0 || (ref < int(store.playlists.size()) && store.playlists[size_t(ref)].own() && !store.playlists[size_t(ref)].automix)))
             need += bw("Send to Navidrome");
         if (ownPage) need += 34 + 8;
-        compact = narrow || tx + need > x + w - 28 - (6 + 38 * 4) - 16;
+        compact = narrow || tx + need > x + w - 28 - viewsW - 16 - (tabs ? segW + 12 : 0);
     }
     // A secondary action: labelled, or (compact) round with its icon only
     auto action = [&](const char* key, const char* icon, const char* label, bool toggled = false, bool danger = false) {
@@ -147,19 +171,27 @@ void App::drawTrackList(float x, float y, float w, float h) {
         bx += 34 + 8;
         return c;
     };
-    bx += button(uid("pl.play"), ICON_PLAY, "Play", bx, by, true, &clicked, false, false, DefaultFocus) + 8;
-    if (clicked && !tracks.empty()) { if (v == View::Queue) playAt(0); else playTracks(tracks, 0, playName); }
-    if (!noShuffle) {
-        bx += button(uid("pl.shuffle"), ICON_SHUFFLE, "Shuffle", bx, by, false, &clicked) + 8;
-        if (clicked && !tracks.empty()) playTracks(tracks, 0, playName, true);
+    std::vector<int> playList = tracks;
+    if (tabs && stab == 5) {   // Lyrics: the songs found by their lyrics, in the hits' order
+        playList.clear();
+        for (const auto& hh : searchLyrics_) if (auto ix = pathIndex.find(hh.path); ix != pathIndex.end()) playList.push_back(ix->second);
+        playName = "Lyrics: " + route.query;
+    }
+    if (playRow) {
+        bx += button(uid("pl.play"), ICON_PLAY, "Play", bx, by, true, &clicked, false, false, DefaultFocus) + 8;
+        if (clicked && !playList.empty()) { if (v == View::Queue) playAt(0); else playTracks(playList, 0, playName); }
+        if (!noShuffle) {
+            bx += button(uid("pl.shuffle"), ICON_SHUFFLE, "Shuffle", bx, by, false, &clicked) + 8;
+            if (clicked && !playList.empty()) playTracks(playList, 0, playName, true);
+        }
     }
     if (v == View::Queue) {
-        clicked = action("pl.jump", ICON_DISC, "Current track");
+        clicked = action("pl.jump", ICON_DISC, "Current song");
         const int cur = q.pos;   // the list is in play order
         if (clicked && cur >= 0) {
             // Gatefold's "Current track": the list glides there (the row need not exist yet, it is
             // only drawn once on screen) and the focus lands on it when it arrives.
-            sa.target = headH + listRowY(listLayout(tracks, w, mode), cur) - (h - RowH) / 2;
+            sa.target = headH + listRowY(listLayout(tracks, w, mode, joinGap), cur) - (h - RowH) / 2;
             sa.clamp();
             listJump = uid("pl.r", cur);
         }
@@ -174,7 +206,7 @@ void App::drawTrackList(float x, float y, float w, float h) {
     } else if (v == View::List && ref >= 0 && ref < int(store.playlists.size()) && !store.playlists[ref].folder()) {
         if (action("pl.rename", ICON_TAG, "Rename")) renamePlaylist(ref);
         // an Automix playlist: ordered again for the best joins (also after it was moved by hand: lit then)
-        if (store.playlists[ref].automix && action("pl.order", ICON_LINK, "Order again", store.playlists[ref].manual)) orderAutomixList(ref, true);
+        if (store.playlists[ref].automix && action("pl.order", ICON_REFRESH, "Order again", store.playlists[ref].manual)) orderAutomixList(ref, true);
     } else if (ref >= 0 && ref < int(store.playlists.size())) {
         if (action("pl.folder", ICON_FOLDER, "Open folder")) navigate(View::Folders, lib.folderByPath(store.playlists[ref].path));
     }
@@ -208,7 +240,7 @@ void App::drawTrackList(float x, float y, float w, float h) {
         const bool hot = ui.pressed(iid) || (ui.focused(iid) && ui.showFocusRing());
         g.roundRect(bx, by, 34, 34, 17, pal.accent, hot ? 0.24f : 0.14f);
         g.roundStroke(bx, by, 34, 34, 17, 1, pal.accent, 0.45f);
-        g.icon(playlistIcon(ref), bx + 17, by + 17, 17, pal.accentInk);
+        g.icon(playlistIcon(ref), bx + 17, by + 17, 18, pal.accentInk);
         bx += 34 + 8;
     }
 
@@ -223,8 +255,8 @@ void App::drawTrackList(float x, float y, float w, float h) {
             const std::string count = std::to_string(tracks.size()) + (tracks.size() == 1 ? " track" : " tracks");
             confirm(playlistIcon(ref), "Delete", p.name, std::string(playlistKind(ref)) + " · " + count,
                     "Delete this playlist?",
-                    smart ? "It leaves the sidebar. Your tracks, their play counts and Liked are not touched."
-                          : "It leaves the sidebar, and its order is lost. The tracks stay " GF_ON_CARD " and in your library.",
+                    smart ? "It leaves the sidebar. Your songs, their play counts and Liked are not touched."
+                          : "It leaves the sidebar, and its order is lost. The songs stay " GF_ON_CARD " and in your library.",
                     "Delete", [this, ref, name = p.name] {
                         if (ref < 0 || ref >= int(store.playlists.size()) || store.playlists[ref].name != name) return;
                         erasePlaylist(ref);
@@ -235,35 +267,58 @@ void App::drawTrackList(float x, float y, float w, float h) {
 
     // the four views, right of the actions (.pl-modes); Search upright keeps none, as it was (the user, 2026-11-06: "The android port
     // changed search again")
+    float segRight = x + w - 28;   // Search's filter tabs go left of the views
     if (narrow && v == View::Search) plViewsOwnLine_ = false;
-    else {
+    else if (tabs && stab == 5) plViewsOwnLine_ = false;   // Lyrics: the hits, no views
+    else if (tabs && stab != 0) {   // the tab's list in its page's views: Albums', Artists', Genres', Playlists' (three: By album would be the tiles again)
+        int& field = stab == 1 ? store.viewAlbums : stab == 2 ? store.viewArtists : stab == 3 ? store.viewGenres : store.viewPlaylists;
+        int m = field == 0 ? 2 : field;
+        segRight -= viewSwitch("pl.view", x + w - 28, by + 17, m, 1u) + 12;
+        if (m != field) { field = m; persistSoon(0.3f); }
+        plViewsOwnLine_ = false;
+    } else {
         int m = int(mode);
         const float vw = 6 + 38.f * (mixable ? 3 : 4);
         plViewsOwnLine_ = narrow && bx + vw > x + w - 28;
-        viewSwitch("pl.view", x + w - 28, plViewsOwnLine_ ? by + 34 + 10 + 18 : by + 17, m, mixable ? 1u << int(ListMode::Grid) : 0u);
+        segRight -= viewSwitch("pl.view", x + w - 28, plViewsOwnLine_ ? by + 34 + 10 + 18 : by + 17, m, mixable ? 1u << int(ListMode::Grid) : 0u) + 12;
         if (m != int(mode)) store.viewPlaylist = m;
+    }
+    if (tabs) {   // Songs · Albums · Artists · Genres · Playlists · Lyrics, in one place whatever the tab's views (none, three or four)
+        segRight = x + w - 28 - (6 + 38.f * 4) - 12;
+        int picked = -1;
+        segmented(uid("pl.stab"), segRight, by + 17, kSearchTabs, stab, &picked, 0, 0, 0, 34);
+        if (picked >= 0 && picked != stab) { searchTab_ = picked; sa.target = sa.y = 0; }
     }
 
     // the tracks (no panel behind them: the background shows through, as everywhere here)
     // Search: two groups when the lyrics found songs or are still being read (the user, 2026-11-05: "A: two groups"): Songs, then
     // In the lyrics (drawLyricHits)
     const LyricIndex::Progress lp = lyrIndex.progress();
-    const bool lyricGroup = v == View::Search && (!searchLyrics_.empty() || lp.read < lp.total);
+    const bool lyricGroup = v == View::Search && !tabs && (!searchLyrics_.empty() || lp.read < lp.total);   // (upright: both groups on one page, as before the tabs)
     float ly = oy + headH;
     if (lyricGroup && !tracks.empty()) { kicker("Songs", x + 28, ly + 12, pal.text3); ly += 30; }
     // Liked: the server's starred tracks after yours (signed in); with none of yours, they alone (no "Tracks you like appear here")
     const bool srvGroup = v == View::List && route.ref < 0 && !srvStarred_.empty() && subsonic.view().state == Subsonic::SignedIn;
+    if (tabs && stab != 0) {   // a tab's own list: its page's tiles or rows, or the lyrics' hits (drawSearchTab)
+        g.clip(x, y, w, h);
+        const float bodyH = drawSearchTab(x, ly, w, y, h);
+        sa.content = headH + bodyH;
+        g.unclip();
+        ui.popArea();
+        return;
+    }
     if (tracks.empty() && !lyricGroup && !srvGroup) {
         listColumns(x, ly, w, mode == ListMode::Grid ? ListMode::List : mode, false);
-        const char* msg = v == View::Search ? "No tracks match" : v == View::Queue ? "Play something from the library or a folder"
-                        : ref < 0 ? "Tracks you like appear here"
+        const char* msg = v == View::Search ? "No songs match" : v == View::Queue ? "Play something from the library or a folder"
+                        : ref < 0 ? "Songs you like appear here"
                         : ref < int(store.playlists.size()) && store.playlists[ref].smart() ? "Nothing matches yet"
-                                                                                                         : "This playlist has no tracks";
+                                                                                                         : "This playlist has no songs";
         g.textC(msg, { css::Lg, Weight::SemiBold }, x + w / 2, ly + 90, pal.text2, 1, Align::Center);
     }
     g.clip(x, y, w, h);
     bodyGrab = v == View::Queue && grab.kind == Grab::Queue && !grab.upNext ? grab.pos
              : v == View::List && grab.kind == Grab::List && grab.ref == route.ref ? grab.pos : -1;
+    // (no letter rail here: a playlist has its own order, an Automix one above all; the user, 2026-11-10)
     float bodyH = tracks.empty() && srvGroup ? -18.f : drawTrackBody("pl", tracks, x, ly, w, y, h, mode, false, [&](int i) {
         if (v == View::Queue) playAt(i);   // i is the position in play order
         else playTracks(tracks, i, playName);
@@ -294,7 +349,7 @@ void App::drawTrackList(float x, float y, float w, float h) {
     }
     bodyGrab = -1;
     // Mix: after each track (but the last) a line down to the next, and on it a pill saying the two are joined by Automix
-    // (Spotify's "Auto"). Only a sign for 2.0 (the user, 2026-10-29: "all in on Auto"; editing a join later perhaps): it
+    // (a streaming service's "Auto"). Only a sign for 2.0 (the user, 2026-10-29: "all in on Auto"; editing a join later perhaps): it
     // opens nothing and takes no focus. (The join editor, view_join.cpp, stays in the code, out of reach.)
     if (joinGap > 0) {
         const std::vector<ListEntry> layout = listLayout(tracks, w, mode, joinGap);
@@ -415,7 +470,7 @@ void App::confirmRemoveFolderPlaylist(int ref, int count) {
     if (ref < 0 || ref >= int(store.playlists.size())) return;
     const FolderPlaylist& p = store.playlists[ref];
     confirm(ICON_FOLDER, "Delete", p.name, "Folder playlist · " + std::to_string(count) + (count == 1 ? " track" : " tracks"),
-            "Delete this playlist?", "It leaves the sidebar. The folder and its tracks stay " GF_ON_CARD "; Folders can add it again.",
+            "Delete this playlist?", "It leaves the sidebar. The folder and its songs stay " GF_ON_CARD "; Folders can add it again.",
             "Delete", [this, ref, name = p.name, path = p.path] {
                 if (ref >= int(store.playlists.size()) || store.playlists[ref].name != name || store.playlists[ref].path != path) return;
                 erasePlaylist(ref);
@@ -536,11 +591,11 @@ void App::drawFolders(float x, float y, float w, float h) {
     float bx = x + 28;
     bool clicked = false;
     const std::string name = isRoot ? "Music" : node.name;
-    const std::vector<int> all = lib.tracksUnder(f);
+    // (everything below it is gathered at the press: every frame, it walked the folder's whole tree)
     bx += button(uid("fo.play"), ICON_PLAY, "Play", bx, cy, true, &clicked, false, false, DefaultFocus) + 8;
-    if (clicked && !all.empty()) playTracks(all, 0, name);
+    if (clicked) if (const std::vector<int> all = lib.tracksUnder(f); !all.empty()) playTracks(all, 0, name);
     bx += button(uid("fo.shuffle"), ICON_SHUFFLE, "Shuffle", bx, cy, false, &clicked) + 8;
-    if (clicked && !all.empty()) playTracks(all, 0, name, true);
+    if (clicked) if (const std::vector<int> all = lib.tracksUnder(f); !all.empty()) playTracks(all, 0, name, true);
     const bool narrow = w < kNarrowList;
     // narrow (a phone upright): named buttons as everywhere else, a line further down where they do not fit (two round "+"
     // looked the same and said nothing: the user's test, 2026-11-04)
@@ -577,19 +632,46 @@ void App::drawFolders(float x, float y, float w, float h) {
     cy += 34 + 16;
 
     g.clip(x, y, w, h);
-    cy += drawSubfolders("fo.dir", node, x, cy, w, y, h, mode);
+    // the #-to-Z rail (Settings › Appearance › Letter rail): the sub-folders' names, or, in a folder of songs alone, the songs' titles
+    // in their order (the user, 2026-11-09: "inside a folder"; not on tiles)
+    const bool railDirs = railOn(8u) && !node.children.empty();
+    const bool railSongs = railOn(8u) && node.children.empty() && !node.tracks.empty() && mode != ListMode::Grid;
+    const bool rail = railDirs || railSongs;
+    const float lw = rail ? w - kRailW : w, listTop = cy;
+    cy += drawSubfolders("fo.dir", node, x, cy, lw, y, h, mode);
 
     // Tracks directly in this folder, in the chosen view
     float bodyH = 0;
     if (!node.tracks.empty()) {
         cy += 16;
-        bodyH = drawTrackBody("fo", node.tracks, x, cy, w, y, h, mode, false, [&](int i) { playTracks(node.tracks, i, name); });
+        bodyH = drawTrackBody("fo", node.tracks, x, cy, lw, y, h, mode, false, [&](int i) { playTracks(node.tracks, i, name); });
     } else if (node.children.empty()) {
         g.textC("This folder is empty", { css::Lg, Weight::SemiBold }, x + w / 2, cy + 60, pal.text2, 1, Align::Center);
     }
     sa.content = cy - oy + bodyH + 24;
     g.unclip();
     ui.popArea();
+    if (railDirs) {
+        const auto& letters = railLettersFor("fo", std::to_string(libEpoch) + ":" + std::to_string(f) + ":" + std::to_string(node.children.size()), [&] {
+            std::vector<std::string> names;
+            for (int c : node.children) names.push_back(lib.folders[size_t(c)].name);
+            return names;
+        });
+        const bool tiles = mode == ListMode::Grid || mode == ListMode::Albums;
+        const int cols = std::max(2, int((lw - 36) / 200));
+        const float tw = (lw - 36) / cols, th = 10 + (tw - 20) + 8 + 20 + 2 + 18 + 10, rowH = mode == ListMode::List ? 48 : 60;
+        const float railTop = y + (listTop - oy);
+        letterRail("fo", x + w - 24, railTop, y + h - railTop, letters, sa, [&](int row) { return (listTop - oy) + (tiles ? float(row / cols) * th : float(row) * rowH); });
+    } else if (railSongs) {   // the songs begin 16 under where the sub-folders would
+        const auto& letters = railLettersFor("fo.songs", std::to_string(indexGen) + ":" + std::to_string(f) + ":" + std::to_string(node.tracks.size()), [&] {
+            std::vector<std::string> names;
+            for (int t : node.tracks) names.push_back(lib.tracks[size_t(t)].title);
+            return names;
+        });
+        const std::vector<ListEntry> layout = listLayout(node.tracks, lw, mode);
+        const float top = listTop + 16 - oy, railTop = y + top;
+        letterRail("fo.songs", x + w - 24, railTop, y + h - railTop, letters, sa, [&](int row) { return top + listRowY(layout, row); });
+    }
 }
 
 /** A folder's sub-folders in the chosen view (Folders, and Library → Folders): tiles with four covers in the big
@@ -598,20 +680,20 @@ float App::drawSubfolders(const char* idp, const FolderNode& node, float x, floa
     const int nSub = int(node.children.size());
     if (!nSub) return 0;
     if (mode == ListMode::Grid || mode == ListMode::Albums) {
-        // .tile with the folder's four covers (Gatefold 1.4.1's Folders)
-        const float inner = w - 32;
+        // .tile with the folder's four covers (Gatefold 1.4.1's Folders), laid out as the album grid is (view_grid.cpp gridFor)
+        const float inner = w - 36;
         const int cols = std::max(2, int(inner / 200));
-        const float tw = inner / cols, cover = tw - 16, th = 8 + cover + 10 + 20 + 18 + 16;
+        const float tw = inner / cols, cover = tw - 20, th = 10 + cover + 8 + 20 + 2 + 18 + 10;
         const int rows = (nSub + cols - 1) / cols;
         for (int r = 0; r < rows; r++) {
             const float ry = cy + r * th;
             if (ry + th < y - 40 || ry > y + h + 40) continue;
             for (int c = 0; c < cols && r * cols + c < nSub; c++) {
                 const int ch = node.children[r * cols + c];
-                if (folderTile(uid(idp, ch), ch, x + 16 + c * tw, ry, tw, cover)) navigate(View::Folders, ch);
+                if (folderTile(uid(idp, ch), ch, x + 18 + c * tw, ry, tw, cover)) navigate(View::Folders, ch);
             }
         }
-        return rows * th + 8;
+        return rows * th;
     }
     // rows: a cover (or the folder icon), the name, what is inside, a chevron
     const float rowH = mode == ListMode::List ? 48 : 60, cov = rowH - 4 - 16;
@@ -661,7 +743,7 @@ void App::genrePlaylistButton(const std::string& genre, float& bx, float by) {
         const FolderPlaylist& p = store.playlists[size_t(pl)];
         const int count = int(smartTracks(p.path).size());
         confirm(ICON_TAG, "Delete", p.name, "Genre playlist · " + std::to_string(count) + (count == 1 ? " track" : " tracks"), "Delete this playlist?",
-                "It leaves the sidebar. The genre and its tracks stay " GF_ON_CARD "; Genres can add it again.", "Delete", [this, pl, name = p.name, spec] {
+                "It leaves the sidebar. The genre and its songs stay " GF_ON_CARD "; Genres can add it again.", "Delete", [this, pl, name = p.name, spec] {
                     if (pl >= int(store.playlists.size()) || store.playlists[size_t(pl)].path != spec) return;
                     erasePlaylist(pl);
                     toast("Deleted the playlist “" + name + "”");
@@ -682,7 +764,7 @@ void App::addGenresAsPlaylists() {
     const int n = int(add.size());
     const std::string count = std::to_string(n) + (n == 1 ? " genre" : " genres");
     confirm(ICON_LIST, "Genres", "Your genres", count + " not in playlists yet", "Add " + count + " as playlists?",
-            "Each becomes a playlist in the sidebar, named after its genre, with its tracks; it follows the genre as your library changes. "
+            "Each becomes a playlist in the sidebar, named after its genre, with its songs; it follows the genre as your library changes. "
             "Genres already in playlists stay as they are.",
             "Add all", [this] {
                 int added = 0;
@@ -709,7 +791,7 @@ void App::addSubfoldersAsPlaylists(int f) {
     const std::string count = std::to_string(n) + (n == 1 ? " folder" : " folders");
     confirm(ICON_LIST, "Folders", lib.folders[f].parent < 0 ? "Music" : lib.folders[f].name, count + " not in playlists yet",
             "Add " + count + " as playlists?",
-            "Each becomes a playlist in the sidebar, named after its folder, with the tracks in it and in the folders inside it. "
+            "Each becomes a playlist in the sidebar, named after its folder, with the songs in it and in the folders inside it. "
             "Folders already in playlists stay as they are.",
             "Add all", [this, f, path = lib.folders[f].path] {
                 if (f >= int(lib.folders.size()) || lib.folders[f].path != path) return;   // rescanned meanwhile
@@ -959,7 +1041,7 @@ float App::drawLyricHits(float x, float top, float w, float clipY, float clipH) 
             k = e;
         }
         g.text("”", f, px, y + 46, pal.text2);
-        g.textC(fmtTime(tr.duration), { css::Sm }, x + w - 42, y + rh / 2 - 2, pal.text3, 1, Align::Right);
+        g.textNumC(fmtTime(tr.duration), { css::Sm }, x + w - 42, y + rh / 2 - 2, pal.text3, 1, Align::Right);
         y += rh;
     }
     return y + 24 - top;

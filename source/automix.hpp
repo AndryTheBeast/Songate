@@ -4,7 +4,7 @@
  * only for now; the background player keeps its plain crossfade. Written to move there later: plain C++,
  * nothing allocated while playing.
  *
- * A join (Join) is a preset or a set of choices, as in Spotify's transition editor: the volume curve, an EQ
+ * A join (Join) is a preset or a set of choices, as in a streaming service's transition editor: the volume curve, an EQ
  * swap (bass, or bass, mids and treble each at its own moment), a filter sweep, an echo out, a loop of the
  * outgoing track's last bars, beatmatching, and a length. plan() turns it and the two analyses into times;
  * Auto lets plan() choose:
@@ -92,7 +92,7 @@ struct Plan {
     bool off = false;   // the join is Off: the tracks play one after the other, as without Automix
     bool onBars = false;   // on the beat and on the bars: this track's beat 1 meets the next one's
     bool structured = false;   // planned from the two tracks' sections (v2 step 2)
-    bool drop = false;         // planned on the next track's drop (v3: Spotify's joins); off the beat: a bridge between tempos
+    bool drop = false;         // planned on the next track's drop (v3: a streaming service's joins); off the beat: a bridge between tempos
     bool cut = false;          // between different tempos: a clean cut on a phrase of both (v3)
     double bassCut = 0;        // Eq::BassBridge, Volume::Drop: where this track's bass is cut (0..1 of the fade; the crossover brings the next one's)
     double cross = 0.5;        // the crossover (0..1 of the fade): where the volumes meet and the EQ swaps
@@ -104,7 +104,7 @@ struct Plan {
     double lpFrom = 250;       // Filter::LowPassIn: where the incoming low-pass starts (Hz), opening to 20 kHz
     float outPow = 2;          // Volume::Drop: the outgoing exit's shape (a power of the cosine)
     double cutFade = 0.03;     // Volume::Cut: the cut's own crossfade (s)
-    // the gate (training, round 4: two Spotify mixes the user sent, 2026-10-29): one voice chopped on the beat (on the beat
+    // the gate (training, round 4: two streaming-service mixes the user sent, 2026-10-29): one voice chopped on the beat (on the beat
     // only); 0 none (V1.0.0), 1 the incoming one in stabs until the crossover, 2 the outgoing one a stab a bar, then high-passed out
     int gate = 0;
     // … its numbers (round 5: the user, "it could be higher in volume"): the stabs' least level, how much the outgoing voice
@@ -194,7 +194,13 @@ Plan plan(const mixan::Info* a, double dur, const mixan::Info* b, double fallbac
 ModelFile builtinFile(Model m);
 
 double joinScore(const mixan::Info* a, const mixan::Info* b, Model m = Latest);
-std::vector<int> order(const std::vector<const mixan::Info*>& tracks, int first = -1, Model m = Latest);
+/** An order being worked out elsewhere than the frame: how far it is (done of total starts; total 0 until known) and a way to
+ *  end it early (stop: order returns empty). Watching changes nothing of the order found. */
+struct OrderWatch {
+    std::atomic<int> done{ 0 }, total{ 0 };
+    std::atomic<bool> stop{ false };
+};
+std::vector<int> order(const std::vector<const mixan::Info*>& tracks, int first = -1, Model m = Latest, OrderWatch* watch = nullptr);
 
 /** This track's speed `tau` seconds (output) after its stretch began; and how far into the next track (s, from the plan's
  *  offset) it is when this one has played `tau` seconds of its own past the join's start. */

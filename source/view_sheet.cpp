@@ -381,10 +381,19 @@ void App::saveTagUndo() {
 }
 
 long long App::tagUndoBytes() const {
+    // (Settings shows it on every frame of every page: the card is asked only when the kept covers changed)
+    static size_t forCount = ~size_t(0);
+    static uint32_t forNames = 0;
+    static long long kept = 0;
+    uint32_t h = 2166136261u;
+    for (const auto& [p, u] : tagUndo_) for (unsigned char c : u.coverFile) h = (h ^ c) * 16777619u;
+    if (forCount == tagUndo_.size() && forNames == h) return kept;
+    forCount = tagUndo_.size();
+    forNames = h;
     long long n = 0;
     struct stat st;
     for (const auto& [p, u] : tagUndo_) if (!u.coverFile.empty() && stat(u.coverFile.c_str(), &st) == 0) n += st.st_size;
-    return n;
+    return kept = n;
 }
 
 // ------------------------------------------------------------------ delete
@@ -571,10 +580,10 @@ void App::drawSheet() {
             }
             if (pl.automix) {   // an Automix playlist: this track first (pinned), or Gatefold's choice again
                 const bool pinned = pl.pin == tr.path;
-                items.push_back({ ICON_LINK, pinned ? "Let Songate choose the first track" : "Play this first", "", [this, ref = route.ref, pinned, path = tr.path] {
+                items.push_back({ ICON_LINK, pinned ? "Let Songate choose the first song" : "Play this first", "", [this, ref = route.ref, pinned, path = tr.path] {
                                       store.playlists[ref].pin = pinned ? "" : path;
                                       orderAutomixList(ref, false);
-                                      toast(pinned ? "Songate chooses the first track again" : "Plays first; the rest ordered after it");
+                                      toast(pinned ? "Songate chooses the first song again" : "Plays first; the rest ordered after it");
                                       closeSheet();
                                   } });
             }
@@ -708,7 +717,7 @@ void App::drawSheet() {
         info("Album artist", tr.albumArtist);
         info("Genre", tr.genre);
         info("Year", tr.date);
-        info("Track", tr.trackNo ? std::to_string(tr.trackNo) : "");
+        info("Song", tr.trackNo ? std::to_string(tr.trackNo) : "");
         std::string fmt = in.codec;
         if (in.sampleRate) fmt += " · " + std::to_string(in.sampleRate / 1000) + "." + std::to_string(in.sampleRate % 1000 / 100) + " kHz";
         if (in.bitsPerSample && in.codec != "MP3") fmt += " · " + std::to_string(in.bitsPerSample) + "-bit";
@@ -769,7 +778,7 @@ void App::drawSheet() {
     // ---- card
     float bodyH = 8;
     for (const auto& it : items) bodyH += it.h;
-    if (page == Sheet::Cover && tr.albumIdx >= 0) bodyH += 22 + 44;   // the folder line and Use for (below)
+    if (page == Sheet::Cover) bodyH += 22 + (tr.albumIdx >= 0 ? 44 : 0);   // the folder line, and Use for where there is an album (below)
     if (page == Sheet::Delete) bodyH = 110;
     if (page == Sheet::Tags) bodyH += 34;
     bodyH = std::min(bodyH + 8, maxBody);
@@ -784,7 +793,7 @@ void App::drawSheet() {
     if (page == Sheet::Cover && sheet.preview) g.image(sheet.preview, hx, hy, 64, 64, 10);
     else coverBox(t, hx, hy, 64, 10);
     g.roundStroke(hx, hy, 64, 64, 10, 1, pal.text, 0.09f);
-    static const char* kickers[] = { "", "Track", "Edit tags", "Choose a cover", "Delete", "Details", "Add to a playlist", "Mood" };
+    static const char* kickers[] = { "", "Song", "Edit tags", "Choose a cover", "Delete", "Details", "Add to a playlist", "Mood" };
     kicker(kickers[int(page)], hx + 64 + 16, hy + 8, pal.accentInk);
     const int textW = int(w - 64 - 16 - 24 - 24 - 40);
     // the mood page: Not <its mood>, on the close button's line, to its left (the user, 2026-11-05: no cross in it, and clear of the
@@ -825,14 +834,14 @@ void App::drawSheet() {
         ry += 22;
         if (tr.albumIdx >= 0) {
             int pick = -1;
-            segmented(uid("sh.scope"), x + w - 24, ry + 14, { "This track", "The whole album" }, sheet.wholeAlbum ? 1 : 0, &pick);
+            segmented(uid("sh.scope"), x + w - 24, ry + 14, { "This song", "The whole album" }, sheet.wholeAlbum ? 1 : 0, &pick);
             g.textC("Use for", { css::Base, Weight::SemiBold }, x + 24, ry + 14, pal.text2);
             if (pick >= 0) sheet.wholeAlbum = pick == 1;
             ry += 44;   // the control is 36 tall round ry + 14: 30 put the first row's focus ring against it
         }
     }
     if (page == Sheet::Delete) {
-        g.text("Delete this track from " GF_THE_CARD "?", { css::Lg, Weight::Bold }, x + 24, ry + 8, pal.text, 1, Align::Left, int(w - 48));
+        g.text("Delete this song from " GF_THE_CARD "?", { css::Lg, Weight::Bold }, x + 24, ry + 8, pal.text, 1, Align::Left, int(w - 48));
         float ty = ry + 40;
         for (const auto& l : g.wrap("The file is removed for good, and it leaves the library, the playlist and Liked. " + tr.path, { css::Sm },
                                     int(w - 48), 3)) {
@@ -882,7 +891,7 @@ void App::drawSheet() {
                 if (SDL_Surface* s = loadImage(bytes)) {
                     if (SDL_Surface* small = Gfx::shrink(s, 128)) {
                         sheet.preview = SDL_CreateTextureFromSurface(renderer_, small);
-                        if (sheet.preview) SDL_SetTextureScaleMode(sheet.preview, SDL_ScaleModeLinear);
+                        if (sheet.preview) { SDL_SetTextureScaleMode(sheet.preview, SDL_ScaleModeLinear); SDL_SetTextureBlendMode(sheet.preview, SDL_BLENDMODE_BLEND); }
                         SDL_FreeSurface(small);
                     }
                     SDL_FreeSurface(s);

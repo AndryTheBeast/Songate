@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "cores.hpp"
+#include "safefile.hpp"
 #include "library.hpp"
 #include "metadata.hpp"
 
@@ -283,6 +284,7 @@ bool ThumbWorker::has(const std::string& track) {
 
 void ThumbWorker::loadMap() {
     map_.clear();   // started again after Settings → Storage and reset cleared them: what the file says, nothing more
+    safefile::recover(dir_ + "/map.tsv");
     if (FILE* f = fopen((dir_ + "/map.tsv").c_str(), "rb")) {
         char line[128];
         while (fgets(line, sizeof line, f)) {
@@ -305,13 +307,11 @@ void ThumbWorker::saveMap() {
         for (const auto& [k, f] : map_) out += hex(k) + "\t" + f + "\n";
     }
     // Next to the old one and renamed over it, so the overlay never reads half a map.
-    const std::string tmp = dir_ + "/map.tmp", dst = dir_ + "/map.tsv";
+    const std::string dst = dir_ + "/map.tsv", tmp = dst + ".tmp";
     if (FILE* f = fopen(tmp.c_str(), "wb")) {
-        const bool ok = fwrite(out.data(), 1, out.size(), f) == out.size();
-        fclose(f);
-        if (ok) {
-            remove(dst.c_str());
-            rename(tmp.c_str(), dst.c_str());
-        }
+        bool ok = fwrite(out.data(), 1, out.size(), f) == out.size();
+        ok = fclose(f) == 0 && ok;
+        if (ok) safefile::swapIn(tmp, dst);
+        else remove(tmp.c_str());
     }
 }

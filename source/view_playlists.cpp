@@ -80,7 +80,8 @@ void App::drawPlaylists(float x, float y, float w, float h, bool inLibrary) {
     float cy = oy + 18 + 8;
     if (inLibrary) libraryTabsRow(x, w, oy);   // (Library › Playlists: its switch in the head, scrolling with it)
     // which playlists: Library's Local | Server says (Apart); yours are only shown here, never changed by it
-    const bool server = serverPlaylistsShown(), mixed = serverPlaylistsMixed();
+    const bool server = serverPlaylistsShown();
+    // (no letter rail: this page is in your order, Move sets it; the user, 2026-11-10)
     if (server) {
         const std::vector<Subsonic::Playlist>* pls = serverPlaylistList();
         std::string kind = subsonic.view().kind;
@@ -106,6 +107,7 @@ void App::drawPlaylists(float x, float y, float w, float h, bool inLibrary) {
         store.viewPlaylists = m;
     }
     cy += 34 + 16;
+    const float listTop = cy;
 
     g.clip(x, y, w, h);
     if (server) {
@@ -206,12 +208,6 @@ void App::drawPlaylists(float x, float y, float w, float h, bool inLibrary) {
         cy += (n + 1) * rowH;
     }
     sa.content = cy - oy + 24;
-    if (mixed) {   // Mixed in: the server's playlists after yours, under its name
-        std::string kind = subsonic.view().kind;
-        kind = kind.empty() ? std::string("your server") : std::string(1, char(toupper(uint8_t(kind[0])))) + kind.substr(1);
-        kicker("On " + kind, x + 28, cy + 14, pal.text3);
-        drawServerPlaylists(x, y, w, h, cy + 34, oy, mode);   // (it sets the page's height)
-    }
     g.unclip();
     ui.popArea();
 }

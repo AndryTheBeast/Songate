@@ -25,6 +25,7 @@
 
 #include "connect.hpp"
 #include "cores.hpp"
+#include "safefile.hpp"
 #include "filecopy.hpp"
 #include "identity.hpp"
 #include "levels.hpp"
@@ -60,8 +61,7 @@ bool writeAll(const std::string& p, const std::string& data) {
     if (!f) return false;
     const bool ok = fwrite(data.data(), 1, data.size(), f) == data.size();
     if (fclose(f) != 0 || !ok) { remove(tmp.c_str()); return false; }
-    remove(p.c_str());
-    return rename(tmp.c_str(), p.c_str()) == 0;
+    return safefile::swapIn(tmp, p);
 }
 
 template <typename F>
@@ -189,7 +189,13 @@ void Syncer::fail(const std::string& why) {
     view_.error = why;
 }
 
+bool Syncer::met(const std::string& peerId) {
+    std::lock_guard<std::mutex> g(m_);
+    return std::find(met_.begin(), met_.end(), peerId) != met_.end();
+}
+
 void Syncer::load() {
+    safefile::recoverDir(dir_);   // a write cut between its renames
     book_.load(readAll(dir_ + "/ledger.tsv"));
     ids_.clear();
     eachLine(readAll(dir_ + "/sync-lists.tsv"), [&](const std::string& l) {
@@ -409,11 +415,13 @@ void Syncer::work(Job job) {
             answered_ = accepted_ = false;
             view_.state = State::Asking;
             view_.summary = changes.summary();
+            connect_->send(job.peerId, message('Q', ""));   // "asking here": the other device says it waits for this one, and waits longer
             wake_.wait(g, [&] { return quit_ || answered_; });
             if (quit_) return;
             if (!accepted_) {
                 view_.state = State::Failed;
                 view_.error = "Not synced: nothing changed";
+                connect_->send(job.peerId, message('G', "0"));   // (it need not wait for this one's share)
                 return;
             }
             view_.state = State::Backing;
@@ -434,24 +442,29 @@ void Syncer::work(Job job) {
     book_ = std::move(merged);
     ids_ = std::move(ids);
     seen_ = std::move(seen);
-    if (first) met_.push_back(job.peerId);
+    if (first) { std::lock_guard<std::mutex> g(m_); met_.push_back(job.peerId); }
     saveBook();
     saveState();
     if (addOnly) remove((dir_ + "/sync-addonly.txt").c_str());
     // both, or neither: one sharing alone would wait for an answer that never comes
     connect_->send(job.peerId, message('G', job.share ? "1" : "0"));
     bool theyWill = false, heard = false;
+    double until = seconds() + 10;
     // their answer, wherever it waits: kept by the trade if it came early, else as it arrives; the rest kept for later
     auto takeG = [&](std::vector<std::vector<uint8_t>>& from) {
         std::vector<std::vector<uint8_t>> got;
         got.swap(from);
         for (auto& m : got) {
             if (!heard && !m.empty() && char(m[0]) == 'G') { heard = true; theyWill = m.size() > 1 && m[1] == '1'; }
+            else if (!m.empty() && char(m[0]) == 'Q') {   // its user is being asked about its first sync: two minutes for the answer
+                until = seconds() + 120;
+                std::lock_guard<std::mutex> g(m_);
+                view_.peerAsks = true;
+            }
             else later_.push_back(std::move(m));
         }
     };
     takeG(later_);
-    const double until = seconds() + 10;
     while (!heard && seconds() < until && connect_->linkedTo(job.peerId)) {
         {
             std::lock_guard<std::mutex> g(m_);
@@ -459,6 +472,10 @@ void Syncer::work(Job job) {
         }
         if (!pump(0.2)) continue;
         takeG(inbox_);
+    }
+    {
+        std::lock_guard<std::mutex> g(m_);
+        view_.peerAsks = false;
     }
     if (job.share && theyWill) {
         {

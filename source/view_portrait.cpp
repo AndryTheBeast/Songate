@@ -333,7 +333,7 @@ void App::drawPortraitMock(int which) {
         bx += button(uid("pm.play"), ICON_PLAY, "Play", bx, 152, true, &c) + 8;
         button(uid("pm.shuffle"), ICON_SHUFFLE, "Shuffle", bx, 152, false, &c);
         struct Row { const char* icon; const char* name; int count; };
-        const Row rows[6] = { { ICON_LIST, "Tracks", int(lib.tracks.size()) }, { ICON_V_COVERS, "Albums", int(lib.albums.size()) },
+        const Row rows[6] = { { ICON_LIST, "Songs", int(lib.tracks.size()) }, { ICON_V_COVERS, "Albums", int(lib.albums.size()) },
                               { ICON_MIC, "Artists", int(artists.size()) }, { ICON_TAG, "Genres", int(genres.size()) },
                               { ICON_FOLDER, "Folders", int(lib.folders.size()) }, { ICON_HEART, "Liked", int(store.liked.size()) } };
         float y = 210;
@@ -372,7 +372,7 @@ void App::drawPortraitMock(int which) {
         std::string qtext = has ? in.artist.substr(0, in.artist.find_first_of(" ,&")) : "a";
         if (qtext.empty()) qtext = "a";
         searchField(64, qtext, searchHint());
-        static const char* pills[6] = { "All", "Tracks", "Albums", "Artists", "Folders", "Lyrics" };
+        static const char* pills[6] = { "All", "Songs", "Albums", "Artists", "Folders", "Lyrics" };
         float px = kPad;
         for (int i = 0; i < 6; i++) {
             const float pw = g.measure(pills[i], { css::Sm, Weight::SemiBold }) + 28;
@@ -401,7 +401,7 @@ void App::drawPortraitMock(int which) {
             g.textC(lib.tracks[found[0]].artist, { css::Md, Weight::SemiBold }, kPad + s + 14, y + s / 2, pal.text);
         }
         y += 72;
-        kicker("Tracks", kPad, y, pal.text3);
+        kicker("Songs", kPad, y, pal.text3);
         y += 10;
         for (int t : found) {
             if (y + 64 > H - kNavH - kMiniH - 16) break;

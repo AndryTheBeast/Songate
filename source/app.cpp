@@ -45,7 +45,7 @@ struct Repeat {
 };
 Repeat rUp, rDown, rLeft, rRight;
 
-std::mt19937 rng{ 0x6a7e };
+std::mt19937 rng{ 0x6a7e };   // seeded again in App::init: a fixed seed shuffled a list the same way at every launch
 
 }  // namespace
 
@@ -148,8 +148,9 @@ bool App::init() {
     store.load();
 #endif
     lyrnet::setFolder(store.path("lyrics"));   // lyrics found online, kept in Songate's own folder (before the loader reads any)
-    lyrIndex.start(store.path("lyrics-index.tsv"));
-    loadTagUndo();   // what files held before Songate wrote into them (Restore the file's original tags)   // search by lyrics: every song's lyrics, read once on a worker
+    rng.seed(uint32_t(SDL_GetPerformanceCounter()) ^ uint32_t(std::time(nullptr)));
+    lyrIndex.start(store.path("lyrics-index.tsv"));   // search by lyrics: every song's lyrics, read once on a worker
+    loadTagUndo();   // what files held before Songate wrote into them (Restore the file's original tags)
     moodLabelsLoad();   // your mood choices (a small file, read once here)
 #ifndef GF_WINDOWED
     if (!folder.log.empty()) logLine("Settings folder: " + folder.log);
@@ -365,6 +366,13 @@ void App::rescan(const std::vector<std::string>* given, Library* built) {
     const std::string current = now.track >= 0 ? lib.tracks[now.track].path : std::string();
     std::vector<std::string> queued;
     for (int t : q.tracks) queued.push_back(lib.tracks[t].path);
+    // ... and the queues set aside (a session's, a handoff's Undo): they come back, or are saved, after the scan
+    auto pathsOf = [&](const Queue& k) {
+        std::vector<std::string> v;
+        for (int t : k.tracks) v.push_back(t >= 0 && t < int(lib.tracks.size()) ? lib.tracks[size_t(t)].path : std::string());
+        return v;
+    };
+    const std::vector<std::string> togQueued = pathsOf(tog.savedQueue), handQueued = pathsOf(handoffOld);
 
 #ifdef GF_DEV
     Uint64 rsAt = SDL_GetPerformanceCounter();
@@ -466,6 +474,26 @@ void App::rescan(const std::vector<std::string>* given, Library* built) {
     for (int i = 0; i < int(q.order.size()); i++) q.order[i] = i;
     q.pos = -1;
     for (int i = 0; i < int(q.tracks.size()); i++) if (q.tracks[i] == now.track) q.pos = i;
+    auto remap = [&](Queue& k, const std::vector<std::string>& paths) {   // its order and place kept, what is gone dropped
+        std::vector<int> keep, tracks, order;
+        for (const auto& p : paths) {
+            const int t = p.empty() ? -1 : find(p);
+            keep.push_back(t < 0 ? -1 : int(tracks.size()));
+            if (t >= 0) tracks.push_back(t);
+        }
+        const int cur = k.pos >= 0 && k.pos < int(k.order.size()) ? k.order[size_t(k.pos)] : -1;
+        int pos = -1;
+        for (int o : k.order) {
+            if (o < 0 || o >= int(keep.size()) || keep[size_t(o)] < 0) continue;
+            if (o == cur) pos = int(order.size());
+            order.push_back(keep[size_t(o)]);
+        }
+        k.tracks = std::move(tracks);
+        k.order = std::move(order);
+        k.pos = pos;
+    };
+    remap(tog.savedQueue, togQueued);
+    remap(handoffOld, handQueued);
     // What the background player was sent is remembered by track index, and indexes mean other files now (a rename in
     // Files kept the same indexes for new paths, so the player kept the old ones): it is sent again, by path
     bgs.tracks.clear();
@@ -504,6 +532,7 @@ void App::shutdown() {
     sdMark("lyrnet");
     lyrIndex.stop();   // (its question may wait on the network: ended first)
     tagJobs.stop();    // (a write under way finishes whole first)
+    mixOrderEnd();     // (an order being worked out is dropped: asked again when its playlist next needs it)
     if (pocketLocked_) pocketLock(false);   // (never left dark)
     sdMark("lyrindex");
     if (tog.stage != Tog::Off) togetherLeave();
@@ -697,7 +726,7 @@ void App::saveLevels() {
     }
 }
 
-/** Writes the settings and the session (sessionOnly: just the session, the 20 s save while playing). The files are written on a thread. */
+/** Writes the settings and the session (sessionOnly: just the session). The files are written on a thread. */
 void App::persistNow(bool sessionOnly) {
     if (!sessionOnly) persistAt = 0;
     if (!ready_) return;
@@ -711,6 +740,7 @@ void App::persistNow(bool sessionOnly) {
         if (pick.field) *pick.field = live;
     }
     saveStats();
+    if (lyricNudgeUnsaved_) { lyricNudgeUnsaved_ = false; store.saveLyricNudges(); }
     if (!store.resume) return;
     Session s;
     const Queue& kept = tog.queueTaken ? tog.savedQueue : q;   // a session's list is never saved
@@ -723,7 +753,29 @@ void App::persistNow(bool sessionOnly) {
     const bool same = kept.pos >= 0 && kept.pos < int(kept.order.size()) && now.track == kept.tracks[size_t(kept.order[size_t(kept.pos)])];
     s.position = player.loaded() && !tog.queueTaken && !now.loading && same && !srvq_.on ? player.position() : 0;
     store.saveSession(s);
-    if (const std::string sq = serverQueueText(); !sq.empty()) store.writeFile("server-queue.tsv", sq);   // the server's, beside it
+    // the server's queue, beside it: to the card only when its list changed, or at the close (the position is RAM's until then);
+    // written at every save it wore the card for nothing (the user, 2026-11-09: "writing the queue every single second is crazy")
+    {
+        static std::string lastList;
+        static bool lastKnown = false;
+        if (!lastKnown) {   // what the card holds from the last run: the launch's first save wrote the same list again
+            lastKnown = true;
+            std::string have;
+            if (FILE* f = fopen(store.path("server-queue.tsv").c_str(), "rb")) {
+                char buf[8192];
+                size_t n;
+                while ((n = fread(buf, 1, sizeof buf, f)) > 0) have.append(buf, n);
+                fclose(f);
+            }
+            const size_t nl = have.find('\n');
+            lastList = nl == std::string::npos ? have : have.substr(nl + 1);
+        }
+        const std::string sq = serverQueueText();
+        const size_t nlAt = sq.find('\n');
+        const std::string list = nlAt == std::string::npos ? sq : sq.substr(nlAt + 1);
+        if (sq.empty()) { if (!lastList.empty()) { lastList.clear(); store.removeFile("server-queue.tsv"); } }
+        else if (list != lastList || !running) { lastList = list; store.writeFile("server-queue.tsv", sq); }
+    }
 }
 
 /** Puts back the queue of the last run, paused where it was. Paths that are gone are dropped. */
@@ -1166,7 +1218,7 @@ void App::frame() {
 /** + (or a long touch, held): the menu of the row under focus. A long touch on something without one (a button)
  *  does nothing, without the toasts or Now playing's own track. */
 void App::plusMenu(bool held) {
-    if (route.view == View::Playlists && !canvas && (serverPlaylistsShown() || (serverPlaylistsMixed() && hoverSrvPlShown_ >= 0))) {   // a server playlist: its menu
+    if (route.view == View::Playlists && !canvas && serverPlaylistsShown()) {   // a server playlist: its menu
         if (hoverSrvPlShown_ >= 0 && hoverSrvPlShown_ < int(srvPlaylists_.size())) openServerPlaylistMenu(srvPlaylists_[size_t(hoverSrvPlShown_)]);
         else if (!held) toast("Select a playlist, then " GF_MENU_WORDS);
     } else if (route.view == View::Playlists && !canvas) {   // the Playlists page: the playlist's menu (Move, Icon, Rename)
@@ -1185,7 +1237,7 @@ void App::plusMenu(bool held) {
         }
         const int t = hoverTrackShown >= 0 ? hoverTrackShown : !held && (route.view == View::Now || canvas) && !extOn ? now.track : -1;
         if (t >= 0) openTrackMenu(t, hoverTrackShown >= 0 ? hoverQueueShown : -1, hoverUpNextShown);
-        else if (!held) toast("Select a track, then " GF_MENU_WORDS);
+        else if (!held) toast("Select a song, then " GF_MENU_WORDS);
     }
 }
 
@@ -1281,7 +1333,7 @@ void App::input() {
     if (rightClick) down |= plat::BtnPlus;
     systemCommands();
 #endif
-    const uint64_t held = plat::padHeld();
+    uint64_t held = plat::padHeld();
     // Any input brings the Canvas controls back.
 #ifdef GF_WINDOWED
     const bool woken = touched || mouseMoved || wheel != 0;   // the mouse counts too: the Canvas's controls and a dimmed screen come back
@@ -1294,7 +1346,9 @@ void App::input() {
         const plat::Stick l0 = plat::stick(0), r0 = plat::stick(1);
         const bool any = down || held || woken || std::abs(l0.x) + std::abs(l0.y) > 9000 || std::abs(r0.x) + std::abs(r0.y) > 9000;
         idleFor = any ? 0 : idleFor + dt;
-        if (any && dimmed) { setDimmed(false); down = 0; }
+        static bool wakeHeld = false;   // ... nor while it stays held: it stepped the D-pad on its repeat
+        if (any && dimmed) { setDimmed(false); down = 0; wakeHeld = held != 0; }
+        if (wakeHeld) { if (held) held = 0; else wakeHeld = false; }
     }
 
     // + opens the track menu for the focused track (or the one playing); HOME closes the app, so + no longer exits.
@@ -1358,14 +1412,18 @@ void App::input() {
     // bring Move back (the user, 2026-11-04: "only change to the sort mode by touch when touch is detected")
     if (touched) byTouch_ = true;
     if (down || stickMoved || mouseClicked) byTouch_ = false;
+    if (touched) touchUi_ = true;   // (the back button: the stick alone does not take it away; a stick at rest still reports a little)
+    if (down || mouseClicked) touchUi_ = false;
     // A picked-up queue row (the track menu's Move): A or B puts it down, as with a slider; a
     // finger, the stick's pointer, a click or leaving the page put it down too. Not the mouse moving: on the PC the
     // slightest move put it down as soon as it was picked up (the user, 2026-11-03); the wheel moves it instead
     if (grab.pos >= 0) {
-        const View gv = grab.kind == Grab::Playlists ? View::Playlists : grab.kind == Grab::Tabs || grab.kind == Grab::Battery ? View::Settings
+        const View gv = grab.kind == Grab::Playlists || grab.kind == Grab::SrvPlaylists ? View::Playlists
+                      : grab.kind == Grab::Tabs || grab.kind == Grab::Battery ? View::Settings
                       : grab.kind == Grab::List ? View::List : grab.kind == Grab::SrvList ? View::Server : grab.upNext ? View::Now : View::Queue;
         if ((down & (plat::BtnA | plat::BtnB)) || touched || stickMoved || mouseClicked || modal || canvas || route.view != gv ||
-            (grab.kind == Grab::List && route.ref != grab.ref) || (grab.kind == Grab::SrvList && route.ref != 5)) {
+            (grab.kind == Grab::List && route.ref != grab.ref) || (grab.kind == Grab::SrvList && route.ref != 5) ||
+            (grab.kind == Grab::SrvPlaylists && !serverPlaylistsShown())) {
             grabDrop();
             down &= ~uint64_t(plat::BtnA | plat::BtnB);
         } else if (wheel != 0) {
@@ -1532,8 +1590,10 @@ void App::update() {
     }
     UPD_MARK("next");
     if (player.remote() && time - bgListsAt > 5) { bgListsAt = time; writeBgPlaylists(); }
-    // Crossfade, in Gatefold's own player: over the last seconds of the track, into the next one.
-    if (tog.stage == Tog::Off && !player.remote() && store.crossfade > 0 && !automixQueue() && !xfadeChecked && isPlaying() && now.track >= 0) {
+    // Crossfade, in Gatefold's own player: over the last seconds of the track, into the next one. Never while a stream plays
+    // (extOn: the server's, AirPlay's): the player's position is the stream's, and your own track, kept for the
+    // switch back, is not what is playing (a stream's first song ended in a join into your queue, 2026-11-09)
+    if (tog.stage == Tog::Off && !player.remote() && !extOn && store.crossfade > 0 && !automixQueue() && !xfadeChecked && isPlaying() && now.track >= 0) {
         const double dur = now.info.duration > 0 ? now.info.duration : lib.tracks[now.track].duration;
         const double left = dur - player.position();
         if (dur > 0 && left <= store.crossfade && left > 0.25) {
@@ -1553,6 +1613,7 @@ void App::update() {
     updateAutomix();
     UPD_MARK("updateAutomix");
     automixListsTick();
+    mixOrderTick();
     moodTick();
     supportTick();
     UPD_MARK("automixLists");
@@ -1634,7 +1695,7 @@ void App::update() {
         persistSoon(0.5f);
     }
     UPD_MARK("palette+spectrum");
-    if (isPlaying() && time - sessionAt > 20) persistNow(true);
+    // (the session was saved every 20 s while playing, for its position; close-only now: the user, 2026-11-09, the card over a position)
     if (persistAt > 0 && time >= persistAt) persistNow();
     UPD_MARK("persist");
 
@@ -1660,7 +1721,7 @@ void App::update() {
     // during it (the user, 2026-10-28: reading a big library took minutes, and the app was in use by then), and the
     // covers question waits for it to end
     if (tourPending && tourStep < 0 && coverNotice != 1 && appCoverNotice != 1 && lyrNotice != 1 && sheet.page == Sheet::Closed && sleepPromptAt <= 0 &&
-        (!lib.tracks.empty() || (store.serverPlace == 1 && !serverAlbums_.empty()))) {   // (or the server's music alone, once its albums came)
+        !lib.tracks.empty()) {
         tourPending = false;
         startTour();
     }
@@ -1930,7 +1991,7 @@ void App::playAt(int orderPos, double fade, const automix::Plan* mix) {
         // Unplayable file: say so, skip it, but never loop forever over a list of broken files.
         toast("Can't play “" + baseName(lib.tracks[q.tracks[q.order[q.pos]]].path) + "”");
         if (++q.failed < int(q.order.size())) next(false);
-        else toast("None of these tracks could be played");
+        else toast("None of these songs could be played");
     } else {
         q.failed = 0;
     }
@@ -2017,7 +2078,7 @@ void App::endJoinShow(double over) {
  * its exact sample. A track not analysed yet gets a plain fade.
  */
 void App::updateAutomix() {
-    if (tog.stage != Tog::Off || player.remote() || !automixQueue() || xfadeChecked || !isPlaying() || now.track < 0) return;
+    if (tog.stage != Tog::Off || player.remote() || extOn || !automixQueue() || xfadeChecked || !isPlaying() || now.track < 0) return;   // (extOn: a stream plays, see the crossfade above)
     const Level* la = levels.find(lib.tracks[now.track].path);
     double dur = now.info.duration > 0 ? now.info.duration : lib.tracks[now.track].duration;
     if (dur <= 0 && la && la->mix.seconds > 0) dur = la->mix.seconds;   // no length in its tags: the analysis measured it
@@ -2605,7 +2666,7 @@ void App::holdOrderForAutomix(bool rebuild) {
 }
 
 void App::cycleOrder() {
-    static const char* names[] = { "Default order", "Repeat playlist", "Repeat track", "Shuffle" };
+    static const char* names[] = { "Default order", "Repeat playlist", "Repeat song", "Shuffle" };
     if (togetherOn() && !tog.host) {   // the starter's order decides what comes next on both: asked of it, shown when it says so
         if (togetherLocked() || tog.linkLost) return;
         together::Message m;
@@ -2618,9 +2679,8 @@ void App::cycleOrder() {
     }
     Order next = Order((int(store.order) + 1) % 4);
     if (next == Order::Shuffle && automixQueue()) next = Order::Default;   // an Automix playlist: no Shuffle (holdOrderForAutomix)
-    setOrder(next);
+    setOrder(next);   // (it saves)
     toast(names[int(store.order)]);
-    store.save();
 }
 
 void App::setOrder(Order o) {
@@ -2767,7 +2827,7 @@ void App::grabStep(int d) {
         const auto a = at(grab.pos), b = at(to);
         if (a != p.tracks.end() && b != p.tracks.end()) std::iter_swap(a, b);
         if (p.automix) p.manual = true;   // moved by hand: it keeps this order until Order again
-        store.save();
+        grabMoved_ = true;   // saved when it is put down (grabDrop): held, the D-pad's repeat wrote the card 13 times a second
         grab.pos = to;
         ui.focus(uid("pl.r", to));
         ui.setPadMode(true);
@@ -2776,6 +2836,12 @@ void App::grabStep(int d) {
     if (grab.kind == Grab::Playlists) {   // the Playlists page: the playlist itself moves (its rows keep their ids)
         const int to = std::clamp(grab.pos + d, 0, int(store.playlists.size()) - 1);
         if (to != grab.pos) { movePlaylist(grab.pos, to); grab.pos = to; }
+        ui.setPadMode(true);
+        return;
+    }
+    if (grab.kind == Grab::SrvPlaylists) {   // … the server's: Songate's own order of them (moveServerPlaylist)
+        const int to = std::clamp(grab.pos + d, 0, int(srvPlaylists_.size()) - 1);
+        if (to != grab.pos) { moveServerPlaylist(grab.pos, to); grab.pos = to; }
         ui.setPadMode(true);
         return;
     }
@@ -2791,9 +2857,29 @@ void App::grabStep(int d) {
         ui.setPadMode(true);
         return;
     }
-    if (grab.kind == Grab::Tabs) {        // Settings → Appearance → Sidebar: a tab
-        const int to = std::clamp(grab.pos + d, 0, int(store.tabOrder.size()) - 1);
-        if (to != grab.pos) { std::swap(store.tabOrder[size_t(grab.pos)], store.tabOrder[size_t(to)]); grab.pos = to; persistSoon(0.3f); }
+    if (grab.kind == Grab::Tabs) {        // Settings → Appearance → Sidebar: a tab, one row along the list as SHOWN (a tab with
+        // no row is stepped over, so one press is one visible step: the user, 2026-11-09)
+        const std::vector<int> shown = sidebarTabsShown();
+        const auto at = std::find(shown.begin(), shown.end(), grab.pos);
+        const int n = int(store.tabOrder.size());
+        if (at == shown.end()) {   // (not listed: the plain step)
+            const int to = std::clamp(grab.pos + d, 0, n - 1);
+            if (to != grab.pos) { std::swap(store.tabOrder[size_t(grab.pos)], store.tabOrder[size_t(to)]); grab.pos = to; persistSoon(0.3f); }
+        } else {
+            const int k = int(at - shown.begin()), k2 = std::clamp(k + d, 0, int(shown.size()) - 1);
+            if (k2 != k) {
+                // the held tab leaves its place and lands just past the neighbour shown (after it going down, before it going up)
+                const int from = grab.pos, target = shown[size_t(k2)];
+                const int tab = store.tabOrder[size_t(from)];
+                store.tabOrder.erase(store.tabOrder.begin() + from);
+                int to = target - (from < target ? 1 : 0);
+                if (d > 0) to += 1;
+                to = std::clamp(to, 0, int(store.tabOrder.size()));
+                store.tabOrder.insert(store.tabOrder.begin() + to, tab);
+                grab.pos = to;
+                persistSoon(0.3f);
+            }
+        }
         ui.setPadMode(true);
         return;
     }
@@ -2820,6 +2906,7 @@ void App::grabDrop() {
         }
         srvGrabPl_.clear();
     }
+    if (grabMoved_) { grabMoved_ = false; persistSoon(0.3f); }   // a playlist's song put down in its new place
     grab = Grab{};
 }
 
@@ -3021,8 +3108,15 @@ bool App::bgSyncQueue(bool reload) {
 void App::bgUpdate() {
     if (!player.remote()) return;
     if (!bg.poll(time)) {
+        // as where the queue is too big for it: the song it held is loaded here, at its place
+        const bool had = now.track >= 0 && q.pos >= 0 && q.pos < int(q.order.size()), playing = isPlaying();
+        const double at = player.loaded() ? player.position() : 0;
         player.setRemote(nullptr);
         toast("The background player stopped, so Songate plays on its own");
+        if (had) {
+            loadTrack(q.tracks[q.order[q.pos]], !playing);
+            if (at > 1) player.seek(at);
+        }
         return;
     }
     if (!bgSyncQueue()) return;   // too big for it: Gatefold plays by itself now
@@ -3059,7 +3153,7 @@ void App::bgUpdate() {
     }
     if (s.errorGen != bgs.errorGen) {
         bgs.errorGen = s.errorGen;
-        toast("A track could not be played, so it was skipped");
+        toast("A song could not be played, so it was skipped");
     }
     // Stop after current: whichever side changed it last wins (the player clears it when it stops).
     if (s.stopAfter != bgs.seenStopAfter) { bgs.seenStopAfter = bgs.stopAfter = stopAfterCurrent = s.stopAfter; }
@@ -3117,7 +3211,7 @@ void App::addToPlaylist(int playlist, int track) {
     store.save();
     if (p.automix && !p.manual) {   // an Automix playlist: ordered again with it
         orderAutomixList(playlist, false);
-        toast("Added to “" + p.name + "”, ordered for Automix");
+        toast("Added to “" + p.name + "”: ordering it for Automix");
         return;
     }
     toast("Added to “" + p.name + "”");
@@ -3249,7 +3343,7 @@ void App::exportPlaylist(const std::string& dir) {
     struct stat st;
     if (stat(file.c_str(), &st) != 0) { write(); return; }
     confirm(nullptr, "Export", safe + ".m3u8", "Already in " + dir, "Replace the playlist file that is there?",
-            "The file there is overwritten with this playlist's tracks.", "Replace", write);
+            "The file there is overwritten with this playlist's songs.", "Replace", write);
 }
 
 void App::confirm(const char* icon, const std::string& kicker, const std::string& title, const std::string& sub, const std::string& question,
@@ -3322,7 +3416,8 @@ void App::loadTrackCoverAgain() {
 void App::applyLoaded(TrackLoader::Result& r) {
     if (r.gen != loadGen || (now.track < 0 && !extOn)) { r.release(); return; }   // a track that is no longer the one playing
     now.loading = false;
-    const Track& t = lib.tracks[now.track];
+    static const Track none;   // an outside source playing: no track of the library's
+    const Track& t = now.track >= 0 ? lib.tracks[size_t(now.track)] : none;
     if (r.readInfo) {
         TrackInfo& in = r.info;
         if (in.title.empty()) in.title = t.title;
@@ -3409,7 +3504,7 @@ void App::applyCover(TrackLoader::Result& r) {
     if (firstCover_) { firstCover_ = false; launchAt("cover"); }
     if (r.cover) {
         now.cover = SDL_CreateTextureFromSurface(renderer_, r.cover);
-        if (now.cover) SDL_SetTextureScaleMode(now.cover, SDL_ScaleModeLinear);
+        if (now.cover) { SDL_SetTextureScaleMode(now.cover, SDL_ScaleModeLinear); SDL_SetTextureBlendMode(now.cover, SDL_BLENDMODE_BLEND); }   // (blended: its rounded edge is drawn through alpha)
         // The overlay's copy, made again for the track shown: a cover set in the track menu changes it.
         if (player.remote() && now.track >= 0 && !extOn) thumbFor(now.track, true);
     }
@@ -3484,7 +3579,8 @@ void App::nudgeLyrics(float by) {
     const float v = by == 0 ? 0 : std::clamp(std::round((lyricNudge() + by) * 10) / 10, -10.f, 10.f);
     if (std::fabs(v) < 0.05f) store.lyricNudge.erase(path);
     else store.lyricNudge[path] = v;
-    store.saveLyricNudges();
+    lyricNudgeUnsaved_ = true;   // written with the next save (persistNow), not at every 0.1 s step
+    persistSoon(3.f);
 }
 
 void App::seekLyric(int line) {
@@ -3510,24 +3606,70 @@ void App::navigate(View v, int ref, const std::string& query, bool push) {
     }
     route = { v, ref, query, 0 };
     if (v == View::Search) {
-        searchResults.clear();
-        std::vector<std::string> words;
-        std::string w;
-        for (char c : lower(query) + " ") {
-            if (c == ' ') { if (!w.empty()) words.push_back(w); w.clear(); }
-            else w += c;
-        }
-        for (int i = 0; i < int(lib.tracks.size()); i++) {
-            const Track& t = lib.tracks[i];
-            const std::string hay = lower(t.title + " " + t.artist + " " + t.album + " " + t.genre + " " + t.path);
-            if (std::all_of(words.begin(), words.end(), [&](const std::string& x) { return hay.find(x) != std::string::npos; }))
-                searchResults.push_back(i);
-        }
+        runSearch();
         area("search").target = area("search").y = 0;
         searchLyrics_.clear();
         lyrIndex.search(query, ++searchTicket_);   // In the lyrics: the worker's answer fills it (App::update)
     }
     ui.focusDefault();
+}
+
+/** What route.query matches, as indices into the lists as they are now (searchSync keeps them so). */
+void App::runSearch() {
+    searchFor_ = route.query;
+    searchGen_ = indexGen;
+    searchLists_ = searchListsStamp();
+    searchResults.clear();
+    const std::vector<std::string> words = searchWords(route.query);
+    for (int i = 0; i < int(lib.tracks.size()); i++) {
+        const Track& t = lib.tracks[i];
+        if (wordsIn(words, t.title + " " + t.artist + " " + t.album + " " + t.genre + " " + t.path)) searchResults.push_back(i);
+    }
+    // the other tabs (the user, 2026-11-09): your albums, artists, genres and playlists whose names have the words
+    searchAlbums_.clear(); searchArtists_.clear(); searchGenres_.clear(); searchPlaylists_.clear();
+    for (int i = 0; i < int(lib.albums.size()); i++) if (wordsIn(words, lib.albums[size_t(i)].title + " " + lib.albums[size_t(i)].artist)) searchAlbums_.push_back(i);
+    for (int i = 0; i < int(artists.size()); i++) if (wordsIn(words, artists[size_t(i)].name)) searchArtists_.push_back(i);
+    for (int i = 0; i < int(genres.size()); i++) if (wordsIn(words, genres[size_t(i)].name)) searchGenres_.push_back(i);
+    if (wordsIn(words, "Liked")) searchPlaylists_.push_back(-1);
+    for (int i = 0; i < int(store.playlists.size()); i++) if (wordsIn(words, store.playlists[size_t(i)].name)) searchPlaylists_.push_back(i);
+}
+
+/** The playlists' names in their order: a rename, a move or a delete changes what an index into them means. */
+uint32_t App::searchListsStamp() const {
+    uint32_t h = 2166136261u;
+    for (const auto& p : store.playlists) {
+        for (unsigned char c : p.name) h = (h ^ c) * 16777619u;
+        h = (h ^ 0xffu) * 16777619u;
+    }
+    return h;
+}
+
+/** A Search page's lists hold indices: made again when the index was rebuilt (tags arriving, a rescan), a playlist
+ *  came, went or moved, or the page was come Back to after another search. */
+void App::searchSync() {
+    if (route.view != View::Search) return;
+    if (searchFor_ == route.query && searchGen_ == indexGen && searchLists_ == searchListsStamp()) return;
+    const bool other = searchFor_ != route.query;
+    runSearch();
+    if (other) {
+        searchLyrics_.clear();
+        lyrIndex.search(route.query, ++searchTicket_);
+    }
+}
+
+std::vector<std::string> App::searchWords(const std::string& query) {
+    std::vector<std::string> words;
+    std::string w;
+    for (char c : lower(query) + " ") {
+        if (c == ' ') { if (!w.empty()) words.push_back(w); w.clear(); }
+        else w += c;
+    }
+    return words;
+}
+
+bool App::wordsIn(const std::vector<std::string>& words, const std::string& hay) {
+    const std::string h = lower(hay);
+    return std::all_of(words.begin(), words.end(), [&](const std::string& x) { return h.find(x) != std::string::npos; });
 }
 
 PaletteOpts App::paletteOpts() const {

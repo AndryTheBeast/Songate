@@ -52,7 +52,7 @@ const std::vector<Recipe>& recipes() {
         { "decade", ICON_CALENDAR, "Decade", "Music of one decade, by release date", 1, "Decade",
           { { 1950, "50s" }, { 1960, "60s" }, { 1970, "70s" }, { 1980, "80s" }, { 1990, "90s" }, { 2000, "00s" }, { 2010, "10s" }, { 2020, "20s" } },
           1990 },
-        { "long", ICON_HOURGLASS, "Long tracks", "Five minutes or more: suites, mixes, epics", 1, nullptr, {}, 0 },
+        { "long", ICON_HOURGLASS, "Long songs", "Five minutes or more: suites, mixes, epics", 1, nullptr, {}, 0 },
         // Mood playlists (group 2: not among the recipes; New playlist › Mood playlist… opens its form)
         { "mood", PLI_MOOD, "Mood playlist", "Your library sorted by how it sounds: its energy, its beat, its key", 2, "Mood",
           { { mood::Happy, "Happy" }, { mood::Party, "Party" }, { mood::Relaxed, "Relaxed" }, { mood::Sad, "Sad" }, { mood::Aggressive, "Aggressive" },
@@ -255,6 +255,7 @@ void App::moodTick() {
         done++;
         moodIn_[i] = l->mix.mood;
     }
+    moodMeasured_ = done;
     moodDone_ = any ? done : 0;
     moodTotal_ = any ? int(lib.tracks.size()) : 0;
     // your choices, by track (hash look-ups: well under a millisecond for thousands)
@@ -328,7 +329,7 @@ void App::renamePlaylist(int ref) {
     // launch, the other left empty
     for (int i = 0; i < int(store.playlists.size()); i++)
         if (i != ref && store.playlists[size_t(i)].name == name) { toast("There is already a playlist called “" + name + "”"); return; }
-    if (name == "Liked") { toast("“Liked” is the name of your liked tracks"); return; }
+    if (name == "Liked") { toast("“Liked” is the name of your liked songs"); return; }
     renameJoins(store.playlists[size_t(ref)].name, name);
     store.playlists[size_t(ref)].name = name;
     store.save();
@@ -784,7 +785,7 @@ void App::drawSmartSheet() {
         rows.push_back({ Row::Grid });
         rows.back().h = ((n + IconCols - 1) / IconCols) * IconRowH + 4;
     } else if (page == Sheet::NewList) {
-        rows.push_back({ Row::Action, ICON_LIST, "A playlist of your own", "Add tracks to it from the track menu (" GF_MENU_KEY ")", "", [this] {
+        rows.push_back({ Row::Action, ICON_LIST, "A playlist of your own", "Add songs to it from the song menu (" GF_MENU_KEY ")", "", [this] {
                              closeSheet();
                              newPlaylist(-1);
                          } });
@@ -813,13 +814,13 @@ void App::drawSmartSheet() {
         auto name = [b = baseName(sheet.dir)] { return b.substr(0, b.find_last_of('.')); };
         rows.push_back({ Row::Action, ICON_PLAY, "Play", "In the file's order", "", [this, name] {
                              const std::vector<int> t = sheet.fileTracks;
-                             if (t.empty()) { toast("None of its tracks are in your library"); return; }
+                             if (t.empty()) { toast("None of its songs are in your library"); return; }
                              closeSheet();
                              playTracks(t, 0, name());
                          } });
         rows.push_back({ Row::Action, ICON_SHUFFLE, "Shuffle", "", "", [this, name] {
                              const std::vector<int> t = sheet.fileTracks;
-                             if (t.empty()) { toast("None of its tracks are in your library"); return; }
+                             if (t.empty()) { toast("None of its songs are in your library"); return; }
                              closeSheet();
                              playTracks(t, 0, name(), true);
                          } });
@@ -827,7 +828,7 @@ void App::drawSmartSheet() {
                          [this, name] {
                              const std::vector<int> t = sheet.fileTracks;
                              const int missing = sheet.fileMissing;
-                             if (t.empty()) { toast("None of its tracks are in your library"); return; }
+                             if (t.empty()) { toast("None of its songs are in your library"); return; }
                              const int p = store.newPlaylist(name());
                              for (int tr : t) store.playlists[size_t(p)].tracks.push_back(lib.tracks[size_t(tr)].path);
                              store.save();
@@ -882,11 +883,12 @@ void App::drawSmartSheet() {
         // A progress card's menu: the job as the card last showed it (it may finish while the menu is open).
         const Job& j = jobCards[std::clamp(sheet.recipe, 0, JobSlots - 1)].job;
         const char* still = j.stop == Stoppable::Covers ? "Covers for what is on screen are still made"
-                          : j.stop == Stoppable::Thumbs ? "The track playing still gets its cover"
+                          : j.stop == Stoppable::Thumbs ? "The song playing still gets its cover"
                           : j.stop == Stoppable::Lyrics ? "Search finds what is already read"
                           : j.stop == Stoppable::Downloads ? "What is downloaded stays; the rest waits"
+                          : j.stop == Stoppable::MixOrder ? "The playlists keep the order they have"
                           : j.stop == Stoppable::TagWrites ? "What is written stays; the rest waits, kept in Songate meanwhile"
-                                                        : "The track playing and the next ones are still measured";
+                                                        : "The song playing and the next ones are still measured";
         rows.push_back({ Row::Action, ICON_X, "Stop until I resume it", std::string(still) + "; Resume is in Settings", "", [this, s = j.stop] {
                              closeSheet();
                              setJobStopped(s, true);
@@ -1072,6 +1074,19 @@ void App::drawSmartSheet() {
         else rows.push_back({ Row::Action, ICON_REFRESH, "Asking the server…", "", "", nullptr });
     } else if (page == Sheet::SrvPlMenu) {   // a server playlist's menu: Rename (as yours; Delete is on its page, last)
         const Subsonic::Playlist p = srvMenuPl_;
+        // On the Playlists page: Move, as one of yours (the order is Songate's own; the user, 2026-11-10)
+        if (route.view == View::Playlists && srvPlaylists_.size() > 1) {
+            int at = -1;
+            for (int i = 0; i < int(srvPlaylists_.size()); i++) if (srvPlaylists_[size_t(i)].id == p.id) { at = i; break; }
+            if (at >= 0)
+                rows.push_back({ Row::Action, ICON_SORT_DOWN, "Move", "", "", [this, at] {
+                                     closeSheet();
+                                     grab = Grab{};
+                                     grab.kind = Grab::SrvPlaylists;
+                                     grab.pos = at;
+                                     toast(GF_MOVE_WORDS);
+                                 } });
+        }
         rows.push_back({ Row::Action, serverPlaylistIcon(p.id), "Icon…", "Shown in the sidebar, also when it is folded", "", [this] {
                              sheet.page = Sheet::SrvPlIcon;
                              ui.focusDefault();
@@ -1152,6 +1167,20 @@ void App::drawSmartSheet() {
             rows.push_back({ Row::Action, ICON_X, "Leave", tog.linkLost ? "Waiting for it: the link dropped" : tog.host ? "The session ends; each of the others plays on by itself" : "This device stops; the others play on", "", [this] { togetherLeave(); closeSheet(); } });
             rows.back().h = 58;
         } else {
+            // Devices itself, on or off from here, as AirPlay's card has Receive AirPlay (Settings › Devices has the same switch)
+            rows.push_back({ Row::Action, ICON_LINK, store.connections ? "Connecting is on" : "Connect with other devices",
+                             store.connections ? "Your paired devices link while Songate is open on this network" : "Sync, listen together and hand off, on this network",
+                             store.connections ? "On" : "Off", [this] {
+                                 if (store.connections) {
+                                     store.connections = false;
+                                     persistSoon(0.3f);
+                                     toast("Devices off");
+                                     closeSheet();
+                                 } else {
+                                     allowConnections();   // (its question takes the card's place)
+                                 }
+                             } });
+            rows.back().h = 58;
             for (const Connect::Paired& p : devicesLinked) {
                 rows.push_back({ Row::Group, nullptr, p.name });
                 rows.back().h = 34;
@@ -1160,7 +1189,8 @@ void App::drawSmartSheet() {
                 rows.push_back({ Row::Action, ICON_QUEUE, "Handoff", "This queue moves there and plays on from here", "", [this, id = p.id, name = p.name] { closeSheet(); handoffTo(id, name); } });
                 rows.back().h = 58;
             }
-            if (devicesLinked.empty() && cardW(600) < 520) {   // a narrow sheet (a phone upright): the same words on two lines
+            if (!store.connections) {}   // (off: nothing to link)
+            else if (devicesLinked.empty() && cardW(600) < 520) {   // a narrow sheet (a phone upright): the same words on two lines
                 rows.push_back({ Row::Group, nullptr, "No device linked:" });
                 rows.back().h = 34;
                 rows.push_back({ Row::Group, nullptr, "it has to be open, on this network" });
@@ -1203,7 +1233,7 @@ void App::drawSmartSheet() {
         }
 #endif
 #ifdef GF_AIRPLAY
-        if (airHere) {   // Speakers: this device, then the AirPlay speakers on this network (airsend.hpp); several at once, each with its volume
+        if (airHere && store.airplaySpeakers) {   // Speakers: this device, then the AirPlay speakers on this network (airsend.hpp); several at once, each with its volume
             const std::vector<AirSend::Speaker> spk = airsend.speakers();
             int playingN = 0;
             bool any = false;
@@ -1277,10 +1307,10 @@ void App::drawSmartSheet() {
             rows.back().h = 46;
             rows.back().on = on && sleepChoice == k + 1;
         }
-        rows.push_back({ Row::Choice, nullptr, "End of this track", "", "", [this] {
+        rows.push_back({ Row::Choice, nullptr, "End of this song", "", "", [this] {
                              setSleep(0, 0);
                              stopAfterCurrent = true;
-                             toast("Stop after the current track");
+                             toast("Stop after the current song");
                              closeSheet();
                          } });
         rows.back().h = 46;
@@ -1399,7 +1429,7 @@ void App::drawSmartSheet() {
                             : rc ? rc->title
                             : devs ? "Play with other devices"
                             : airp ? "Play on speakers"
-                            : sleep ? (left > 0 ? "Pauses in " + fmtTime(std::ceil(left)) : stopAfterCurrent ? "Stops after this track" : "Pause the music in…")
+                            : sleep ? (left > 0 ? "Pauses in " + fmtTime(std::ceil(left)) : stopAfterCurrent ? "Stops after this song" : "Pause the music in…")
                             : plFile ? plName
                             : job ? jb.label
                             : jobs ? "Running now"
@@ -1648,7 +1678,7 @@ void App::drawSmartSheet() {
             g.textC(n, { css::Xl, Weight::ExtraBold }, x + 24, ry + r.h / 2, matched.empty() ? pal.text3 : pal.accentInk);
             const bool stats0 = rc->group == 0 && matched.empty();
             // Mood: the library is analysed for it (from its first Mood playlist on): the songs come as it goes
-            const bool moodWait = rc->group == 2 && moodDone_ < int(lib.tracks.size());
+            const bool moodWait = rc->group == 2 && moodMeasured_ < int(lib.tracks.size());
             g.textC(moodWait && matched.empty() ? "Songs arrive as your library is analysed"
                     : matched.empty() ? (stats0 ? "Nothing yet: plays are counted from now on" : "Nothing matches yet")
                     : std::string(matched.size() == 1 ? "track matches" : "tracks match") + (moodWait ? " so far" : " now"),

@@ -160,6 +160,10 @@ public:
      */
     int textNum(const std::string& s, Font f, float x, float y, const Rgb& c, float alpha = 1, Align a = Align::Left);
     int measureNum(const std::string& s, Font f);
+    /** textNum centred on cy, as textC: a row's number and its length (the user, 2026-11-10: fixed-width in every row). */
+    int textNumC(const std::string& s, Font f, float x, float cy, const Rgb& c, float alpha = 1, Align a = Align::Left) {
+        return textNum(s, f, x, cy - lineHeight(f) / 2.f, c, alpha, a);
+    }
     int advance(Uint32 codepoint, Font f);
     float advanceF(Uint32 codepoint, Font f);
     /** A space's advance: FreeType leaves a trailing space out of a measured width, so " " measures nothing. */

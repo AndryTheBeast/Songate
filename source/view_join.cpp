@@ -1,6 +1,6 @@
 /*
  * Gatefold NX · view_join.cpp
- * The join editor: a playlist's join between two of its tracks, after Spotify's transition editor (the user,
+ * The join editor: a playlist's join between two of its tracks, after a streaming service's transition editor (the user,
  * 2026-10-28). Opened from the join buttons between a playlist page's rows. Over every page, as the tour is.
  *
  * Top: both tracks' waveforms around the join, the first above the second, with what the join does drawn over
@@ -182,7 +182,7 @@ void App::drawJoinEditor() {
     auto xAt = [&](double t) { return float(vx + (t - t0) / (t1 - t0) * vw); };
     const float laneA = vy + 12, laneB = vy + vh / 2 + 8, laneH = vh / 2 - 20;
 
-    // ---- moving it, as on Spotify: drag the second track left or right (it comes in earlier or later: whole beats on
+    // ---- moving it, as in that editor: drag the second track left or right (it comes in earlier or later: whole beats on
     // the beat), or the join's end (its length: whole bars on the beat); with the D-pad, A on either, then ←/→
     if (ready && !off) {
         const bool onBeat = pl.beatmatched && je.infoA.period > 0;
@@ -268,7 +268,7 @@ void App::drawJoinEditor() {
         g.textC("No Automix for this join: “" + ta.title + "” plays to its end, then “" + tb.title + "”", { css::Sm, Weight::SemiBold },
                 vx + vw / 2, vy + vh / 2, pal.text2, 1, Align::Center, int(vw - 40));
     } else if (!ready) {
-        g.textC(je.loaded == 2 ? "Could not read the two tracks" : "Reading the two tracks…", { css::Sm, Weight::SemiBold }, vx + vw / 2,
+        g.textC(je.loaded == 2 ? "Could not read the two songs" : "Reading the two songs…", { css::Sm, Weight::SemiBold }, vx + vw / 2,
                 vy + vh / 2, pal.text2, 1, Align::Center);
     } else {
         automix::Gains gn;
@@ -383,20 +383,20 @@ void App::drawJoinEditor() {
         std::string what;
         char b[160];
         if (off) {
-            what = "Off: these two tracks are not mixed";
+            what = "Off: these two songs are not mixed";
         } else if (je.infoA.seconds == 0 || je.infoB.seconds == 0) {
-            what = "Not analysed yet: a plain fade. Automix playlists' tracks are analysed in the background";
+            what = "Not analysed yet: a plain fade. Automix playlists' songs are analysed in the background";
         } else if (pl.beatmatched) {
-            snprintf(b, sizeof b, "%s · %d beats at %.0f BPM · %.1f s", pl.drop ? "On the next track's drop, on the bars" : pl.structured ? "By the songs' sections, on the bars" : pl.onBars ? "On the beat and the bars" : "On the beat", pl.beats,
+            snprintf(b, sizeof b, "%s · %d beats at %.0f BPM · %.1f s", pl.drop ? "On the next song's drop, on the bars" : pl.structured ? "By the songs' sections, on the bars" : pl.onBars ? "On the beat and the bars" : "On the beat", pl.beats,
                      double(pl.bpm), pl.length);
             what = b;
             if (pl.speed != 1) {   // tempo matching (Stretcher)
-                snprintf(b, sizeof b, " · this track %+.1f %% from a few beats before, the next as it is", (pl.speed - 1) * 100);
+                snprintf(b, sizeof b, " · this song %+.1f %% from a few beats before, the next as it is", (pl.speed - 1) * 100);
                 what += b;
             }
         } else if (pl.drop || pl.cut) {   // between different tempos (v3): never two beats at once
             snprintf(b, sizeof b, "%s · %.0f → %.0f BPM, no tempo change · %.1f s",
-                     pl.cut ? "A cut on a phrase, into the next track's downbeat" : "A bridge into the next track's drop, on a phrase",
+                     pl.cut ? "A cut on a phrase, into the next song's downbeat" : "A bridge into the next song's drop, on a phrase",
                      double(je.infoA.bpm), double(je.infoB.bpm), pl.length);
             what = b;
         } else {
@@ -471,7 +471,7 @@ void App::drawJoinEditor() {
     }
     {
         g.textC("Beatmatching", { css::Md, Weight::SemiBold }, ix, y + rowH / 2, pal.text, 1);
-        g.textC(pl.beatmatchable ? "Starts the next track on a beat of this one" : "Unavailable for these two tracks", { css::Sm }, ix + 150,
+        g.textC(pl.beatmatchable ? "Starts the next song on a beat of this one" : "Unavailable for these two songs", { css::Sm }, ix + 150,
                 y + rowH / 2, pal.text3, 1);
         const bool on = J.beatmatch && pl.beatmatchable;
         if (toggle(uid("je.beat"), rx - 40, y + rowH / 2, on) && pl.beatmatchable) edit([&](automix::Join& j) { j.beatmatch = !on; });

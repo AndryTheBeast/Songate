@@ -1501,7 +1501,7 @@ void StatusBar::CyclePlay() {
 }
 
 void StatusBar::Prev() {
-    /* Spotify-style back behaviour:
+    /* The usual back behaviour:
      *   - If more than 3 seconds into the track → restart from the beginning.
      *   - If within the first 3 seconds (or no timing info available) → go to
      *     the actual previous track.

@@ -202,7 +202,7 @@ void Gfx::outline(float x, float y, float w, float h, const float* rads, std::ve
     const float start[4] = { -PI / 2, 0, PI / 2, PI };
     for (int c = 0; c < 4; c++) {
         const float rad = std::clamp(rads[c], 0.f, std::min(w, h) / 2);
-        const int seg = rad < 0.5f ? 0 : std::clamp(int(rad * scale_ / 1.5f), 3, 20);
+        const int seg = rad < 0.5f ? 0 : std::clamp(int(rad * scale_ / 1.5f), 3, 48);   // (48: a 100 px portrait showed its sides at 20)
         const float cx = c < 2 ? x + w - rad : x + rad;
         const float cy = c == 0 || c == 3 ? y + rad : y + h - rad;
         if (seg == 0) {
@@ -212,8 +212,8 @@ void Gfx::outline(float x, float y, float w, float h, const float* rads, std::ve
         }
         // A quarter circle in seg steps, worked out once per step count: every rounded shape asked for its
         // sines and cosines each frame. Rotated per corner: 90° turns are swaps and sign changes.
-        static float quarter[21][21][2];
-        static bool made[21];
+        static float quarter[49][49][2];
+        static bool made[49];
         if (!made[seg]) {
             for (int i = 0; i <= seg; i++) {
                 quarter[seg][i][0] = std::cos((PI / 2) * i / seg);

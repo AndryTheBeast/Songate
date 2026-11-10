@@ -360,7 +360,7 @@ void App::pocketPill(float cx, float cy) {
     bool clicked = false;
     const Id id = uid("np.pocket");
     hint(id, "The screen off, buttons and touch ignored; " + pocketHowWords() + " to unlock");
-    button(id, ICON_LOCK, "Lock", cx - w / 2, cy - 17, false, &clicked);
+    button(id, ICON_LOCK, "Lock", cx - w / 2, cy - 17, false, &clicked, false, false, NoDefault);   // (the ring opens on Add to Liked, as before the pill)
     if (clicked) pocketLock(true);
 }
 
@@ -604,7 +604,7 @@ void App::drawUpNext(float x, float y, float w, float h) {
             const int tw = int(w - 52 - dw - 20);
             g.text(s.title, { css::Base, Weight::SemiBold }, x + 52, ry + 7, pal.text, 1, Align::Left, tw);
             g.text(s.artist + (s.album.empty() ? "" : " · " + s.album), { css::Sm }, x + 52, ry + 27, pal.text3, 1, Align::Left, tw);
-            g.textC(dur, { css::Sm }, x + w, ry + 26, pal.text3, 1, Align::Right);
+            g.textNumC(dur, { css::Sm }, x + w, ry + 26, pal.text3, 1, Align::Right);
         }
         g.unclip();
         ui.popArea();
@@ -622,7 +622,7 @@ void App::drawUpNext(float x, float y, float w, float h) {
     // to right, timed to the join (the user, 2026-10-29)
     const bool give = store.mixAnimNow == 2 && mixOld.on && !mixOld.upNext.empty();
     if (nextTracks.empty() && !give) {
-        g.textC(q.tracks.empty() ? "—" : "This is the last track of the playlist", { css::Base }, x + w / 2, y + 40, pal.text3, 1, Align::Center);
+        g.textC(q.tracks.empty() ? "—" : "This is the last song of the playlist", { css::Base }, x + w / 2, y + 40, pal.text3, 1, Align::Center);
         return;
     }
     ui.pushArea(&sa);
@@ -652,7 +652,7 @@ void App::drawUpNext(float x, float y, float w, float h) {
             const int tw = int(w - 52 - dw - 20);
             g.text(tr.title, { css::Base, Weight::SemiBold }, x + 52, ry + 7, pal.text, 1, Align::Left, tw);
             g.text(trackSub(t), { css::Sm }, x + 52, ry + 27, pal.text3, 1, Align::Left, tw);
-            g.textC(dur, { css::Sm }, x + w, ry + 26, pal.text3, 1, Align::Right);
+            g.textNumC(dur, { css::Sm }, x + w, ry + 26, pal.text3, 1, Align::Right);
         }
     };
     if (give) wiped(x - 8, x + w + 8, y, y + h, [&](bool old) { rows(old ? mixOld.upNext : nextTracks, !old); });
@@ -666,10 +666,11 @@ void App::drawLyricsOf(float x, float y, float w, float h, const std::vector<Lyr
     sa.view = { x, y, w, h };
     if (live && drawLyrOnline(x, y, w, h)) return;   // found online: looking, a card first, Not these (lyrics_online.cpp)
     if (lyrics.empty()) {
-        // .lyr-msg
+        // .lyr-msg; the server's song: no file to put anywhere
         g.text("No lyrics", { css::Lg, Weight::SemiBold }, x, y + 28, pal.text2);
+        const std::string line = live && srvq_.on ? "The server has none for this song." : "Put an .lrc file with the song's name next to it, or a LYRICS tag.";
         float ty = y + 56;   // (wrapped where it does not fit: a phone upright)
-        for (const auto& l : g.wrap("Put an .lrc file with the track's name next to it, or a LYRICS tag.", { css::Base }, int(w), 3)) {
+        for (const auto& l : g.wrap(line, { css::Base }, int(w), 3)) {
             g.text(l, { css::Base }, x, ty, pal.text3, 1, Align::Left, int(w));
             ty += 22;
         }

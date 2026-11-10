@@ -189,7 +189,7 @@ bool App::coverRow(Id id, int track, int number, float x, float y, float w, floa
         if (playing) { g.roundRect(x + 12, cy - cov / 2, cov, cov, 7, { 0, 0, 0 }, 0.38f); eqGlyph(x + 12 + cov / 2 - 9, cy, { 1, 1, 1 }); }
         g.text(t.title, { css::Base, playing ? Weight::SemiBold : Weight::Regular }, tx, cy - 20, playing ? pal.accentInk : pal.text, 1, Align::Left, int(tw));
         g.text(t.artist + (t.album.empty() ? "" : " · " + t.album), { css::Sm }, tx, cy + 2, pal.text3, 1, Align::Left, int(tw));
-        g.textC(t.duration > 0 ? fmtTime(t.duration) : "", { css::Sm }, x + w - 16, cy, pal.text3, 1, Align::Right);
+        g.textNumC(t.duration > 0 ? fmtTime(t.duration) : "", { css::Sm }, x + w - 16, cy, pal.text3, 1, Align::Right);
         return hit;
     }
     const float pad = 16, gap = 14, inner = w - pad * 2;
@@ -198,7 +198,7 @@ bool App::coverRow(Id id, int track, int number, float x, float y, float w, floa
     const float cy = y + (h - 4) / 2;
     float cx = x + pad;
     if (playing) eqGlyph(cx + 44 - 13, cy, pal.accentInk);
-    else g.textC(std::to_string(number), { css::Sm }, cx + 44, cy, pal.text3, 1, Align::Right);
+    else g.textNumC(std::to_string(number), { css::Sm }, cx + 44, cy, pal.text3, 1, Align::Right);
     cx += 44 + gap;
     const float cov = h - 4 - 16;
     coverBox(track, cx, cy - cov / 2, cov, 7);
@@ -213,7 +213,7 @@ bool App::coverRow(Id id, int track, int number, float x, float y, float w, floa
         cx += 64 + gap;
         g.textC(t.genre, { css::Base }, cx, cy, pal.text2, 1, Align::Left, int(fr));
     }
-    g.textC(t.duration > 0 ? fmtTime(t.duration) : "", { css::Sm }, x + w - pad, cy, pal.text3, 1, Align::Right);
+    g.textNumC(t.duration > 0 ? fmtTime(t.duration) : "", { css::Sm }, x + w - pad, cy, pal.text3, 1, Align::Right);
     return hit;
 }
 

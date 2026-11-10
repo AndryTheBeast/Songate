@@ -10,10 +10,12 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <mutex>
 #include <sys/stat.h>
 #include <vector>
 
 #include "metadata.hpp"
+#include "safefile.hpp"
 
 #ifdef GF_FFMPEG
 extern "C" {
@@ -791,11 +793,41 @@ bool sameAudio(const std::string& a, const std::string& b, std::string& err) {
 #endif
 }
 
+namespace {
+const char kNew[] = ".songate-new.", kOld[] = ".songate-old.";
+std::mutex& swapLock() {   // a write and a scan's settleLeftover never touch the same leftovers at once
+    static std::mutex m;
+    return m;
+}
+}  // namespace
+
+std::string settleLeftover(const std::string& dir, const std::string& leftover) {
+    std::string name;
+    if (leftover.rfind(kOld, 0) == 0) name = leftover.substr(sizeof kOld - 1);
+    else if (leftover.rfind(kNew, 0) == 0) name = leftover.substr(sizeof kNew - 1);
+    if (name.empty()) return std::string();
+    std::lock_guard<std::mutex> g(swapLock());
+    const std::string song = dir + "/" + name, tmp = dir + "/" + kNew + name, old = dir + "/" + kOld + name;
+    if (!safefile::exists(old)) {   // no swap had begun: an unchecked copy at most
+        remove(tmp.c_str());
+        return std::string();
+    }
+    if (safefile::exists(song)) {   // the swap went through, only the tidying did not
+        remove(old.c_str());
+        return std::string();
+    }
+    // the song stepped aside and the copy, checked before that, never took its place
+    if (rename(tmp.c_str(), song.c_str()) == 0) remove(old.c_str());
+    else if (rename(old.c_str(), song.c_str()) != 0) return std::string();
+    return song;
+}
+
 bool putChanges(const std::string& song, const Changes& ch, Before* before, std::string& err) {
+    std::lock_guard<std::mutex> g(swapLock());
     // beside the song, its extension kept (readTrackInfo goes by it), a dot first so a scan passes them by: .songate-new.Song.m4a
     const size_t slash = song.find_last_of('/');
     const std::string dir = slash == std::string::npos ? std::string() : song.substr(0, slash + 1), name = song.substr(slash + 1);
-    const std::string tmp = dir + ".songate-new." + name, old = dir + ".songate-old." + name;
+    const std::string tmp = dir + kNew + name, old = dir + kOld + name;
     Before held;
     if (!buildWithChanges(song, tmp, ch, &held, err)) return false;
     // read back: every field as written where it changed and as it was where it did not, the cover, the length, the audio

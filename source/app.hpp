@@ -145,6 +145,7 @@ struct Sheet {
     std::function<void()> askYes;
     // … a safe question (askSafe: the button in the accent, not red), and a second choice beside it (askAlt)
     bool askSafe = false;
+    bool askSync = false;   // the first sync's question (syncTick: another card over it brings it back after)
     bool askNoCancel = false;                   // no Cancel: the first launch's music folder card (askAlt is the other way)
     const char* askYesIcon = nullptr;
     std::string askAlt;
@@ -447,7 +448,7 @@ private:
     unsigned traceStarved = 0;
     std::string audioTrace;
     std::string mixLabel;
-    // The join editor (view_join.cpp): a playlist's join between two of its tracks, as Spotify's transition editor
+    // The join editor (view_join.cpp): a playlist's join between two of its tracks, as a streaming service's transition editor
     struct JoinEdit {
         bool open = false;
         std::string playlist;              // its name: the joins' key in mixes.tsv (Store::joinKey)
@@ -482,13 +483,35 @@ private:
         int tab = 0;               // Tracks, Albums, Artists, Genres, Folders
         std::vector<char> sel;     // per library track: ticked
     } ap;
-    double automixTickAt = 0, automixSavedAt = 0;
+    double automixTickAt = 0;
+    bool grabMoved_ = false;          // a playlist's song was moved while held: saved at grabDrop
+    bool lyricNudgeUnsaved_ = false;  // the lyrics' timing was nudged: written with the next save
     bool automixReady(const std::string& path) const;   // analysed for Automix (its mix.tsv row)
     void openAutomixPicker();
     void closeAutomixPicker();
     void drawAutomixPicker();
     void orderAutomixList(int ref, bool announce);
     void automixListsTick();
+    // An Automix playlist's order, worked out on a worker (it took seconds of a frozen screen for a long playlist on the console):
+    // one at a time, the rest waiting by name; what it finds is put in when it is done, if the playlist is still as it was
+    struct MixOrderJob {
+        std::string name;                               // the playlist, found again by its name
+        std::vector<std::string> before;                // its songs when asked: changed meanwhile, it is asked again
+        std::vector<std::string> here, later, gone;     // analysed (to order), waiting for their analysis, not in the library
+        std::vector<mixan::Info> info;                  // the analysed ones' analyses, copied for the worker
+        int first = -1;
+        automix::Model model = automix::Latest;
+        bool announce = false;
+        std::vector<int> result;                        // empty: stopped
+    };
+    std::thread mixOrderThread_;
+    std::atomic<bool> mixOrderDone_{ false };
+    bool mixOrderOn_ = false;
+    MixOrderJob mixOrderJob_;
+    automix::OrderWatch mixOrderWatch_;
+    std::vector<std::pair<std::string, bool>> mixOrderWaiting_;   // playlists to order next (name, announce)
+    void mixOrderTick();
+    void mixOrderEnd();   // at the close: the worker ended
     std::vector<std::string> automixWaitingTracks(size_t max) const;
     // Automix is only Automix playlists' (the user, 2026-10-28): the queue came from one of them
     bool automixQueue() const;
@@ -572,7 +595,8 @@ private:
     void setBatteryItems(const std::vector<int>& vis); // details only where the power service tells them); put back in your order
     bool* batteryShown(int item);
     // A row of a list put in order by touch (Settings: the sidebar's tabs, the battery's details): its handle, held and dragged
-    void dragSort(std::vector<int>& order, int base, const char* key, int i, float rx, float cy, const std::function<void()>& after);
+    void dragSort(std::vector<int>& order, int base, const char* key, int i, float rx, float cy, const std::function<void()>& after,
+                  const std::vector<int>* rows = nullptr);
     void sampleBattery();
 
     // ---------------- play statistics (stats.hpp): Gatefold counts what it plays itself; the background player its own
@@ -632,12 +656,27 @@ private:
     std::vector<int> albumOrder;
     std::vector<Artist> artists;
     std::vector<int> searchResults;
+    // Search's filter tabs (the user, 2026-11-09): what matched among your albums, artists, genres and playlists (-1 Liked), made
+    // with searchResults; the tab chosen is kept between searches (0 Songs, 1 Albums, 2 Artists, 3 Genres, 4 Playlists, 5 Lyrics)
+    std::vector<int> searchAlbums_, searchArtists_, searchGenres_, searchPlaylists_;
+    int searchTab_ = 0;
+    std::string searchFor_;          // what the lists above were made for: the query, the index and the playlists then
+    unsigned searchGen_ = ~0u;
+    uint32_t searchLists_ = 0;
+    void runSearch();
+    void searchSync();
+    uint32_t searchListsStamp() const;
+    float drawSearchTab(float x, float top, float w, float clipY, float clipH);   // a tab's body but Songs', in the page's scroll area; its height (view_grid.cpp)
+    void drawServerSearch(float x, float y, float w, float h);                     // the search page with the server chosen (view_server.cpp)
+    static std::vector<std::string> searchWords(const std::string& query);        // the words typed, lower-cased
+    static bool wordsIn(const std::vector<std::string>& words, const std::string& hay);   // every word somewhere in hay (lower-cased)
     // Search by lyrics (BETA 3, lyricindex.hpp): the songs whose lyrics have the words, their line; asked when a search opens
     LyricIndex lyrIndex;
     /** The search field's words: lyrics too once every song's lyrics are read (the user, 2026-11-07); before, as they were. */
     const char* searchHint() const {
+        // plural, as the tabs and the pages say it, and "songs" (the user, 2026-11-09)
         const LyricIndex::Progress p = lyrIndex.progress();
-        return !p.checking && p.total > 0 && p.read >= p.total ? "Artist, album, track or lyrics" : "Artist, album or track";
+        return !p.checking && p.total > 0 && p.read >= p.total ? "Artists, albums, songs or lyrics" : "Artists, albums or songs";
     }
     std::vector<LyricIndex::Hit> searchLyrics_;
     uint64_t searchTicket_ = 0;
@@ -833,7 +872,8 @@ private:
     // A queue row picked up with the track menu's Move: the D-pad moves it, A or B puts it down.
     // Also the Playlists page's playlists (+ → Move) and the sidebar's tabs (Settings → Appearance → Move): same keys.
     // List: a track of one of your own playlists (route.ref), by its row on the page
-    struct Grab { enum Kind { Queue, Playlists, Tabs, List, Battery, SrvList } kind = Queue; int pos = -1; bool upNext = false; int cols = 1; int ref = -1; } grab;
+    // (SrvPlaylists: the server's Playlists page, the playlist itself moved, as yours)
+    struct Grab { enum Kind { Queue, Playlists, Tabs, List, Battery, SrvList, SrvPlaylists } kind = Queue; int pos = -1; bool upNext = false; int cols = 1; int ref = -1; } grab;
     void grabStep(int d);
     void grabDrop();
     void applyLoaded(TrackLoader::Result& r);
@@ -894,6 +934,16 @@ private:
     void draw();
     void drawBackground();
     void drawTitlebar();
+    /** By touch there is no B: a back button comes in while the last input was a finger and there is somewhere to go back to
+     *  (the user, 2026-11-08). backShown(): 0..1, eased, for the places that make room for it. */
+    float backShown();
+    /** store.tabOrder's indices as the sidebar can show them (Server, which is in Library now, left out). Settings lists them
+     *  so, and Move steps along this list. */
+    std::vector<int> sidebarTabsShown() const;
+    bool backOn_ = false;        // the touch back button is wanted
+    float backAnim_ = 0;         // ... and how far it is shown, eased towards that each frame (never restarted: no jumps)
+    double backTick_ = 0;
+    bool touchUi_ = false;       // the last input was a finger, for the back button: a button or a click clears it, the stick's drift does not
     void drawSidebar();
     void drawPlayerbar();
     void drawToast();
@@ -903,7 +953,7 @@ private:
     void drawCoverNotice();
     // The sidebar's progress cards, stacked above Settings: one per kind of work running in the background at once.
     // Slot 0: the music folder check, then tags, then the cover cache (one after another); 1: the overlay's covers; 2: levelling.
-    enum class Stoppable { None, Covers, Thumbs, Levels, Lyrics, Downloads, TagWrites };
+    enum class Stoppable { None, Covers, Thumbs, Levels, Lyrics, Downloads, TagWrites, MixOrder };
     struct Job {
         std::string label;
         int done = 0, total = 0;   // total 0: just busy
@@ -914,7 +964,7 @@ private:
         const char* icon = nullptr;  // its icon in the list of jobs, where its kind does not say (Reading lyrics: the quote)
     };
     // 3: Files' copying, moving and deleting (fileWork); 4: an update (updater); 5: reading lyrics for search (lyrIndex)
-    static constexpr int JobSlots = 10;   // 7: the server's downloads; 8: the self test (dev); 9: tags written into files
+    static constexpr int JobSlots = 10;   // 6: Automix playlists' ordering; 7: the server's downloads; 8: the self test (dev); 9: tags written into files
     struct JobCard { Job job; float shown = 0, since = 0; };
     JobCard jobCards[JobSlots];
     /** What runs in each slot now; false where nothing does (or it was stopped). */
@@ -1088,6 +1138,9 @@ private:
     // A genre's page shows one of Albums, Artists or Tracks at a time (kept while the app runs); its artists are
     // worked out once per genre and index: (artist, tracks of theirs in the genre), by name
     int genreTab = 0;    // 0 Albums, 1 Artists, 2 Tracks
+    int genreSort = 0;   // a genre's Albums tab, yours and the server's: 0 by artist, 1 by title, 2 by year (the user, 2026-11-09)
+    /** The Albums page's sort select, right-aligned at rx (cy its middle): a button that cycles; its width. */
+    float sortButton(const char* key, const std::string& label, float rx, float cy, bool* clicked);
     int artistTab = 0;   // an artist's page: 0 Albums, 2 Tracks (the same numbers, no Artists)
     std::vector<std::pair<int, int>> genreArtists_;
     int genreArtistsFor_ = -1;
@@ -1112,6 +1165,21 @@ private:
     int bodyGrab = -1;    // drawTrackBody: the index drawn picked up (the queue's Move), −1 when none
     int bodyCols = 1;     // drawTrackBody: tiles in a row last drawn (1 in the row views)
     float viewSwitch(const char* key, float rx, float cy, int& mode, unsigned hidden = 0);   // hidden: bit i, view i left out
+    /** The #-to-Z rail down a list's right edge (railX: its left edge; top, h: the list's view): the letters present, the
+     *  section showing lit; a tap or A glides there; a finger slid along it scrubs, the letter under it in a bubble (the user,
+     *  2026-11-08: the small letters were poor to tap). rowY(row): that row's y in the area's content. */
+    void letterRail(const char* key, float railX, float top, float h, const std::vector<std::pair<char, int>>& letters, ScrollArea& sa,
+                    const std::function<float(int)>& rowY);
+    /** A list's letters (#, A-Z) with the first row of each, in rail order; an unsorted list gets each letter's first row. */
+    static std::vector<std::pair<char, int>> lettersOf(const std::vector<std::string>& names);
+    /** A rail's letters, kept per key and made again only when `stamp` changes: gathered every frame, a page's names were copied
+     *  and walked sixty times a second. names: asked only then. */
+    static const std::vector<std::pair<char, int>>& railLettersFor(const char* key, const std::string& stamp, const std::function<std::vector<std::string>()>& names);
+    static constexpr float kRailW = 26;   // what a list leaves the rail at its right
+    /** The rail switches of the library showing (Local, Server: Settings › Appearance › Letter rail). */
+    int railSet() const { return store.libSource == 1 ? 1 : 0; }
+    bool railOn(unsigned bit) const { return (store.letterRails[railSet()] & bit) != 0; }
+    struct RailBubble { Id zone = 0; char letter = 0; float y = 0; double at = -10; } railBubble_;
     void coverQuad(const std::vector<int>& tracks, float x, float y, float size, float rad, float alpha = 1);
     void listColumns(float x, float y, float w, ListMode mode, bool extended);
     bool coverRow(Id id, int track, int number, float x, float y, float w, float h, bool extended);
@@ -1134,7 +1202,10 @@ private:
     const std::vector<int>& sortedTracks();
     void drawTracksTab(float x, float y, float w, float h, float top);
     void drawFoldersTab(float x, float y, float w, float h, float top);
-    void drawAlbumGrid(float x, float y, float w, float h, float top);
+    int looseTracks();   // songs without an album tag: counted once for each index (the Albums pages' line asked every frame)
+    void drawAlbumGrid(float x, float y, float w, float h, float top, bool toolsRow = false);   // toolsRow: Library's row under its tabs
+    /** One of your albums as a row (the Albums pages' and search's rows-with-covers and list views): cover, title, artist and count, a chevron. */
+    bool albumRow(Id id, int album, float x, float y, float w, float rowH, bool list, uint8_t flags = 0);
     void drawAlbums(float x, float y, float w, float h);
     bool folderTile(Id id, int folder, float x, float y, float w, float cover);
     std::string tracksFilter;   // Library → Tracks: what the filter keeps
@@ -1616,6 +1687,7 @@ private:
     unsigned syncRebuildEpoch = 0;
     std::string syncPeer, syncPeerName;  // the sync waiting for the identities
     bool syncWaiting = false, syncAnswering = false, syncShown = false;
+    bool syncAskCovered_ = false;   // another card took the first sync's question's place: asked again when that one closes
     std::vector<std::string> syncLinked;   // who was linked at the last look: a new link syncs, if automatic
     uint64_t syncStamp() const;         // changes whenever what is shared changes
     std::string folderInMusic(const std::string& path) const;   // a folder playlist's folder within the music folder, or ""
@@ -1654,11 +1726,10 @@ private:
     float librarySource(float rx, float cy, float hgt = 36);   // Local | Server, right-aligned at rx (while signed in); its width
     float librarySourceW();   // its width (0 when not shown)
     /** The sidebar's Albums, Artists, Genres, Folders and Library show the server's (Library on Server, its music Apart: the user, 2026-11-06) */
-    bool serverSidebar() { return store.libSource == 1 && store.serverPlace == 0 && subsonic.view().state == Subsonic::SignedIn; }
+    bool serverSidebar() { return store.libSource == 1 && subsonic.view().state == Subsonic::SignedIn; }
     void openServerSection(int tab) { store.serverTab = tab; navigate(View::Server, 6, std::to_string(tab)); }   // one view, as the sidebar's own pages
     // Playlists follow Library's Local | Server (the user, 2026-11-06: "make the library local/server toggle global for playlist too");
     // with its music Mixed in, the server's playlists come after yours
-    bool serverPlaylistsMixed() { return store.serverPlace == 1 && subsonic.view().state == Subsonic::SignedIn; }
     // Library's switch, its music Apart: what plays finishes (or is paused), then the other side's last track comes back, paused where
     // it was (the user, 2026-11-06); each side's queue is kept
     int libSwitchTo_ = -1;            // a switch waiting: 0 yours, 1 the server's
@@ -1671,20 +1742,22 @@ private:
     void libSwitchTick();             // each frame: the song ended, or paused: the other side comes back
     void libSwitchNow();
     bool serverPlaylistsShown() { return serverSidebar(); }
-    void drawServerPlaylists(float x, float y, float w, float h, float cy, float oy, ListMode mode);   // the Playlists page's body, the server's
+    void drawServerPlaylists(float x, float y, float w, float h, float cy, float oy, ListMode mode,
+                             const std::vector<Subsonic::Playlist>* list = nullptr);   // the Playlists page's body: the server's, or a list given (search's)
     /** Library's views switch (Albums, Artists, Genres, Folders, Tracks: the server's order) and Local | Server beside it, at a head's top
      *  y; sideways only (upright, Library's page has them as rows). store.libTab keeps its numbers: 0 Albums, 1 Tracks, 2 Folders, 3 Artists,
      *  4 Genres. */
-    void libraryTabsRow(float x, float w, float y);
+    float libraryTabsRow(float x, float w, float y);   // its width (0: not shown)
     bool serverTile(Id id, const std::string& cover, float x, float y, float w, bool round, const std::string& title, const std::string& sub, uint8_t flags = 0,
                     const char* none = nullptr);
     SDL_Texture* serverCover(const std::string& id, int size = 300);
+    /** A server album as a row, as albumRow. */
+    bool serverAlbumRow(Id id, const Subsonic::Album& al, float x, float y, float w, float rowH, bool list, uint8_t flags = 0);
     void serverCoverPump();
     /** Stage 3: the server's albums for the library's Albums (In the library); asked once, empty until they came. */
     const std::vector<Subsonic::Album>& serverAlbums();
     std::vector<Subsonic::Album> serverAlbums_;
     unsigned serverAlbumsGen_ = ~0u;
-    std::string serverCountNote();
     // the Server tab's views (Albums, Artists, Genres, Folders, Tracks) and the library's artists and genres mixed in: each list
     // copied from the worker once it came (not again each time the worker's view moves on, as covers come), cleared at sign-out
     int srvSort_ = 0;   // the server's Albums: 0 by artist, 1 by title, 2 by year
@@ -1705,6 +1778,11 @@ private:
     SrvPage srvPage_[2];   // [0] the page shown (an artist's, a genre's albums, a folder), [1] a library page's twin on the server
     const SrvPage& serverPage(char kind, const std::string& id, int slot = 0);   // 'R' an artist's albums, 'G' a genre's, 'D' a folder, 'P' a playlist
     std::vector<Subsonic::Playlist> srvPlaylists_;
+    // the Playlists page's order for the server's playlists, Songate's own (Subsonic has none): ids, one a line, in server-playlist-order.tsv
+    std::vector<std::string> srvPlOrder_;
+    bool srvPlOrderRead_ = false;
+    void applyServerPlaylistOrder();
+    void moveServerPlaylist(int from, int to);
     unsigned srvPlaylistsGen_ = ~0u;
     const std::vector<Subsonic::Playlist>* serverPlaylistList();
     void sendPlaylistToServer(const std::string& name, const std::vector<int>& tracks);
@@ -1784,13 +1862,14 @@ private:
     // the Server tab's Tracks: sorted and filtered as Library › Tracks (store.tracksSort, tracksDesc, viewTracks), its own filter
     struct SrvTracksView { unsigned gen = ~0u; int sort = -1; bool desc = false; std::string filter; std::vector<int> list; std::vector<std::pair<char, int>> letters; } srvTracks_;
     std::string srvFilter_;
-    const std::vector<std::pair<int, int>>& artistMix(bool genre);   // (your artist or genre, -1) or (-1, the server's); twins once
+    // The grids' orders, made again only when the index changed (they once also held the server's among yours: that "Mixed in"
+    // went with the title bar's switch, the user, 2026-11-09): (your artist or genre, -1), (your album, -1).
+    const std::vector<std::pair<int, int>>& artistMix(bool genre);
     std::vector<std::pair<int, int>> artistMix_[2];
-    unsigned artistMixIndex_[2] = { ~0u, ~0u }, artistMixSrv_[2] = { ~0u, ~0u };
-    std::vector<int> artistTwin_[2];   // yours: its twin on the server (an index in srvl_), or -1   // " · 154 on Navidrome" while the server's music is In the library
-    const std::vector<std::pair<int, int>>& albumMix();   // the Albums grid: (your album, -1) or (-1, the server's)
+    unsigned artistMixIndex_[2] = { ~0u, ~0u };
+    const std::vector<std::pair<int, int>>& albumMix();
     std::vector<std::pair<int, int>> albumMix_;
-    unsigned albumMixIndex_ = ~0u, albumMixSrv_ = ~0u;
+    unsigned albumMixIndex_ = ~0u;
     int albumMixSort_ = -1;
     size_t albumMixLocal_ = ~size_t(0);
     std::unordered_map<std::string, SDL_Texture*> serverCovers_;
@@ -1983,6 +2062,7 @@ private:
     unsigned moodGen_ = 0, moodLevelsGen_ = ~0u, moodLibEpoch_ = ~0u;
     double moodBuiltAt_ = -100;
     int moodDone_ = 0, moodTotal_ = 0;
+    int moodMeasured_ = 0;   // songs analysed for mood, whether a Mood playlist exists or not (moodDone_ counts for the job card)
     // your mood choices (mood::Label), by path, in mood-labels.tsv: they go to the sort with the features (moodTick); a change sorts
     // again (moodInputsGen_). (Last.fm's tags as moods taken out, 2026-11-08: 249 of 2,901 songs had tags, mostly genres; the user:
     // "it makes things worse and complicated")

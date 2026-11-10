@@ -372,7 +372,7 @@ void App::selfTestTick(float frameMs, float workMs) {
     }
     if (fromEnv && envStarted && !selfTest_ && getenv("GF_SELFTEST_QUIT") && time > 6) running = false;
     for (int k = 0; k < 4; k++) {   // the toggles: one on starts it, off stops it
-        if (selfTestOn_[k] && (!selfTest_ || selfTest_->level != k)) { for (int j = 0; j < 4; j++) if (j != k) selfTestOn_[j] = false; selfTestStart(k); break; }
+        if (selfTestOn_[k] && (!selfTest_ || selfTest_->level != k)) { for (int j = 0; j < 4; j++) if (j != k) selfTestOn_[j] = false; selfTestStart(k); selfTestOn_[k] = true; break; }   // (starting it stops the one running, which clears every toggle)
     }
     SelfTest* t = selfTest_;
     if (!t) return;

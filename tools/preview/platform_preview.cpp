@@ -9,6 +9,13 @@
 #include <ctime>
 
 #include "include/switch.h"
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <iphlpapi.h>
+#include <netioapi.h>
+#include <vector>
+#endif
 
 namespace plat {
 
@@ -125,7 +132,26 @@ long long bootStamp() {
 void placeThread(int, int) {}
 bool netStart() { return true; }
 void netStop() {}
-std::vector<Net> networks() { return {}; }
+std::vector<Net> networks() {   // the PC's networks, as the Windows app lists them: Connections pairs and links from the preview too
+    std::vector<Net> out;
+#ifdef _WIN32
+    ULONG size = 32 * 1024;
+    std::vector<uint8_t> buf(size);
+    auto* a = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buf.data());
+    const ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+    if (GetAdaptersAddresses(AF_INET, flags, nullptr, a, &size) != NO_ERROR) return out;
+    for (; a; a = a->Next) {
+        if (a->OperStatus != IfOperStatusUp || a->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+        for (auto* u = a->FirstUnicastAddress; u; u = u->Next) {
+            const uint32_t ip = reinterpret_cast<sockaddr_in*>(u->Address.lpSockaddr)->sin_addr.s_addr;
+            ULONG mask = 0;
+            ConvertLengthToIpv4Mask(u->OnLinkPrefixLength, &mask);
+            out.push_back({ ip, ip | ~uint32_t(mask) });
+        }
+    }
+#endif
+    return out;
+}
 std::string deviceName() { return "Preview"; }
 int64_t freeBytes(const std::string&) { return -1; }
 bool appletMode() { return false; }

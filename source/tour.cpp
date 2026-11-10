@@ -87,16 +87,16 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
         // ---- Playing
         { 0, 1, ICON_DISC, "Now playing",
           "This is Now playing: the cover, the title, artist, album and year, and what kind of file it is. The genre is "
-          "a link: " GF_TAP " it to see every track of that genre.",
+          "a link: " GF_TAP " it to see every song of that genre.",
           page(View::Now), { { "@main" } } },
-        { 1, 1, ICON_HEART, "Track buttons",
-          "Add to Liked saves the track to your Liked list. Album, Artist and Folder take you to their pages. The last "
-          "button opens the track menu, with everything else you can do to the track.",
+        { 1, 1, ICON_HEART, "Song buttons",
+          "Add to Liked saves the song to your Liked list. Album, Artist and Folder take you to their pages. The last "
+          "button opens the song menu, with everything else you can do to the song.",
           page(View::Now), { { "np.like" }, { "np.album" }, { "np.artist" }, { "np.folder" }, { "np.more" } } },
         { 1, 1, ICON_LIST, "Up next, Lyrics and Palette",
-          "Up next shows what plays after this track. Lyrics shows the words, from an .lrc file beside the song or its "
+          "Up next shows what plays after this song. Lyrics shows the words, from an .lrc file beside the song or its "
           "tags: synced lyrics follow the music, and tapping a line jumps to it. If they run early or late, Earlier and "
-          "Later fix them for this track. Palette shows the colours taken from the cover.",
+          "Later fix them for this song. Palette shows the colours taken from the cover.",
           page(View::Now), { { "np.tab" }, { "np.tab", 1 }, { "np.tab", 2 } } },
         // ---- BETA 3 (the user, 2026-11-08: "update the tour (all three of them) with every new feature"; texts approved first:
         // docs/next-session/tour-beta3-draft.md)
@@ -105,12 +105,12 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           "first. Keep saves them beside the song or in Songate's folder; Not these tries the next match.",
           settings(5), { { "set.lyronline" }, { "set.lyrway", 0, 2 } } },
         { 0, 1, ICON_PLAY, "The player bar",
-          "The controls are always here. The first button sets the order: Default, Repeat list, Repeat track or Shuffle. "
-          "The last one stops the music after this track. " GF_ON_THE_PADS "{X} plays and pauses, {L} and {R} skip, and "
+          "The controls are always here. The first button sets the order: Default, Repeat list, Repeat song or Shuffle. "
+          "The last one stops the music after this song. " GF_ON_THE_PADS "{X} plays and pauses, {L} and {R} skip, and "
           "{ZL} and {ZR} jump ten seconds.",
           nullptr, { { "pb.order" }, { "pb.prev" }, { "pb.play" }, { "pb.next" }, { "pb.sac" } } },
         { 1, 1, ICON_WAVE, "The seek bar",
-          "The waveform of the track. Drag it to jump anywhere. With the buttons, move onto it with {DPAD}, press {A} "
+          "The waveform of the song. Drag it to jump anywhere. With the buttons, move onto it with {DPAD}, press {A} "
           "to grab it, steer with left and right, then press {A} or {B} to let go.",
           nullptr, { { "pb.seek", 0, 0, 10 } } },
         { 1, 1, ICON_MOON, "More controls",
@@ -119,7 +119,7 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           "too.",
           nullptr, { { "pb.sleep" }, { "pb.eq" }, { "pb.queue" }, { "pb.mute" }, { "pb.vol" }, { "pb.canvas" } } },
         { 2, 1, ICON_MOON, "The sleep timer",
-          "15 to 90 minutes, or the end of the track. The music fades out over its last ten seconds and pauses where you "
+          "15 to 90 minutes, or the end of the song. The music fades out over its last ten seconds and pauses where you "
           GF_SLEEP_WORDS "Then a card counts down and puts " GF_THE_CONSOLE " to sleep, unless you stay awake.",
           settings(App::SetPlayback), { { "set.sleepcon", 0, 4 } } },
 #ifdef __SWITCH__
@@ -129,13 +129,13 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           "Capture pressed twice, and how long to hold.",
           page(View::Now), { { "np.pocket" } } },
 #endif
-        { 0, 1, ICON_PLUS, "The track menu",
-          "Every track has a menu: " GF_TOUR_MENU ". For example, Play next slots "
-          "it in right after the current track, and Add to a playlist… files it away.",
+        { 0, 1, ICON_PLUS, "The song menu",
+          "Every song has a menu: " GF_TOUR_MENU ". For example, Play next slots "
+          "it in right after the current song, and Add to a playlist… files it away.",
           page(View::Queue), { { "@main" } } },
         { 2, 1, ICON_TAG, "Tags, covers and details",
-          "The track menu also edits its tags (title, artist, album, genre, year…) and changes its cover with any image on "
-          GF_THE_CARD ", for one track or the whole album. Songate asks each time: keep the change in Songate, or write "
+          "The song menu also edits its tags (title, artist, album, genre, year…) and changes its cover with any image on "
+          GF_THE_CARD ", for one song or the whole album. Songate asks each time: keep the change in Songate, or write "
           "it into the file too. What the file held is kept, so Restore the file's original tags puts it back. Details "
           "shows its plays and its loudness.",
           page(View::Queue), { { "@main" } } },
@@ -150,10 +150,10 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           "{A} on an album to open it: play it, shuffle it or add it to the queue.",
           page(View::Albums), { { "@main" } } },
         { 1, 2, ICON_MIC, "Artists and genres",
-          "Every artist and every genre has a page of its own, with its albums and its tracks on separate tabs.",
+          "Every artist and every genre has a page of its own, with its albums and its songs on separate tabs.",
           page(View::Artists), { { "@main" } } },
         { 1, 2, ICON_GRID, "Library",
-          "Three tabs: Albums, Tracks and Folders. Tracks can be sorted by artist, title, album, year, genre or length, "
+          "Three tabs: Albums, Songs and Folders. Songs can be sorted by artist, title, album, year, genre or length, "
           "either way round. The filter narrows the list: sort by genre and type \"jazz\" to see only jazz. The letters "
           "on the right jump through it.",
           [](App& a) { a.store.libTab = 1; a.navigate(View::Library, -1, {}, false); },
@@ -167,7 +167,7 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           "Playlists page follow it. A server song can be downloaded, to play without the server.",
           page(View::Library), { { "lib.source", 0, 2 } } },   // (shown while signed in to a server)
         { 2, 2, ICON_V_LIST, "Four ways to list",
-          "Every list of tracks can show them by album, with covers, as tiles, or as a plain list, and remembers which. "
+          "Every list of songs can show them by album, with covers, as tiles, or as a plain list, and remembers which. "
           "Try them on Liked or any playlist: the view you pick there stays with that page.",
           page(View::List, -1), { { "pl.view", 0 }, { "pl.view", 1 }, { "pl.view", 2 }, { "pl.view", 3 } } },
         { 1, 2, ICON_FOLDER, "Folders",
@@ -176,18 +176,18 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           [](App& a) { a.navigate(View::Folders, a.lib.rootFolders.empty() ? -1 : a.lib.rootFolders[0], {}, false); },
           { { "fo.play" }, { "fo.shuffle" }, { "fo.addpl" }, { "fo.addall" } } },
         { 1, 2, ICON_SEARCH, "Search",
-          "Press {Y} or " GF_TAP " here to search your artists, albums and tracks, and the words of your songs: In the "
+          "Press {Y} or " GF_TAP " here to search your artists, albums and songs, and the words of your songs: In the "
           "lyrics lists each song that sings them, and a synced line plays from that moment. For example, \"live\" finds "
           "every live recording.",
           nullptr, { { "tb.search" } } },
         { 2, 2, ICON_HISTORY, "Play statistics",
-          "A track counts as played after a minute, or nearly all of a shorter one, " GF_PLAYED_WHERE ". Plays, the last play and the date added show in Details, and smart playlists like Most played and "
+          "A song counts as played after a minute, or nearly all of a shorter one, " GF_PLAYED_WHERE ". Plays, the last play and the date added show in Details, and smart playlists like Most played and "
           "Forgotten favourites are built from them.",
           page(View::Queue), { { "@main" } } },
         // ---- Playlists
         { 1, 3, ICON_LIST, "The queue",
           "Playlist is everything lined up to play. Press {A} on a row to play it, or {+} for more: Play next, Remove, "
-          "or Move, which lets you carry it with {DPAD} and drop it with {A}. Current track scrolls back to what's "
+          "or Move, which lets you carry it with {DPAD} and drop it with {A}. Current song scrolls back to what's "
           "playing; Clear empties the list.",
           page(View::Queue), { { "@main" } } },
         { 0, 3, ICON_PLUS, "Your playlists",
@@ -197,7 +197,7 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           nullptr, { { "nav.playlists" }, { "nav.newpl" } } },
         { 2, 3, PLI_SMART, "Smart playlists",
           "A smart playlist fills itself: Recently added, Most played, Recently played, Forgotten favourites, Never "
-          "played, one genre, one decade, or long tracks. Each has one setting, shows how many tracks match before you "
+          "played, one genre, one decade, or long songs. Each has one setting, shows how many songs match before you "
           "create it, and stays up to date as you play.",
           nullptr, { { "nav.newpl" } } },
         { 0, 3, ICON_SPARKLE, "Automix playlists",
@@ -242,7 +242,7 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
         // ---- Files
         { 1, 4, PLI_SDCARD, "Files",
           "Files browses the whole " GF_CARD_NAME ". It is hidden at first: turn it on in Settings › Appearance › Sidebar. "
-          GF_FILE_MENU ": an image can become a cover, an .lrc file a track's lyrics, an .m3u8 a "
+          GF_FILE_MENU ": an image can become a cover, an .lrc file a song's lyrics, an .m3u8 a "
           "playlist. You can also rename, copy, move and delete, one file or several.",
           nullptr, { { "nav.files" } } },
         // ---- Sound
@@ -251,12 +251,12 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           "sound under a name. For example: choose Rock, add a little bass, then Save as a new preset.",
           settings(App::SetEqualizer), { { "set.eqon" }, { "set.eqmode", 0, 2 }, { "set.eqpreset" } } },
         { 1, 5, ICON_PLAY, "Playback",
-          "Volume levelling makes every track about as loud as the next. Crossfade blends the end of one track into the "
-          "start of the next, but not between tracks of one album, so live albums stay seamless.",
+          "Volume levelling makes every song about as loud as the next. Crossfade blends the end of one song into the "
+          "start of the next, but not between songs of one album, so live albums stay seamless.",
           settings(App::SetPlayback), { { "set.xfade", 0, 6 }, { "set.level", 0, 4 } } },
         { 2, 5, ICON_WAVE, "Volume levelling",
-          "Each track's loudness is measured on " GF_THE_CONSOLE ", as broadcasters measure it, with its true peak. Track "
-          "levels every song alike; Album keeps an album's quiet and loud songs as they were; Auto does Album, but Track "
+          "Each song's loudness is measured on " GF_THE_CONSOLE ", as broadcasters measure it, with its true peak. Song "
+          "levels every song alike; Album keeps an album's quiet and loud songs as they were; Auto does Album, but Song "
           "while shuffling. Your files are never changed.",
           settings(App::SetPlayback), { { "set.level", 0, 4 } } },
         // ---- Canvas
@@ -268,7 +268,7 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           true },
         { 2, 6, ICON_CANVAS, "The Canvas, your way",
           "Settings › Canvas picks its layout, a slow float and zoom on the cover, how soon the controls fade, and the "
-          "spectrum. A track without lyrics switches to Minimal by itself and back with the next one that has some.",
+          "spectrum. A song without lyrics switches to Minimal by itself and back with the next one that has some.",
           settings(6), { { "set.cvlayout", 0, 3 }, { "set.cvfloat" }, { "set.cvzoom" }, { "set.cvidle" } } },
         // ---- Looks (Complete)
         { 2, 9, ICON_SUN, "Colours",
@@ -373,7 +373,7 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           "turn it on.",
           settings(App::SetSupport), { { "set.repon" } } },
         { 2, 9, ICON_MUSIC, "Last.fm",
-          "Scrobbles what you play to your Last.fm account: each track with tags, once you have heard half of it or 4 minutes. "
+          "Scrobbles what you play to your Last.fm account: each song with tags, once you have heard half of it or 4 minutes. "
           "It stays off until you turn it on and sign in.",
           settings(App::SetLastfm), { { "set.lfon" } } },
         { 0, 9, ICON_SPARKLE, "You're all set",
@@ -719,8 +719,14 @@ void App::drawTour() {
     const bool narrowLevels = w < 440;
     const float kLevelRow = narrowLevels ? 76 : 58, kLevelGap = 8;
     const bool choosing = tourStep == 0 && !tourChapters;   // the first card: which tour (its rows replace Next)
+    // Chapters: only the ones this tour has a step in (Basic leaves some out), each by its first step
+    std::vector<int> chapFirst;
+    if (tourChapters)
+        for (int ch = 0; ch < kChapterCount; ch++)
+            for (int i = 0; i < int(S.size()); i++)
+                if (S[size_t(i)].chapter == ch) { chapFirst.push_back(i); break; }
     auto heightNow = [&] {
-        const float bodyH = tourChapters ? kChapRow * ((kChapterCount + 1) / 2) - 10
+        const float bodyH = tourChapters ? kChapRow * ((int(chapFirst.size()) + 1) / 2) - 10
                             : lines.size() * 22.f + (choosing ? 12 + 3 * kLevelRow + 2 * kLevelGap : 0);
         return pad + 20 + 28 + 10 + bodyH + 18 + 34 + pad;
     };
@@ -775,10 +781,9 @@ void App::drawTour() {
     bool c = false;
     if (tourChapters) {
         const float cw = (w - pad * 2) / 2;
-        for (int ch = 0; ch < kChapterCount; ch++) {
-            int first = 0;
-            while (first < int(S.size()) && S[size_t(first)].chapter != ch) first++;
-            const float cx = x + pad + (ch % 2) * cw, cy = ly + (ch / 2) * kChapRow;
+        for (int n = 0; n < int(chapFirst.size()); n++) {
+            const int first = chapFirst[size_t(n)], ch = S[size_t(first)].chapter;
+            const float cx = x + pad + (n % 2) * cw, cy = ly + (n / 2) * kChapRow;
             button(uid("tour.chap", ch), nullptr, kChapters[ch], cx, cy, st.chapter == ch, &c, false, false, st.chapter == ch ? DefaultFocus : 0);
             if (c) { tourGo(first); return; }
         }

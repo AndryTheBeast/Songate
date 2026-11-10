@@ -349,7 +349,7 @@ static automix::Tune variant3(const std::string& kind, std::mt19937& rng) {
 /**
  * Round 4 on (the user's round 3, 2026-10-29: the outgoing song gone a bar after the drop won on drops, "a little too steep"
  * with a clean cut; fades settled; bridges not): round 3's best as the reference (base3 with exitBars 1), and two versions
- * chosen, not drawn, for what is open: on drops the gate (two Spotify mixes the user sent: 1 the next song in stabs, 2 the
+ * chosen, not drawn, for what is open: on drops the gate (two streaming-service mixes the user sent: 1 the next song in stabs, 2 the
  * outgoing one a stab a bar then filtered out) or the outgoing exit's steepness (outPow 5, 12; the reference 2); on the beat
  * the gate; on bridges the exit's shape (bridgeOutPow 1, 2) and the lead-in (tempoBridgeMax 8, 4).
  */

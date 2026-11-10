@@ -17,6 +17,7 @@
 #include <thread>
 
 #include "cores.hpp"
+#include "safefile.hpp"
 
 namespace {
 
@@ -84,7 +85,8 @@ struct Writer {
                 written.erase(j.path);
                 continue;
             }
-            // Atomic ones are written next to the old file and renamed over it, so a power cut mid-write loses nothing.
+            // Atomic ones are written next to the old file and swapped in (safefile.hpp), so a power cut at any moment
+            // loses nothing: Store::load puts back whichever whole copy is on the card.
             // A write that did not go through whole (a full SD card) never replaces the old file, and is not remembered
             // as written, so the next save tries again.
             const std::string tmp = j.atomic ? j.path + ".tmp" : j.path;
@@ -92,12 +94,8 @@ struct Writer {
                 bool ok = fwrite(j.data.data(), 1, j.data.size(), f) == j.data.size();
                 ok = fclose(f) == 0 && ok;
                 if (j.atomic) {
-                    if (ok) {
-                        remove(j.path.c_str());
-                        ok = rename(tmp.c_str(), j.path.c_str()) == 0;
-                    } else {
-                        remove(tmp.c_str());
-                    }
+                    if (ok) ok = safefile::swapIn(tmp, j.path);
+                    else remove(tmp.c_str());
                 }
                 if (ok) {
                     std::lock_guard<std::mutex> g(m);
@@ -139,19 +137,27 @@ std::vector<std::string> readLines(const std::string& file) {
     std::vector<std::string> out;
     FILE* f = fopen(file.c_str(), "rb");
     if (!f) return out;
-    char buf[2048];
-    while (fgets(buf, sizeof buf, f)) {
-        size_t n = strlen(buf);
-        while (n && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) buf[--n] = 0;
-        if (n) out.emplace_back(buf);
-    }
+    // Read whole and split: a fixed buffer cut any longer line (lyrics kept in edits.tsv) into two records.
+    std::string data;
+    char buf[16384];
+    size_t got;
+    while ((got = fread(buf, 1, sizeof buf, f)) > 0) data.append(buf, got);
     fclose(f);
+    for (size_t a = 0; a < data.size();) {
+        size_t b = data.find('\n', a);
+        if (b == std::string::npos) b = data.size();
+        size_t n = b - a;
+        while (n && data[a + n - 1] == '\r') n--;
+        if (n) out.emplace_back(data, a, n);
+        a = b + 1;
+    }
     return out;
 }
 
 }  // namespace
 
 void Store::load() {
+    safefile::recoverDir(Dir);   // a save cut by a power loss between its renames: the whole copy back in place
     bool filesTabKnown = false;   // a settings.txt from before Files: its hiddenTabs knows nothing of bit 6
     bool linesKnown = false;      // ... and one from before placed lines: Files had a line of its own above it
     bool lyricsKindKnown = false; // ... and one from before lyrics were shared: their switch starts on (the user, 2026-11-04)
@@ -248,6 +254,7 @@ void Store::load() {
         else if (k == "stopLyrics") stopLyrics = v == "1";
         else if (k == "stopDownloads") stopDownloads = v == "1";
         else if (k == "stopTagWrites") stopTagWrites = v == "1";
+        else if (k == "stopMixOrder") stopMixOrder = v == "1";
         else if (k == "pocketButton") pocketButton = v == "1";
         else if (k == "pocketHint") pocketHint = v == "1";
         else if (k == "pocketPads") pocketPads = v == "1";
@@ -269,6 +276,15 @@ void Store::load() {
         else if (k == "musicRoot") musicRoot = v;
         else if (k == "showHidden") showHidden = v == "1";
         else if (k == "viewPlaylists") viewPlaylists = std::clamp(atoi(v.c_str()), 0, 3);
+        else if (k == "viewGenres") viewGenres = std::clamp(atoi(v.c_str()), 0, 3);
+        else if (k == "viewArtists") viewArtists = std::clamp(atoi(v.c_str()), 0, 3);
+        else if (k == "viewAlbums") viewAlbums = std::clamp(atoi(v.c_str()), 0, 3);
+        else if (k == "letterRails") {   // two sets; one number (an earlier build) is both
+            unsigned a = 31, b = 31;
+            const int got = sscanf(v.c_str(), "%u,%u", &a, &b);
+            if (got == 1) b = a;
+            letterRails[0] = a & 31u; letterRails[1] = b & 31u;
+        }
         else if (k == "tabOrder") {
             // ids that exist, once each; any missing (a tab newer than the file) go at the end in their own order
             std::vector<int> o;
@@ -301,7 +317,6 @@ void Store::load() {
         else if (k == "edgeExtra") edgeExtra = std::clamp(float(atof(v.c_str())), 0.f, 1.f);
         else if (k == "edgeCorners") edgeCorners = v == "1";
         else if (k == "uiSize") uiSize = std::clamp(atoi(v.c_str()), 0, 2);
-        else if (k == "serverPlace") serverPlace = std::clamp(atoi(v.c_str()), 0, 1);
         else if (k == "serverTab") serverTab = std::clamp(atoi(v.c_str()), 0, 4);
         else if (k == "libSource") libSource = std::clamp(atoi(v.c_str()), 0, 1);
         else if (k == "plSource") plSource = std::clamp(atoi(v.c_str()), 0, 1);
@@ -319,6 +334,7 @@ void Store::load() {
         else if (k == "togetherOutput") togetherOutput = std::clamp(atoi(v.c_str()), 0, 2);
         else if (k == "handoffFrom") handoffFrom = v;
         else if (k == "airplayReceive") airplayReceive = v == "1";
+        else if (k == "airplaySpeakers") airplaySpeakers = v == "1";
         else if (k == "airSpeakerVol") {   // (lines joined with '|' in the file)
             airSpeakerVol = v;
             for (char& c : airSpeakerVol) if (c == '|') c = '\n';
@@ -467,26 +483,23 @@ void Store::saveAirplayDevices() const {
     writeFile("airplay-devices.tsv", std::move(t));
 }
 
+/** edits.tsv and covers.tsv, through the writer thread: next to the old file and swapped in, off the frame. */
 void Store::saveEdits() const {
-    mkdir(plat::configParent(), 0777);
-    mkdir(Dir, 0777);
     auto clean = [](std::string s) {
         for (char& c : s) if (c == '\t' || c == '\n' || c == '\r') c = ' ';
         return s;
     };
-    if (FILE* f = fopen(path("edits.tsv").c_str(), "wb")) {
-        for (const auto& [p, e] : edits) {
-            if (e.empty()) continue;
-            fputs(p.c_str(), f);
-            for (const auto& [k, v] : e) fprintf(f, "\t%s=%s", k.c_str(), clean(v).c_str());
-            fputc('\n', f);
-        }
-        fclose(f);
+    std::string ed;
+    for (const auto& [p, e] : edits) {
+        if (e.empty()) continue;
+        ed += p;
+        for (const auto& [k, v] : e) { ed += '\t'; ed += k; ed += '='; ed += clean(v); }
+        ed += '\n';
     }
-    if (FILE* f = fopen(path("covers.tsv").c_str(), "wb")) {
-        for (const auto& [p, file] : covers) fprintf(f, "%s\t%s\n", p.c_str(), file.c_str());
-        fclose(f);
-    }
+    writeFile("edits.tsv", std::move(ed));
+    std::string cv;
+    for (const auto& [p, file] : covers) { cv += p; cv += '\t'; cv += file; cv += '\n'; }
+    writeFile("covers.tsv", std::move(cv));
 }
 
 void Store::save() const {
@@ -526,7 +539,7 @@ void Store::save() const {
     }
     appendf(f, "stopCovers=%d\nstopThumbs=%d\nstopLevels=%d\nstopLyrics=%d\nstopDownloads=%d\n", stopCovers, stopThumbs, stopLevels, stopLyrics,
             stopDownloads);
-    appendf(f, "stopTagWrites=%d\ntagWrite=%d\n", stopTagWrites ? 1 : 0, tagWrite);
+    appendf(f, "stopTagWrites=%d\ntagWrite=%d\nstopMixOrder=%d\n", stopTagWrites ? 1 : 0, tagWrite, stopMixOrder ? 1 : 0);
     appendf(f, "pocketButton=%d\npocketHint=%d\npocketKey=%d\npocketHow=%d\npocketHold=%d\n", pocketButton ? 1 : 0, pocketHint ? 1 : 0, pocketKey,
             pocketHow, pocketHold);
     appendf(f, "pocketPads=%d\n", pocketPads ? 1 : 0);
@@ -549,16 +562,17 @@ void Store::save() const {
     for (size_t i = 0; i < tabOrder.size(); i++) appendf(f, i ? ",%d" : "%d", tabOrder[i]);
     appendf(f, "\ntabLines=1");   // knows placed lines (Store::load)
     appendf(f, "\n");
-    appendf(f, "showHidden=%d\nfilesTab=1\nviewPlaylists=%d\n", showHidden, viewPlaylists);   // filesTab: hiddenTabs already knows the Files tab (bit 6)
+    appendf(f, "showHidden=%d\nfilesTab=1\nviewPlaylists=%d\n", showHidden, viewPlaylists);
+    appendf(f, "viewGenres=%d\nviewArtists=%d\nviewAlbums=%d\nletterRails=%u,%u\n", viewGenres, viewArtists, viewAlbums, letterRails[0], letterRails[1]);   // filesTab: hiddenTabs already knows the Files tab (bit 6)
     for (const auto& [k, v] : { std::pair<const char*, const std::string*>{ "filesDir", &filesDir }, { "importDir", &importDir },
                                 { "exportDir", &exportDir }, { "coverDir", &coverDir }, { "backupDir", &backupDir } })
         if (!v->empty()) appendf(f, "%s=%s\n", k, v->c_str());
     appendf(f, "updates=%d\nupdateAtStart=%d\nbetas=%d\nreports=%d\n", updates, updateAtStart, betas ? 1 : 0, reports ? 1 : 0);
     appendf(f, "lastfm=%d\nlastfmScrobble=%d\nlastfmNow=%d\nopeningSound=%d\nopening=%d\n", lastfm ? 1 : 0, lastfmScrobble ? 1 : 0, lastfmNow ? 1 : 0, openingSound ? 1 : 0,
             opening ? 1 : 0);
-    appendf(f, "edgeMode=%d\nedgeExtra=%.3f\nedgeCorners=%d\nuiSize=%d\nserverPlace=%d\nserverTab=%d\nlibSource=%d\nserverDlPlace=%d\nplSource=%d\n", edgeMode, edgeExtra, edgeCorners ? 1 : 0, uiSize, serverPlace, serverTab, libSource, serverDlPlace,
+    appendf(f, "edgeMode=%d\nedgeExtra=%.3f\nedgeCorners=%d\nuiSize=%d\nserverTab=%d\nlibSource=%d\nserverDlPlace=%d\nplSource=%d\n", edgeMode, edgeExtra, edgeCorners ? 1 : 0, uiSize, serverTab, libSource, serverDlPlace,
             plSource);
-    appendf(f, "handoffFrom=%s\nairplayReceive=%d\n", handoffFrom.c_str(), airplayReceive ? 1 : 0);
+    appendf(f, "handoffFrom=%s\nairplayReceive=%d\nairplaySpeakers=%d\n", handoffFrom.c_str(), airplayReceive ? 1 : 0, airplaySpeakers ? 1 : 0);
     {
         std::string v = airSpeakerVol;
         for (char& c : v) if (c == '\n' || c == '\r') c = '|';

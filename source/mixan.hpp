@@ -67,7 +67,7 @@ struct Info {
     float barSureIn = 0, barSureOut = 0;
     int phraseAt = 0;
     std::string bars;
-    // v4 (Automix v3: Spotify's joins hand the bass over hard, on the incoming track's drop): each bar's bass (below
+    // v4 (Automix v3: a streaming service's joins hand the bass over hard, on the incoming track's drop): each bar's bass (below
     // 150 Hz) from barIn on, a digit 0-9 against the body's bass ('9' at it or above, each step 2 dB, '0' 18 dB under it)
     std::string bass;
     double dropAt = -1;     // the drop: the beat where the bass comes in, in full, after bars without it (s; -1: none)

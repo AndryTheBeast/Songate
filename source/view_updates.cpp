@@ -467,9 +467,9 @@ const FactoryPartInfo kFactoryParts[] = {
     { "Settings", GF_FACTORY_SET },
     { "Music folder", "Songate asks where your music is again, as at its first start" },
     { "Playlists", "Your playlists, smart and folder ones, and their icons" },
-    { "Liked", "Every track you liked" },
+    { "Liked", "Every song you liked" },
     { "Tag edits, covers and moods", "Edits, covers and moods; tags written into files stay, can't be restored" },   // (tag-undo goes too)
-    { "Lyric timings", "How far you moved each track's synced lyrics" },
+    { "Lyric timings", "How far you moved each song's synced lyrics" },
     { "Lyrics found online", "Those saved in Songate's folder (those saved beside the songs stay)" },
     { "Saved equalizer presets", "The presets you saved under your own names" },
     { "Play counts and statistics", "Plays, last played and dates added (smart playlists use them)" },
@@ -542,7 +542,7 @@ void App::factoryErase(unsigned mask) {
         return;
     }
     confirm(ICON_X, "Factory reset", "Erase everything", "Songate as if it were newly installed", "Erase everything Songate keeps?",
-            "Every setting, playlist and Liked track; your tag edits, chosen covers, lyric timings, lyrics found online and saved equalizer presets; play "
+            "Every setting, playlist and Liked song; your tag edits, chosen covers, lyric timings, lyrics found online and saved equalizer presets; play "
             "counts and statistics; your Last.fm sign-in and paired devices; " GF_FACTORY_LIST " "
             "Songate then closes and starts again as new. Your music files are not touched, and backups in " + backupRoot() + " stay.",
             "Erase everything", [this, go] {

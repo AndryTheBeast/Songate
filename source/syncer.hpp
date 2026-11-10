@@ -35,6 +35,7 @@ public:
         int measures = 0, covers = 0;       // taken in from the other device, this sync
         bool busy = false;                  // failed because the other device was syncing with a third: tried again soon
         bool shared = false;                // measurements and covers were traded, this sync
+        bool peerAsks = false;              // done here; the other device is still asking its user about its first sync
         uint64_t deleteFrom = ~uint64_t(0); // the clock the switch took effect from, once known
     };
     struct Job {
@@ -55,6 +56,8 @@ public:
     /** Runs one. False while one is under way. */
     bool begin(Job job);
     View view();
+    /** Whether a first sync with this device went through (it does not ask again). Any thread. */
+    bool met(const std::string& peerId);
     /** A device that wants to sync (its id), each asked once; "" none. */
     std::string asked();
     /** The first sync's answer. */

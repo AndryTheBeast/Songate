@@ -238,7 +238,7 @@ void App::reportRows(std::vector<SheetRow>& rows) {
     log.h = 62;
     rows.push_back(log);
     Row text{ Row::Text, ICON_INFO, "", GF_REPORT_ALWAYS
-                                       "and how many tracks you have. Never your files' names." };
+                                       "and how many songs you have. Never your files' names." };
     text.h = 2 * 19.f + 14;
     rows.push_back(text);
 }

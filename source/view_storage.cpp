@@ -138,16 +138,16 @@ std::string App::storageValue(int which) {
 
 void App::clearStorage(int which) {
     static const char* titles[9] = { "Covers cache", "Covers for the overlay", "Loudness measurements", "Tag cache", "Backups", "Update downloads",
-                                     "Lyrics found online", "Tracks kept from the server", "Server downloads" };
+                                     "Lyrics found online", "Songs kept from the server", "Server downloads" };
     static const char* texts[9] = {
         "The small copies of every cover that lists show. Songate makes them again in the background, a few minutes for a large library.",
         "The covers the overlay shows. Made again for each queue sent to the background player, or all of them from Settings › Playback.",
-        "Every track's measured loudness and Automix's analysis. With volume levelling or Automix on, the library is measured again in the background; until then tracks play unlevelled and join with a plain fade.",
+        "Every song's measured loudness and Automix's analysis. With volume levelling or Automix on, the library is measured again in the background; until then songs play unlevelled and join with a plain fade.",
         "The tags read from your files. Every file is read again now, as Library's \"Read all tags again\" does; your own tag edits stay.",
         "Every settings backup made before an install or a restore. Going back to them is no longer possible; your settings now stay.",
         "Release zips kept from an install that did not finish. The release list stays.",
         "Lyrics found online and saved in Songate's folder. Those saved beside the songs stay. Each song may be found online again the next time it plays (the one playing now, after Songate starts again).",
-        "The server's tracks played lately, kept so they start at once the next time. They are fetched from the server again when they play.",
+        "The server's songs played lately, kept so they start at once the next time. They are fetched from the server again when they play.",
         "Every album downloaded from the server into Songate's folder. They play from the server again, and can be downloaded again from their pages.",
     };
     confirm(which == 4 ? ICON_HISTORY : which == 5 || which == 8 ? ICON_DOWNLOAD : which == 6 ? ICON_QUOTE : ICON_FOLDER, "Storage", titles[which],

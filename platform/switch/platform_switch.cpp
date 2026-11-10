@@ -104,11 +104,11 @@ void init() {
     plInitialize(PlServiceType_User);
     psmInitialize();
     if (R_SUCCEEDED(i2cInitialize())) gaugeOpen = R_SUCCEEDED(i2cOpenSession(&gaugeSession, I2cDevice_Max17050));
-    lblInitialize();   // Dim the screen: the handheld backlight (failing is fine: a veil instead)
+    // (the backlight service, lbl, is opened only around each call: see LblCall. Held for the whole run it took one of the few
+    // sessions lbl allows, and Atmosphère's fatal, needing one to show an error screen, panicked instead: 2026-11-09)
 }
 
 void quit() {
-    lblExit();
     if (gaugeOpen) i2csessionClose(&gaugeSession);
     gaugeOpen = false;
     i2cExit();
@@ -189,16 +189,29 @@ void setKeepAwake(bool on) {
 
 void requestSleep() { appletRequestToSleep(); }
 
+namespace {
+/** The backlight service for one call: lbl allows few sessions (the overlays take theirs), and a session kept for the whole run
+ *  starved Atmosphère's fatal of one (its error screen turns the backlight on first), so it panicked: 2021-0003 for "lbl" in
+ *  its report, 2026-11-09. As the sysmodule's aud:a: open, call, close. */
+struct LblCall {
+    bool ok;
+    LblCall() : ok(R_SUCCEEDED(lblInitialize())) {}
+    ~LblCall() { if (ok) lblExit(); }
+};
+}  // namespace
+
 /** Handheld only: docked, the TV is not ours. */
 bool dimBacklight(float& saved) {
-    if (appletGetOperationMode() != AppletOperationMode_Handheld || R_FAILED(lblGetCurrentBrightnessSetting(&saved)) ||
-        R_FAILED(lblSetCurrentBrightnessSetting(std::min(saved, 0.04f))))
-        return false;
+    if (appletGetOperationMode() != AppletOperationMode_Handheld) return false;
+    LblCall lbl;
+    if (!lbl.ok || R_FAILED(lblGetCurrentBrightnessSetting(&saved)) || R_FAILED(lblSetCurrentBrightnessSetting(std::min(saved, 0.04f)))) return false;
     lblApplyCurrentBrightnessSettingToBacklight();
     return true;
 }
 
 void restoreBacklight(float saved) {
+    LblCall lbl;
+    if (!lbl.ok) return;
     lblSetCurrentBrightnessSetting(saved);
     lblApplyCurrentBrightnessSettingToBacklight();
 }
@@ -227,7 +240,10 @@ bool volumeKeys(bool& up, bool& down, std::string* err) {
     return true;
 }
 
-bool backlightOff(bool off) { return R_SUCCEEDED(off ? lblSwitchBacklightOff(0) : lblSwitchBacklightOn(0)); }
+bool backlightOff(bool off) {
+    LblCall lbl;
+    return lbl.ok && R_SUCCEEDED(off ? lblSwitchBacklightOff(0) : lblSwitchBacklightOn(0));
+}
 int disconnectControllers() {   // (attached Joy-Con are the Handheld pad: never touched)
     int n = 0;
     for (int i = 0; i < 8; ++i) {
@@ -439,9 +455,14 @@ bool bgRestart(std::string& err) {
     return true;
 }
 
+namespace {
+bool bgWasRunning = false;   // at the last bgEnd: one that was off (Settings, or not installed) is not started by bgStart
+}
+
 bool bgEnd() {
     const bool pm = R_SUCCEEDED(pmshellInitialize());
     if (pm) {
+        bgWasRunning = gfbgRunning();
         pmshellTerminateProgram(kBgProgram);   // fails harmlessly when it is not running
         svcSleepThread(300'000'000ull);
     }
@@ -450,11 +471,14 @@ bool bgEnd() {
 
 void bgStart(bool ended) {
     if (!ended) return;
-    NcmProgramLocation loc{};
-    loc.program_id = kBgProgram;
-    loc.storageID = NcmStorageId_None;
-    u64 pid = 0;
-    pmshellLaunchProgram(0, &loc, &pid);   // not installed: fails harmlessly
+    if (bgWasRunning) {
+        NcmProgramLocation loc{};
+        loc.program_id = kBgProgram;
+        loc.storageID = NcmStorageId_None;
+        u64 pid = 0;
+        pmshellLaunchProgram(0, &loc, &pid);   // not installed: fails harmlessly
+    }
+    bgWasRunning = false;
     pmshellExit();
 }
 

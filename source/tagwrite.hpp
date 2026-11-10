@@ -43,6 +43,11 @@ struct Before {
 /** The changes into the song itself: true when written and checked; false and why (the song unchanged). before: what it held. */
 bool putChanges(const std::string& song, const Changes& changes, Before* before, std::string& err);
 
+/** A scan met ".songate-old.<name>" or ".songate-new.<name>" in dir: a write cut by a power loss between its renames.
+ *  The song is put back (the checked copy if it is there, else the song as it was) and the leftovers go.
+ *  Returns the song's path when it had been missing and is back, else empty. Waits for a write under way. */
+std::string settleLeftover(const std::string& dir, const std::string& leftover);
+
 /** The lyrics alone (putChanges with "lyrics"). */
 bool putLyrics(const std::string& song, const std::string& lyrics, std::string& err);
 

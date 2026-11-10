@@ -12,6 +12,9 @@
 #include "icons.inc"
 #include "plicons.inc"
 
+static const bool kBackForce = false;   // (dev: the touch back button shown without a touch, to look at it)
+
+
 namespace {
 
 /** var(--ease) = cubic-bezier(.22, .7, .18, 1), as ambient.js evaluates it. */
@@ -500,6 +503,19 @@ void App::drawBackground() {
 
 // ------------------------------------------------------------------ #titlebar
 
+float App::backShown() {
+    backOn_ = kBackForce || (touchUi_ && !canvas && (!history.empty() || route.view != View::Now));
+    // eased towards what is wanted, once a frame: a change of mind mid-way carries on from where it is (no restart, no jump)
+    if (backTick_ != time) {
+        const float dt = std::clamp(float(time - backTick_), 0.f, 0.05f);
+        backTick_ = time;
+        const float to = backOn_ ? 1.f : 0.f;
+        backAnim_ += (to - backAnim_) * std::min(1.f, dt * 14);
+        if (std::fabs(to - backAnim_) < 0.004f) backAnim_ = to;
+    }
+    return backAnim_;
+}
+
 void App::drawTitlebar() {
     const float cy = css::TbH / 2;
 #ifdef GF_WINDOWED
@@ -519,6 +535,23 @@ void App::drawTitlebar() {
     titleKeep_[0] = { x, 0, 34, css::TbH };
 #endif
     x += 34 + 6;
+    // The touch back button (the user, 2026-11-09): centred between the sidebar button and the name, which makes room for it;
+    // with the sidebar folded (no name) it stays in that very place. It fades and slides in as the last input turns to touch.
+    const float bk = backShown();
+    float backRight = 0;
+    if (bk > 0.001f) {
+        const float gap = 46 * bk;                   // the room the name gives
+        const float cx = (x - 14) + (x + gap + 2 - (x - 14)) / 2;   // centred between the sidebar GLYPH's right edge (its button's centre + 9) and the name's left
+        const Id bid = uid("tb.back");
+        hint(bid, "Back");
+        const bool hit = ui.item(bid, { cx - 17, cy - 17, 34, 34 }, 9);
+        const bool hot = ui.pressed(bid) || (ui.focused(bid) && ui.showFocusRing());
+        if (hot) g.roundRect(cx - 17, cy - 17, 34, 34, 9, pal.text, (ui.pressed(bid) ? 0.11f : 0.065f) * bk);
+        g.icon(ICON_BACK, cx, cy, ui.pressed(bid) ? 17 : 18, hot ? pal.text : pal.text2, bk);
+        if (hit && bk > 0.9f) back();
+        backRight = (x - 14) + (cx + 17 - (x - 14)) * bk;   // the switch's anchor follows the button in, not in one jump
+        x += gap;
+    }
 
     // .brand: the name alone, its own wordmark (the user, 2026-10-30: "better font, bold, magical", then the mark beside it
     // taken out: "just the name"): Fraunces Black in the theme's accents turning light, a glow that breathes, now and then
@@ -549,6 +582,7 @@ void App::drawTitlebar() {
     {
         const float in = std::clamp((open - 0.35f) / 0.65f, 0.f, 1.f), ina = in * in * (3 - 2 * in);
         srcFrom = (x - 14) + (g.wordmarkW() + 16) * ina;   // the sidebar glyph's right edge, to the name's (as seen: the glyphs, not their buttons)
+        srcFrom = std::max(srcFrom, backRight > 0 ? backRight + 4 : 0.f);   // the touch back button showing: from its right edge (the name away)
     }
     const float srcNeed = srcW > 0 ? srcFrom + srcW + 32 + 24 : 0;   // (a narrow window: AirPlay no nearer; 24: the sync mark's room)
 #ifdef GF_WINDOWED
@@ -662,11 +696,13 @@ void App::drawTitlebar() {
         titleKeep_[4] = { lx, 0, srcW, css::TbH };
 #endif
     }
-    // Other devices: there once one is paired, lit during a session. Up here, on every screen: the player bar had no room (the user, 2026-11-02)
+    // Other devices, lit during a session. Up here, on every screen: the player bar had no room (the user, 2026-11-02). Always
+    // there, Devices off too: its card turns it on, as AirPlay's card has Receive AirPlay (the user, 2026-11-10: "should not
+    // disappear when devices is off in settings")
 #ifdef GF_WINDOWED
     titleKeep_[2] = {};
 #endif
-    if (devicesPaired) {
+    {
         const float dx = sx + sw + 8 + 17;
 #ifdef GF_WINDOWED
         titleKeep_[2] = { dx - 17, 0, 34, css::TbH };
@@ -682,7 +718,7 @@ void App::drawTitlebar() {
     unsigned pct = 0;
     const bool haveBattery = plat::batteryLevel(pct);
     float rx = css::W - 18 - edge_.tbR;
-    if (haveBattery) rx = drawBatteryCluster(rx, cy, pct, sx + sw + (devicesPaired ? 8 + 34 : 0) + 28);
+    if (haveBattery) rx = drawBatteryCluster(rx, cy, pct, sx + sw + 8 + 34 + 28);
     g.textNum(clock, { css::Base, Weight::SemiBold }, rx, cy - g.lineHeight({ css::Base, Weight::SemiBold }) / 2.f, pal.text2, 1, Align::Right);   // (numbers that change: fixed-width digits)
 }
 
@@ -1105,9 +1141,9 @@ void App::drawSidebar() {
         const bool here = v == View::Playlists, hot = ui.pressed(hid) || (ui.focused(hid) && ui.showFocusRing());
         if (here) g.roundRect(x0, y, hw, 24, 7, pal.accent, 0.09f);
         else if (hot) g.roundRect(x0, y, hw, 24, 7, pal.text, ui.pressed(hid) ? 0.11f : 0.065f);
-        // Apart and signed in: which side's (the user, 2026-11-06); otherwise as it always was
-        const bool apart = store.serverPlace == 0 && subsonic.view().state == Subsonic::SignedIn;
-        kicker(!apart ? "Playlists" : store.libSource == 1 ? "Server playlists" : "Local playlists", x0 + 12, y + 12, here ? pal.accentInk : hot ? pal.text2 : pal.text3, 0.08f);
+        // Signed in to a server: which side's (the user, 2026-11-06); otherwise as it always was
+        const bool sides = subsonic.view().state == Subsonic::SignedIn;
+        kicker(!sides ? "Playlists" : store.libSource == 1 ? "Server playlists" : "Local playlists", x0 + 12, y + 12, here ? pal.accentInk : hot ? pal.text2 : pal.text3, 0.08f);
         hint(uid("nav.newpl"), "New playlist");
         if (iconButton(uid("nav.newpl"), ICON_PLUS, x0 + w - 12, y + 12, false, 24, 14)) {   // your own, or a smart one; the server's: a plain one
             if (serverPlaylistsShown()) serverNewPlaylist({});
@@ -1123,9 +1159,9 @@ void App::drawSidebar() {
     const float footH = 2 + 8 + 1 + 11 + 38 + jobH;
     const float listTop = y, listH = css::H - css::BarH - 12 - footH - listTop;
     ScrollArea& sa = area("side.playlists");
-    const bool srvList = serverPlaylistsShown(), srvMixed = !srvList && serverPlaylistsMixed();
-    const std::vector<Subsonic::Playlist>* spl = srvList || srvMixed ? serverPlaylistList() : nullptr;
-    const int n = srvList ? (spl ? int(spl->size()) : 0) : 1 + int(store.playlists.size()) + (srvMixed && spl ? int(spl->size()) : 0);
+    const bool srvList = serverPlaylistsShown();
+    const std::vector<Subsonic::Playlist>* spl = srvList ? serverPlaylistList() : nullptr;
+    const int n = srvList ? (spl ? int(spl->size()) : 0) : 1 + int(store.playlists.size());
     sa.view = { 0, listTop, sideW + edge_.side, listH };
     sa.content = n * 34.f;
     ui.pushArea(&sa);
@@ -1150,13 +1186,6 @@ void App::drawSidebar() {
         if (navItem("nav.pl", playlistIcon(i), p.name, v == View::List && route.ref == i, std::to_string(count), 32, plFont, i, q.name == p.name && isPlaying() && !srvq_.on))
             navigate(View::List, i);
     }
-    if (srvMixed && spl)   // Mixed in: the server's after yours, with its cloud
-        for (int i = 0; i < int(spl->size()); i++) {
-            const Subsonic::Playlist& p = (*spl)[size_t(i)];
-            const bool here = v == View::Server && route.ref == 5 && route.query.rfind(p.id + "\x1f", 0) == 0;
-            if (navItem("nav.spl", serverPlaylistIcon(p.id), p.name, here, std::to_string(p.songs), 32, plFont, i, srvq_.on && srvq_.name == p.name && isPlaying()))
-                openServer(5, p.id, p.name);
-        }
     g.unclip();
     ui.popArea();
 
@@ -1294,8 +1323,10 @@ void App::marqueeLine(const std::string& s, Font f, float x, float y, float w, c
         const float t = std::fmod(float(time - marqueeAt), Rest + round);
         off = std::max(0.f, t - Rest) * Speed;
     }
-    // no fade at the left while it rests at its start, nor as the next round settles there
-    const float fadeL = std::max(0.f, std::min({ Fade, off * 2, (loop - off) * 2 }));
+    // no fade at the left while it rests at its start; it closes with the end of the text going out, so it is gone before the
+    // next round comes to rest there. Held until the last 12 px, it dimmed the incoming text's first letters and let them go
+    // again as it arrived (the user, 2026-11-10: "a little random fade at the end")
+    const float fadeL = std::max(0.f, std::min({ Fade, off * 2, float(tw) - off }));
     g.textScroll(s, f, x, y, w, off, fadeL, Fade, c);
     if (off > loop - w) g.textScroll(s, f, x, y, w, off - loop, fadeL, Fade, c);   // the next round coming in
 }
@@ -1369,12 +1400,12 @@ void App::drawPlayerbar() {
                           : order == Order::RepeatAll ? ICON_REPEAT : ICON_ORDER;
     {
         // the order playing, as the button's toast names it (the user, 2026-10-29: no "Order:")
-        static const char* orderHints[] = { "Default order", "Repeat playlist", "Repeat track", "Shuffle" };
+        static const char* orderHints[] = { "Default order", "Repeat playlist", "Repeat song", "Shuffle" };
         hint(uid("pb.order"), orderHints[int(order)]);
         hint(uid("pb.prev"), "Previous");
         hint(uid("pb.play"), extOn ? "Pause on " + extFrom : isPlaying() ? "Pause" : "Play");
         hint(uid("pb.next"), "Next");
-        hint(uid("pb.sac"), stopAfterCurrent ? "Stop after this track: on" : "Stop after this track");
+        hint(uid("pb.sac"), stopAfterCurrent ? "Stop after this song: on" : "Stop after this song");
         hint(uid("pb.canvas"), "Canvas");
         hint(uid("pb.mute"), volumeShown <= 0.001f ? "Unmute" : "Mute");
         hint(uid("pb.queue"), "Playlist");
@@ -1411,7 +1442,7 @@ void App::drawPlayerbar() {
     if (off) g.icon(ICON_PAUSE_C, mid + 21 + 10 + 34 + 10 + 17, ctrlY, 18, pal.text2, 0.35f);
     else if (iconButton(uid("pb.sac"), ICON_PAUSE_C, mid + 21 + 10 + 34 + 10 + 17, ctrlY, stopAfterCurrent)) {
         stopAfterCurrent = !stopAfterCurrent;
-        toast(stopAfterCurrent ? "Stop after the current track" : "Keep playing after this track");
+        toast(stopAfterCurrent ? "Stop after the current song" : "Keep playing after this song");
     }
 
     // .pb-seek: 48 | 1fr | 48, gap 10
@@ -1526,6 +1557,11 @@ void App::backgroundJobs(Job (&jobs)[JobSlots], bool (&busy)[JobSlots]) {
         }
     }
     // tag and cover changes into the files: this run, a song at a time (Stop keeps the rest waiting, in Songate meanwhile)
+    if (!store.stopMixOrder && (mixOrderOn_ || !mixOrderWaiting_.empty())) {   // an Automix playlist being ordered (view_automix.cpp)
+        jobs[6] = { "Ordering for Automix", mixOrderWatch_.done.load(), mixOrderWatch_.total.load() > 1 ? mixOrderWatch_.total.load() : 0, SetPlayback,
+                    Stoppable::MixOrder, "Ordered for Automix", false, ICON_REFRESH };
+        busy[6] = true;
+    }
     if (!store.stopTagWrites && tagTotal_ > 0 && tagDone_ < tagTotal_) {
         jobs[9] = { "Writing tags", tagDone_, tagTotal_, SetLibrary, Stoppable::TagWrites, "Written into files", false, ICON_TAG };
         busy[9] = true;
@@ -1594,18 +1630,20 @@ void App::applyJobStops() {
     levels.pause(store.stopLevels);
     lyrIndex.pause(store.stopLyrics);
     subsonic.pauseDownloads(store.stopDownloads);
+    if (store.stopMixOrder) mixOrderWatch_.stop = true;   // (the one being worked out ends; it is asked again at Resume)
 }
 
 void App::setJobStopped(Stoppable which, bool stopped) {
     bool& flag = which == Stoppable::Covers ? store.stopCovers : which == Stoppable::Thumbs ? store.stopThumbs
                : which == Stoppable::Lyrics ? store.stopLyrics
-               : which == Stoppable::Downloads ? store.stopDownloads : which == Stoppable::TagWrites ? store.stopTagWrites : store.stopLevels;
+               : which == Stoppable::Downloads ? store.stopDownloads : which == Stoppable::TagWrites ? store.stopTagWrites
+               : which == Stoppable::MixOrder ? store.stopMixOrder : store.stopLevels;
     if (which == Stoppable::None || flag == stopped) return;
     flag = stopped;
     if (which == Stoppable::Covers) coversHeld = false;   // your Stop or Resume answers the launch's hold too
     applyJobStops();
     persistSoon(0.3f);
-    static const char* names[] = { "", "Covers", "Overlay covers", "Levelling", "Reading lyrics", "Mood tags", "Downloads", "Writing tags" };
+    static const char* names[] = { "", "Covers", "Overlay covers", "Levelling", "Reading lyrics", "Downloads", "Writing tags", "Automix ordering" };   // as Stoppable
     toast(std::string(names[int(which)]) + (stopped ? " stopped. Resume it in Settings" : " resumed"));
 }
 
