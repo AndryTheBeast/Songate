@@ -47,12 +47,28 @@ bool padLast = false;   // the last thing pressed was on a pad: key caps show it
 std::atomic<bool> backHeld{ false };  // Android's back, as B
 std::atomic<bool> backPressed{ false };   // … pressed since a frame last read it: a press and its release can come in one frame (both set on Android's thread)
 
+/** SongateActivity's class, found once on the app's own thread (plat::init) and kept: a thread the app starts itself (Files'
+ *  lister, since BETA 3) has only the system's class loader, where FindClass does not see the app's classes. That lister then
+ *  got no volumes at all and Files showed Internal storage alone, the SD card gone (found by devtest.py, 2026-11-11). */
+jclass activityClass(JNIEnv* env) {
+    static jclass cls = nullptr;
+    if (!cls && env) {
+        if (jclass local = env->FindClass("io/github/andrythebeast/songate/SongateActivity")) {
+            cls = static_cast<jclass>(env->NewGlobalRef(local));
+            env->DeleteLocalRef(local);
+        } else {
+            env->ExceptionClear();
+        }
+    }
+    return cls;
+}
+
 /** A static method of SongateActivity returning a String, or "" when it is not there. */
 std::string javaString(const char* method) {
     JNIEnv* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
     if (!env) return {};
-    jclass cls = env->FindClass("io/github/andrythebeast/songate/SongateActivity");
-    if (!cls) { env->ExceptionClear(); return {}; }
+    jclass cls = activityClass(env);
+    if (!cls) return {};
     jmethodID m = env->GetStaticMethodID(cls, method, "()Ljava/lang/String;");
     std::string out;
     if (m) {
@@ -65,7 +81,6 @@ std::string javaString(const char* method) {
         }
     }
     if (env->ExceptionCheck()) env->ExceptionClear();
-    env->DeleteLocalRef(cls);
     return out;
 }
 
@@ -141,6 +156,7 @@ void openPad() {
 // ---- the app's life
 
 void init() {
+    activityClass(static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv()));   // found here, on the app's own thread, for every thread after
     SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight Portrait");   // upright: its own layout (view_phone.cpp)
 #ifdef GF_DEV
     // test scripts (tools/android/devtest.py): with test-items in the settings folder, what is on screen is written to items.txt,
@@ -150,6 +166,17 @@ void init() {
         if (FILE* f = fopen((dir + "test-items").c_str(), "r")) {
             fclose(f);
             setenv("GF_ITEMS", (dir + "items.txt").c_str(), 1);
+        }
+        // the preview's aids for what cannot be made to happen on demand: test-update (a version, as GF_FAKEUPDATE: a release that
+        // is not out, so the banner, its card and its row can be looked at) and test-jobs (as GF_JOBS: the work's cards)
+        if (FILE* f = fopen((dir + "test-update").c_str(), "r")) {
+            char v[64] = {};
+            if (fgets(v, sizeof v, f)) { v[strcspn(v, "\r\n")] = 0; if (*v) setenv("GF_FAKEUPDATE", v, 1); }
+            fclose(f);
+        }
+        if (FILE* f = fopen((dir + "test-jobs").c_str(), "r")) {
+            fclose(f);
+            setenv("GF_JOBS", "1", 1);
         }
     }
 #endif
@@ -325,6 +352,17 @@ void showTouchKeyboard(bool) {}   // SDL_StartTextInput (the text card) brings A
 
 void windowReady(SDL_Window* w) { appWindow = w; }   // (mainLoop sends a held size change for it)
 void trayIcon(bool) {}
+float screenDensity() {
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
+    if (!env) return 2.625f;
+    jclass cls = activityClass(env);
+    float d = 0;
+    if (cls)
+        if (jmethodID m = env->GetStaticMethodID(cls, "density", "()F")) d = env->CallStaticFloatMethod(cls, m);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    return d > 0.3f ? d : 2.625f;
+}
+
 void titleColours(uint32_t, uint32_t) {}
 
 // ---- Android's music controls (SongateService: the notification, the lock screen, headsets): what plays goes there, their presses
@@ -404,6 +442,15 @@ void keepOnSwipe(bool on) {
     done(env);
 }
 
+void holdLandscape(bool on) {
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
+    if (!env) return;
+    jclass cls = activityClass(env);
+    if (!cls) return;
+    if (jmethodID m = env->GetStaticMethodID(cls, "holdLandscape", "(Z)V")) env->CallStaticVoidMethod(cls, m, jboolean(on));
+    if (env->ExceptionCheck()) env->ExceptionClear();
+}
+
 void mediaState(bool hasTrack, bool playing) {
     JNIEnv* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
     jclass cls = service(env);
@@ -461,7 +508,47 @@ bool batteryRaw(double& percent, bool& charging) {
     return true;
 }
 
-bool batteryInfo(BatteryInfo&) { return false; }   // (the Switch's for now: BETA 3)
+// The battery beyond its charge, from BatteryManager (SongateActivity.batteryInfo): what the phone does not say is marked missing
+// and left out (platform.hpp). No fuel gauge's time to empty: the current is the moment's, and a time made from it jumps about, so
+// the app's own (from ten minutes of the charge) stays; to full is Android's own estimate.
+bool batteryInfo(BatteryInfo& o) {
+    const std::string s = javaString("batteryInfo");
+    if (s.empty()) return false;
+    o = BatteryInfo{};
+    o.chargerKnown = false;
+    double amps = 0, left = 0, full = 0;
+    bool haveAmps = false;
+    size_t at = 0;
+    while (at < s.size()) {
+        const size_t end = s.find('\n', at), eq = s.find('=', at);
+        if (end == std::string::npos) break;
+        if (eq != std::string::npos && eq < end) {
+            const std::string k = s.substr(at, eq - at);
+            const double v = atof(s.substr(eq + 1, end - eq - 1).c_str());
+            if (k == "volts") o.volts = v;
+            else if (k == "temp") o.tempC = v;
+            else if (k == "plugged") o.charger = v != 0 ? 1 : 0;
+            else if (k == "amps") { amps = v; haveAmps = true; }
+            else if (k == "left") left = v;
+            else if (k == "full") full = v;
+            else if (k == "health") o.healthPct = v;
+            else if (k == "ttf") o.ttfMin = int(v);
+            else if (k == "cycles") o.cycles = int(v);
+        }
+        at = end + 1;
+    }
+    o.missing |= 1u << 2;   // the charger's watts: Android does not say
+    if (o.tempC == 0) o.missing |= 1u << 3;
+    if (o.volts <= 0) o.missing |= 1u << 4;
+    if (o.healthPct <= 0) o.missing |= 1u << 5;
+    if (haveAmps && o.volts > 0) {
+        o.gauge = true;
+        o.gaugeVolts = o.volts;
+        o.gaugeAmps = amps;
+        if (left > 0 && full > 0) { o.capMah = left; o.fullMah = full; }
+    } else o.missing |= 1u << 6;
+    return true;
+}
 
 bool batteryLevel(unsigned& percent) {
     double p = 0;

@@ -15,7 +15,10 @@
 #include "plicons.inc"
 
 namespace {
-constexpr float RowH = 40;   // .vrow is 36 px on the PC; a little taller for fingers
+// .vrow is 36 px on the PC; a little taller for fingers
+// (a phone upright: the plain row holds two lines, the title over the artist, and at 40 they ran into each other; the user,
+// 2026-11-11: "super close one song to another compared to landscape". 52 there, as before everywhere else)
+#define RowH (css::W < 600 ? 52.f : 40.f)
 }
 
 // Search's filter tabs (the user, 2026-11-09): the library's switch's names, Genres between Artists and Playlists, the lyrics last
@@ -78,9 +81,13 @@ void App::drawTrackList(float x, float y, float w, float h) {
     const float cs = narrow ? 96.f : 120.f;
     // upright: the views right of the actions where they fit (search's Play, Shuffle and New search leave room), else on a line under
     // them (the user, 2026-11-06: "The android port changed search again": the line under them was empty space there)
-    const float headH = narrow ? 18 + cs + 14 + 34 + (plViewsOwnLine_ ? 10 + 36.f : 0.f) + 16 : 18 + 120 + 14;
+    const bool tabsLine = v == View::Search && searchTabsOwnLine(w, kSearchTabs);
+    const float headH = narrow ? 18 + cs + 14 + 34 + (plViewsOwnLine_ ? 10 + 36.f : 0.f) + 16 : 18 + 120 + 14 + (tabsLine ? kSearchTabsLineH : 0.f);
     sa.view = { x, y, w, h };
     ui.pushArea(&sa);
+    // a phone upright, Search: its field and tabs are over this list, drawn before it, and the head scrolled up over them (the
+    // user's screenshot, 2026-11-11); the whole of it is cut at the list's edge there
+    if (narrow && v == View::Search) g.clip(x, y, w, h);
     const float oy = y - sa.y;
     // Room between the rows for the joins (a playlist's page, not the grid): Automix playlists, and the queue while it plays
     // one, its joins the same (the user, 2026-10-30: "the temporary automix playlist should also show them")
@@ -88,19 +95,23 @@ void App::drawTrackList(float x, float y, float w, float h) {
                          (v == View::Queue && automixQueue());
     // no Grid there (the user, 2026-10-30: "in Automix playlists this view makes no sense": tiles have no order to join): shown
     // with covers instead, your choice for other playlists kept
-    const ListMode mode = mixable && ListMode(store.viewPlaylist) == ListMode::Grid ? ListMode::Covers : ListMode(store.viewPlaylist);
+    const ListMode setMode = mixable && ListMode(store.viewPlaylist) == ListMode::Grid ? ListMode::Covers : ListMode(store.viewPlaylist);
+    // In sort mode (by touch: the menu's Move after a finger): handles on the rows, tiles dragged whole. By album shows With covers
+    // meanwhile (an album's head between two rows is no place to put a song down), and the joins' pills wait
+    const bool sortHere = (v == View::Queue && sorting(Grab::Queue)) || (v == View::List && sorting(Grab::List) && tsort_.ref == route.ref);
+    const ListMode mode = sortHere && setMode == ListMode::Albums ? ListMode::Covers : setMode;
     // the joins always shown: no Mix button to hide them (the user, 2026-10-30: it read as turning the mixing off)
-    const float joinGap = mixable && mode != ListMode::Grid ? 46 : 0;
+    const float joinGap = mixable && mode != ListMode::Grid && !sortHere ? 46 : 0;
     // Search: its filter tabs (the user, 2026-11-09): Songs, Albums, Artists, Genres,
     // Playlists, Lyrics, each as that list's own page shows it; upright (a phone) the page has its own pills, and both groups
-    const bool tabs = v == View::Search && !narrow;
+    const bool tabs = v == View::Search && (!narrow || phoneSearchTabs());   // (a phone upright: the control is over this list, drawn by its page)
     const int stab = tabs ? searchTab_ : 0;
     const bool playRow = !tabs || stab == 0 || stab == 5;   // Play and Shuffle: the songs found, or those whose lyrics have the words
     float segW = 0, viewsW = 6 + 38.f * 4;
     if (tabs) {
         const Font sf{ css::Sm, Weight::SemiBold };
-        segW = 6;
-        for (const auto& t : kSearchTabs) segW += g.measure(t, sf) + 26;   // (as segmented's)
+        segW = narrow ? 0.f : 6.f;
+        if (!narrow) for (const auto& t : kSearchTabs) segW += g.measure(t, sf) + 26;   // (as segmented's)
         viewsW = 6 + 38.f * 4;   // (the filter keeps the four views' room on every tab)
         if (stab != 0) {
             auto cnt = [](size_t n, const char* one, const char* many) { return std::to_string(n) + " " + (n == 1 ? one : many); };
@@ -125,7 +136,8 @@ void App::drawTrackList(float x, float y, float w, float h) {
     g.text(title, { css::Xxl, Weight::Bold }, tx, cyTop + 16, pal.text, 1, Align::Left, int(tw));
     g.text(sub, { css::Sm }, tx, cyTop + 58, pal.text3, 1, Align::Left, int(tw));
     float bx = narrow ? cx : tx;
-    const float by = narrow ? cyTop + cs + 14 : cyTop + 120 - 34;
+    float by = narrow ? cyTop + cs + 14 : cyTop + 120 - 34;
+    const float by1 = by;   // Play and Shuffle's line (a phone upright puts the round actions on the next: below)
     bool clicked = false;
     // The page's playlist, as it was when the frame began: Export and Open folder go to another page part way through
     // (route.ref is then the picker's −1 or a folder's index), and the buttons after them read the playlist again
@@ -142,7 +154,6 @@ void App::drawTrackList(float x, float y, float w, float h) {
         auto bw = [&](const char* label) { return 16 + 24 + g.measure(label, bf) + 16 + 8.f; };
         float need = playRow ? bw("Play") + (noShuffle ? 0 : bw("Shuffle")) : 0.f;
         if (v == View::Queue) need += bw("Current song") + bw("Clear");
-        else if (v == View::Search) need += bw("New search");
         else if (ownPage && !store.playlists[ref].folder()) need += bw("Delete") + bw("Rename") + (store.playlists[ref].automix ? bw("Order again") : 0);
         else if (ref >= 0) need += bw("Open folder") + bw("Delete");
         if (v == View::List && bgShown()) need += bw("Games");
@@ -152,7 +163,7 @@ void App::drawTrackList(float x, float y, float w, float h) {
             (ref < 0 || (ref < int(store.playlists.size()) && store.playlists[size_t(ref)].own() && !store.playlists[size_t(ref)].automix)))
             need += bw("Send to Navidrome");
         if (ownPage) need += 34 + 8;
-        compact = narrow || tx + need > x + w - 28 - viewsW - 16 - (tabs ? segW + 12 : 0);
+        compact = narrow || tx + need > x + w - 28 - viewsW - 16 - (tabs && !tabsLine ? segW + 12 : 0);
     }
     // A secondary action: labelled, or (compact) round with its icon only
     auto action = [&](const char* key, const char* icon, const char* label, bool toggled = false, bool danger = false) {
@@ -163,7 +174,11 @@ void App::drawTrackList(float x, float y, float w, float h) {
         }
         const Id id = uid(key);
         hint(id, label);   // round with its icon only: its name when focused (App::drawHint)
+#ifdef GF_ANDROID
+        const bool c = ui.item(id, { bx - 4, by - 4, 42, 42 }, 21);   // a finger: 42, as the icon buttons (drawn the same)
+#else
         const bool c = ui.item(id, { bx, by, 34, 34 }, 17);
+#endif
         const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
         g.roundRect(bx, by, 34, 34, 17, toggled ? pal.accent : pal.text, toggled ? 0.18f : hot ? 0.11f : 0.065f);
         g.roundStroke(bx, by, 34, 34, 17, 1, toggled ? pal.accent : pal.text, toggled ? 0.5f : 0.15f);
@@ -185,6 +200,26 @@ void App::drawTrackList(float x, float y, float w, float h) {
             if (clicked && !playList.empty()) playTracks(playList, 0, playName, true);
         }
     }
+    // A phone upright: the round actions go on the line under Play and Shuffle, at its left, the views at its right (the user,
+    // 2026-11-11: "should be at the left of views just to look better"; they sat beside Shuffle with the views alone below).
+    // Where they would not all fit beside the views (a narrow phone, a playlist with many), they stay where they were
+    bool actionsLow = false;
+    if (narrow && v != View::Search) {
+        int n = v != View::Search ? 1 : 0;   // Export
+        if (v == View::Queue) n += 1 + (tracks.empty() ? 0 : 1);
+        else if (ownPage && !store.playlists[ref].folder()) n += 1 + (store.playlists[ref].automix ? 1 : 0);
+        else if (ref >= 0 && ref < int(store.playlists.size())) n += 1;
+        if (v == View::List && bgShown()) n += 1;
+        if (v == View::List && subsonic.view().state == Subsonic::SignedIn &&
+            (ref < 0 || (ref < int(store.playlists.size()) && store.playlists[size_t(ref)].own() && !store.playlists[size_t(ref)].automix))) n += 1;
+        if (ownPage) n += 2;   // its icon, Delete
+        const float vw0 = 6 + 38.f * (mixable ? 3 : 4);
+        if (cx + n * 42.f + 4 + vw0 <= x + w - 28) {
+            actionsLow = true;
+            bx = cx;
+            by = by1 + 34 + 10 + 1;   // (34 high, their middle on the views')
+        }
+    }
     if (v == View::Queue) {
         clicked = action("pl.jump", ICON_DISC, "Current song");
         const int cur = q.pos;   // the list is in play order
@@ -202,7 +237,8 @@ void App::drawTrackList(float x, float y, float w, float h) {
             }
         }
     } else if (v == View::Search) {
-        if (action("pl.search", ICON_SEARCH, "New search")) openSearch();
+        // (no New search: the search field is always there, in the title bar and over a phone's page; the user, 2026-11-11:
+        // "redundant")
     } else if (v == View::List && ref >= 0 && ref < int(store.playlists.size()) && !store.playlists[ref].folder()) {
         if (action("pl.rename", ICON_TAG, "Rename")) renamePlaylist(ref);
         // an Automix playlist: ordered again for the best joins (also after it was moved by hand: lit then)
@@ -273,20 +309,23 @@ void App::drawTrackList(float x, float y, float w, float h) {
     else if (tabs && stab != 0) {   // the tab's list in its page's views: Albums', Artists', Genres', Playlists' (three: By album would be the tiles again)
         int& field = stab == 1 ? store.viewAlbums : stab == 2 ? store.viewArtists : stab == 3 ? store.viewGenres : store.viewPlaylists;
         int m = field == 0 ? 2 : field;
-        segRight -= viewSwitch("pl.view", x + w - 28, by + 17, m, 1u) + 12;
+        segRight -= viewSwitch("pl.view", x + w - 28, by1 + 17, m, 1u) + 12;
         if (m != field) { field = m; persistSoon(0.3f); }
         plViewsOwnLine_ = false;
     } else {
-        int m = int(mode);
+        int m = int(setMode);
         const float vw = 6 + 38.f * (mixable ? 3 : 4);
-        plViewsOwnLine_ = narrow && bx + vw > x + w - 28;
-        segRight -= viewSwitch("pl.view", x + w - 28, plViewsOwnLine_ ? by + 34 + 10 + 18 : by + 17, m, mixable ? 1u << int(ListMode::Grid) : 0u) + 12;
-        if (m != int(mode)) store.viewPlaylist = m;
+        plViewsOwnLine_ = actionsLow || (narrow && bx + vw > x + w - 28);
+        segRight -= viewSwitch("pl.view", x + w - 28, plViewsOwnLine_ ? by1 + 34 + 10 + 18 : by1 + 17, m, mixable ? 1u << int(ListMode::Grid) : 0u) + 12;
+        if (m != int(setMode)) store.viewPlaylist = m;
     }
-    if (tabs) {   // Songs · Albums · Artists · Genres · Playlists · Lyrics, in one place whatever the tab's views (none, three or four)
+    if (tabs && !narrow) {   // Songs · Albums · Artists · Genres · Playlists · Lyrics, in one place whatever the tab's views (none, three or four)
         segRight = x + w - 28 - (6 + 38.f * 4) - 12;
         int picked = -1;
-        segmented(uid("pl.stab"), segRight, by + 17, kSearchTabs, stab, &picked, 0, 0, 0, 34);
+        // (36 high, as the views' switch beside it and Library's tabs: 34 was thinner than both; the user, 2026-11-11)
+        if (tabsLine) segmented(uid("pl.stab"), cx + segW, cyTop + 120 + 12 + 17, kSearchTabs, stab, &picked, 0, 0, 0, 36);   // (searchTabsOwnLine)
+        else
+        segmented(uid("pl.stab"), segRight, by1 + 17, kSearchTabs, stab, &picked, 0, 0, 0, 36);
         if (picked >= 0 && picked != stab) { searchTab_ = picked; sa.target = sa.y = 0; }
     }
 
@@ -319,10 +358,13 @@ void App::drawTrackList(float x, float y, float w, float h) {
     bodyGrab = v == View::Queue && grab.kind == Grab::Queue && !grab.upNext ? grab.pos
              : v == View::List && grab.kind == Grab::List && grab.ref == route.ref ? grab.pos : -1;
     // (no letter rail here: a playlist has its own order, an Automix one above all; the user, 2026-11-10)
+    bodySortArea = sortHere ? &sa : nullptr;
     float bodyH = tracks.empty() && srvGroup ? -18.f : drawTrackBody("pl", tracks, x, ly, w, y, h, mode, false, [&](int i) {
         if (v == View::Queue) playAt(i);   // i is the position in play order
         else playTracks(tracks, i, playName);
     }, joinGap);
+    bodySortArea = nullptr;
+    if (v == View::List && bodyGrab >= 0) grab.cols = bodyCols;   // (a playlist's tiles: the D-pad moves a held one along the grid, as the queue's)
     if (v == View::Search && lyricGroup) bodyH = (ly - (oy + headH)) + bodyH + drawLyricHits(x, ly + bodyH, w, y, h);   // In the lyrics
     if (srvGroup) {   // Liked: the server's starred
         std::string kind = subsonic.view().kind;
@@ -986,7 +1028,10 @@ float App::drawLyricHits(float x, float top, float w, float clipY, float clipH) 
     const LyricIndex::Progress p = lyrIndex.progress();
     kicker("In the lyrics", x + 28, y + 12, pal.text3);
     if (p.read < p.total) {   // still reading: how far, in fixed-width digits (a count that changes must not move its line)
-        const std::string s = "Reading lyrics · " + std::to_string(p.read) + " of " + std::to_string(p.total);
+        // (not "Reading" while it is not: stopped in Settings, Not now on its card, or waiting for the tags; the user, 2026-11-11.
+        // Then Settings' own name for the count, "Lyrics read")
+        const bool reading = !store.stopLyrics && !lyrIndex.held();
+        const std::string s = std::string(reading ? "Reading lyrics · " : "Lyrics read · ") + std::to_string(p.read) + " of " + std::to_string(p.total);
         g.textNum(s, { css::Xs }, x + w - 42, y + 12 - g.lineHeight({ css::Xs }) / 2.f, pal.text3, 1, Align::Right);
     }
     y += 30;

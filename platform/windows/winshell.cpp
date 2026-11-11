@@ -50,8 +50,10 @@ constexpr UINT kTrayMsg = WM_APP + 1;
 constexpr UINT kBtnPrev = 40001, kBtnPlay = 40002, kBtnNext = 40003;
 constexpr UINT kMenuShow = 40010, kMenuPlay = 40011, kMenuNext = 40012, kMenuPrev = 40013, kMenuQuit = 40014;
 constexpr UINT_PTR kSubclass = 1;
+constexpr UINT_PTR kHeldTimer = 0x5347;   // while the window is held by its title bar or an edge (windowProc)
 
 HWND hwnd = nullptr;
+Uint32 sdlWindowId = 0;
 UINT taskbarMade = 0, showMsg = 0;
 ComPtr<ITaskbarList3> taskbar;
 HICON icons[4] = {};   // previous, play, pause, next
@@ -179,6 +181,33 @@ LRESULT CALLBACK windowProc(HWND h, UINT msg, WPARAM w, LPARAM l, UINT_PTR, DWOR
             case kMenuQuit: push(Cmd::Quit); return 0;
             default: break;
         }
+    } else if (msg == WM_ENTERSIZEMOVE) {
+        // Held by its title bar or an edge, Windows keeps the app's loop until the mouse is let go, and the app draws from the
+        // window's own messages (App::resizeWatch): none come while the mouse is held still, and whatever was moving stopped in
+        // mid-air (the sidebar folding as the edge crossed its width, the visualizer). A timer says "draw" meanwhile, as often
+        // as Windows' timers go (about 64 times a second)
+        SetTimer(h, kHeldTimer, USER_TIMER_MINIMUM, nullptr);
+    } else if (msg == WM_EXITSIZEMOVE) {
+        KillTimer(h, kHeldTimer);
+    } else if (msg == WM_TIMER && w == kHeldTimer) {
+        SDL_Event e{};
+        e.type = SDL_WINDOWEVENT;
+        e.window.event = SDL_WINDOWEVENT_EXPOSED;
+        e.window.windowID = sdlWindowId;
+        SDL_PushEvent(&e);   // (the app's watch draws a frame from inside this call)
+        return 0;
+    } else if (msg == WM_GETMINMAXINFO) {
+        // Maximised, a window with no title bar of Windows' is given the whole screen, and Windows then takes it for a full-screen
+        // app and puts its taskbar away behind it (the user, 2026-11-11: "The windows bar should be there but it isn't"). Its
+        // largest size is the screen's work area, where the taskbar is not; SDL's answer (the least size) is kept for the rest
+        const LRESULT r = DefSubclassProc(h, msg, w, l);
+        MONITORINFO mi{ sizeof mi };
+        if (GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi)) {
+            auto* m = reinterpret_cast<MINMAXINFO*>(l);
+            m->ptMaxPosition = { mi.rcWork.left - mi.rcMonitor.left, mi.rcWork.top - mi.rcMonitor.top };
+            m->ptMaxSize = { mi.rcWork.right - mi.rcWork.left, mi.rcWork.bottom - mi.rcWork.top };
+        }
+        return r;
     } else if (msg == WM_NCCALCSIZE && w && IsZoomed(h)) {
         // maximised, a frameless window would hang over the screen's edges by its invisible frame
         MONITORINFO mi{ sizeof mi };
@@ -227,9 +256,20 @@ void windowReady(SDL_Window* window) {
     SDL_VERSION(&info.version);
     if (!SDL_GetWindowWMInfo(window, &info)) return;
     hwnd = info.info.win.window;
+    sdlWindowId = SDL_GetWindowID(window);
     taskbarMade = RegisterWindowMessageW(L"TaskbarButtonCreated");
     showMsg = RegisterWindowMessageW(L"Songate.Show");
     SetWindowSubclass(hwnd, windowProc, kSubclass, 0);
+    // A window that opens maximised (it was closed so) was measured before this handler was there to keep it on the screen: it hung
+    // 12 px over every edge and its foot lay under the taskbar (the user's recording, 2026-11-11: "the taskbar is bugged out").
+    // Measured again, now that WM_NCCALCSIZE answers
+    {
+        MONITORINFO mi{ sizeof mi };
+        if (IsZoomed(hwnd) && GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi))   // (and put where a maximised one belongs)
+            SetWindowPos(hwnd, nullptr, mi.rcWork.left, mi.rcWork.top, mi.rcWork.right - mi.rcWork.left, mi.rcWork.bottom - mi.rcWork.top,
+                         SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE);
+        else SetWindowPos(hwnd, nullptr, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
     const BOOL dark = TRUE;
     DwmSetWindowAttribute(hwnd, 20, &dark, sizeof dark);   // DWMWA_USE_IMMERSIVE_DARK_MODE: never the white default
     titleColours(0x0B0F1A, 0xF2F4F8);

@@ -22,6 +22,14 @@ void App::drawNow(float x, float y, float w, float h) {
 #else
     const float art = std::min({ css::H * 0.52f, css::W * 0.40f, 620.f });
 #endif
+#if defined(GF_WINDOWED) && !defined(GF_ANDROID)
+    // A wide window (a large screen, an ultrawide one): the cover and its column are as wide as they get (620 and 760), and what
+    // room is left over is shared either side of them, not all left on the right
+    if (const float need = padH * 2 + art + gap + 760; w > need) {
+        x += std::floor((w - need) / 2);
+        w = need;
+    }
+#endif
     const float iw = std::min(760.f, w - padH * 2 - art - gap);
     const bool has = now.track >= 0 || extOn;   // (an outside source: AirPlay)
     // Automix joining (automixFocus): the cover glides from its place to the middle of the screen and grows, frosted with
@@ -170,6 +178,32 @@ void App::drawNow(float x, float y, float w, float h) {
         cy += 22;
     }
     // .np-actions; an outside source has none of a song here, only where it comes from
+    // Album, Artist and Folder with their names where the row fits the column (it always does at 1280 × 720); in a narrower one (a
+    // short window, a tablet upright: the row ran past the page's edge) round with the icon only, their names as hints, as a
+    // playlist's page does with its actions
+    const bool actsRound = [&] {
+        const Font bf{ css::Sm, Weight::SemiBold };
+        float need = 34;   // (the menu's button)
+        for (const char* l : { "Add to Liked", "Album", "Artist", "Folder" }) need += 16 + 24 + g.measure(l, bf) + 16 + 8;
+        return need > iw;
+    }();
+    auto act = [&](const char* key, const char* icon, const char* label, float& bx, float cy) {
+        bool c = false;
+        if (!actsRound) { bx += button(uid(key), icon, label, bx, cy, false, &c) + 8; return c; }
+        const Id id = uid(key);
+        hint(id, label);
+#ifdef GF_ANDROID
+        c = ui.item(id, { bx - 4, cy - 4, 42, 42 }, 21);   // a finger: 42, as the icon buttons (drawn the same)
+#else
+        c = ui.item(id, { bx, cy, 34, 34 }, 17);
+#endif
+        const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
+        g.roundRect(bx, cy, 34, 34, 17, pal.text, hot ? 0.11f : 0.065f);
+        g.roundStroke(bx, cy, 34, 34, 17, 1, pal.text, 0.15f);
+        g.icon(icon, bx + 17, cy + 17, 16, pal.text);
+        bx += 34 + 8;
+        return c;
+    };
     if (srvq_.on && srvq_.pos >= 0 && srvq_.pos < int(srvq_.songs.size())) {   // a server's track: as one of yours (the user, 2026-11-06)
         cy += 12;
         const Subsonic::Song& so = srvq_.songs[size_t(srvq_.pos)];
@@ -179,19 +213,13 @@ void App::drawNow(float x, float y, float w, float h) {
         bx += button(uid("np.like"), liked ? ICON_HEART_F : ICON_HEART, liked ? "Liked" : "Add to Liked", bx, cy, false, &clicked, liked, false, DefaultFocus) + 8;
         if (clicked) toggleCurrentLike();
         if (!so.albumId.empty()) {
-            clicked = false;
-            bx += button(uid("np.album"), ICON_GRID, "Album", bx, cy, false, &clicked) + 8;
-            if (clicked) openServer(2, so.albumId, so.album);
+            if (act("np.album", ICON_GRID, "Album", bx, cy)) openServer(2, so.albumId, so.album);
         }
         if (!so.artistId.empty()) {
-            clicked = false;
-            bx += button(uid("np.artist"), ICON_MIC, "Artist", bx, cy, false, &clicked) + 8;
-            if (clicked) openServer(1, so.artistId, so.artist);
+            if (act("np.artist", ICON_MIC, "Artist", bx, cy)) openServer(1, so.artistId, so.artist);
         }
         if (!so.parent.empty()) {
-            clicked = false;
-            bx += button(uid("np.folder"), ICON_FOLDER, "Folder", bx, cy, false, &clicked) + 8;
-            if (clicked) openServer(4, so.parent, so.album);
+            if (act("np.folder", ICON_FOLDER, "Folder", bx, cy)) openServer(4, so.parent, so.album);
         }
         {   // .np-actions .more: the server track's menu (also + on the controller)
             const Id mid = uid("np.more");
@@ -219,13 +247,10 @@ void App::drawNow(float x, float y, float w, float h) {
                      DefaultFocus) + 8;
         if (clicked) { store.toggleLiked(t.path); store.save(); toast(liked ? "Removed from Liked" : "Added to Liked"); }
         if (t.albumIdx >= 0) {
-            bx += button(uid("np.album"), ICON_GRID, "Album", bx, cy, false, &clicked) + 8;
-            if (clicked) goToAlbum(t.albumIdx);
+            if (act("np.album", ICON_GRID, "Album", bx, cy)) goToAlbum(t.albumIdx);
         }
-        bx += button(uid("np.artist"), ICON_MIC, "Artist", bx, cy, false, &clicked) + 8;
-        if (clicked) openArtist(t.artist);
-        bx += button(uid("np.folder"), ICON_FOLDER, "Folder", bx, cy, false, &clicked) + 8;
-        if (clicked && tabFor(Store::TabFolders, "folder")) navigate(View::Folders, lib.folderByPath(t.folder));
+        if (act("np.artist", ICON_MIC, "Artist", bx, cy)) openArtist(t.artist);
+        if (act("np.folder", ICON_FOLDER, "Folder", bx, cy) && tabFor(Store::TabFolders, "folder")) navigate(View::Folders, lib.folderByPath(t.folder));
         {
             // .np-actions .more: the track menu (also + on the controller)
             const Id mid = uid("np.more");
@@ -627,18 +652,27 @@ void App::drawUpNext(float x, float y, float w, float h) {
     }
     ui.pushArea(&sa);
     g.clip(x - 8, y, w + 16, h);
+    // In sort mode (by touch: its menu's Move after a finger): the rows that can move (after the song playing, the first 15, none
+    // wrapped round from the start) show the sidebar sorting's handle in the place of their length; each is drawn where sortAt
+    // puts it, the one held last, lifted off the panel. Items are play positions there (queueMove's).
+    const bool sort = sorting(Grab::Queue, true);
+    const int qn = int(q.order.size());
+    const int sortLo = q.pos + 1, sortHi = std::min(qn - 1, q.pos + 15);
+    auto slot = [&](int pos) -> SDL_FRect { return { x - 8, y + 8 + (pos - q.pos - 1) * 52.f - sa.y, w + 16, 52 }; };
+    if (sort) sortRun(qn, sortLo, sortHi, sa, slot, false);
+    const int floats = sort ? (tsort_.held >= 0 ? tsort_.held : tsort_.settle) : -1;
     auto rows = [&](const std::vector<int>& list, bool live) {   // live: the list playing (the old one only shows)
-        for (int i = 0; i < int(list.size()); i++) {
-            const float ry = y + 8 + i * 52 - sa.y;
-            if (ry + 52 < y - 60 || ry > y + h + 60) continue;
+        auto row = [&](int i, float ry, bool fl) {
             const int t = list[i];
             const Track& tr = lib.tracks[t];
             meta.wantTags(t);
             // .up-row: 40 px cover | title + artist · album | duration
+            const int pos = (q.pos + 1 + i) % std::max(1, qn);   // in play order (wrapped round with Repeat)
+            const bool movable = live && sort && pos == q.pos + 1 + i && pos <= sortHi;
+            if (fl) sortFloatBox(x - 8, ry, w + 16, 52, 8);
             if (live) {
                 const Id id = uid("np.next", i);
-                const int pos = (q.pos + 1 + i) % int(q.order.size());   // in play order (wrapped round with Repeat)
-                if (ui.item(id, { x - 8, ry, w + 16, 52 }, 8)) playAt(pos);
+                if (ui.item(id, { x - 8, ry, w + 16, 52 }, 8) && !sort) playAt(pos);   // (in sort mode a tap on a row plays nothing)
                 if (ui.focused(id)) { hoverTrack = t; hoverQueue = pos; hoverUpNext = true; }
                 if (grab.kind == Grab::Queue && grab.upNext && grab.pos == pos) {   // picked up with the track menu's Move
                     g.roundRect(x - 8, ry, w + 16, 52, 8, pal.accent, 0.14f);
@@ -652,7 +686,22 @@ void App::drawUpNext(float x, float y, float w, float h) {
             const int tw = int(w - 52 - dw - 20);
             g.text(tr.title, { css::Base, Weight::SemiBold }, x + 52, ry + 7, pal.text, 1, Align::Left, tw);
             g.text(trackSub(t), { css::Sm }, x + 52, ry + 27, pal.text3, 1, Align::Left, tw);
-            g.textNumC(dur, { css::Sm }, x + w, ry + 26, pal.text3, 1, Align::Right);
+            if (movable) sortHandle("np.sort", pos, x + w - 6, ry + 26, { x - 8, ry, w + 16, 52 });
+            else g.textNumC(dur, { css::Sm }, x + w, ry + 26, pal.text3, 1, Align::Right);
+        };
+        int floatI = -1;
+        for (int i = 0; i < int(list.size()); i++) {
+            const int pos = q.pos + 1 + i;
+            const bool mine = live && sort && pos < qn && pos <= sortHi;   // (a row sort mode may move)
+            if (mine && pos == floats) { floatI = i; continue; }
+            const float ry = mine ? sortAt(pos, slot(pos)).y : y + 8 + i * 52 - sa.y;
+            if (ry + 52 < y - 60 || ry > y + h + 60) continue;
+            row(i, ry, false);
+        }
+        if (floatI >= 0) {   // lifted off the panel, over the others (its shadow not cut at the panel's sides)
+            g.clip(x - 8 - 12, y, w + 16 + 24, h);
+            row(floatI, sortAt(floats, slot(floats)).y, true);
+            g.clip(x - 8, y, w + 16, h);
         }
     };
     if (give) wiped(x - 8, x + w + 8, y, y + h, [&](bool old) { rows(old ? mixOld.upNext : nextTracks, !old); });
@@ -811,7 +860,9 @@ void App::drawPaletteTab(float x, float y, float w, float h) {
 void App::drawPaletteOf(float x, float y, float w, float h, const Palette& target, bool live) {
     ScrollArea& sa = area("np.panel");
     sa.view = { x, y, w, h };
-    sa.content = 8 + 26 + 10 + 4 * 30 + 30;
+    // two columns of roles; one where a name and its colour would meet (a phone upright: "Secondary text" ran into its number)
+    const int palCols = (w - 24) / 2 < 200 ? 1 : 2, palRows = 8 / palCols;
+    sa.content = 8 + 26 + 10 + palRows * 30 + 30;
     const Id id = uid("np.palette");
     if (live) {
         ui.pushArea(&sa);
@@ -836,15 +887,15 @@ void App::drawPaletteOf(float x, float y, float w, float h, const Palette& targe
     const std::pair<const char*, Rgb> roles[8] = { { "Background", target.bg }, { "Surface", target.surface },     { "Accent", target.accent },
                                                    { "Accent · text", target.accentInk }, { "Second accent", target.accent2 }, { "Glow", target.glow },
                                                    { "Text", target.text },             { "Secondary text", target.text2 } };
-    const float colW = (w - 24) / 2;
+    const float colW = palCols == 1 ? w : (w - 24) / 2;
     for (int i = 0; i < 8; i++) {
-        const float rx = x + (i % 2) * (colW + 24), ry = cy + (i / 2) * 30;
+        const float rx = x + (i % palCols) * (colW + 24), ry = cy + (i / palCols) * 30;
         g.roundRect(rx, ry + 4, 22, 22, 6, roles[i].second);
         g.roundStroke(rx, ry + 4, 22, 22, 6, 1, pal.text, 0.09f);
         g.textC(roles[i].first, { css::Base }, rx + 32, ry + 15, pal.text2);
         g.textC(hex(roles[i].second), { css::Sm }, rx + colW, ry + 15, pal.text3, 1, Align::Right);
     }
-    cy += 4 * 30 + 8;
+    cy += palRows * 30 + 8;
     char desc[96];
     snprintf(desc, sizeof desc, "Dark scheme · %s · average lightness %d%%",
              target.monochrome ? "monochrome cover" : ("clusters: " + std::to_string(target.clusters)).c_str(), int(target.avgL * 100));

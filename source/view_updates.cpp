@@ -127,6 +127,95 @@ void App::allowBetas() {
     sheet.askWarn = "Beta versions can be unstable and have bugs. Please report them.";
 }
 
+/** The release the banner above Settings offers: the newest one above this version (betas only with Beta versions on), while
+ *  Check when Songate starts is on, until it is answered (Later or Update), and not one already installed and waiting for a
+ *  restart. From the last check's list, so it is there at once at launch, and again after the check. */
+int App::updateOffer() const {
+#if defined(GF_PREVIEW) || (defined(GF_WINDOWED) && defined(GF_DEV))   // (Android's dev build: test-update / test-jobs in its settings folder, platform_android.cpp; the PC's dev build: the same names in its environment)
+    if (getenv("GF_FAKEUPDATE")) return updLater_ ? -1 : updater.newer(true);   // (the preview's made-up release: app.cpp)
+#endif
+    if (!store.updates || !store.updateAtStart || updLater_) return -1;
+    const int n = updater.newer(store.betas);
+    if (n < 0 || updater.installed.version == updater.releases[size_t(n)].version) return -1;
+    return n;
+}
+
+/** The banner pressed: its sheet, made as a release's (App::openRelease). */
+void App::openUpdateOffer(int rel) {
+    if (rel < 0 || rel >= int(updater.releases.size())) return;
+    if (sheet.preview) SDL_DestroyTexture(sheet.preview);
+    sheet = Sheet{};
+    sheet.page = Sheet::UpdateOffer;
+    sheet.recipe = rel;
+    sheet.name = updater.releases[size_t(rel)].version;
+    sheet.returnFocus = ui.focusedId();
+    ui.focusDefault();
+}
+
+/** Update or Later: either puts the banner away until Songate next starts. Update: the release's row in Settings › Updates, lit
+ *  (as App::showSetting), where its Details has everything that changed and Install. */
+void App::answerUpdateOffer(int rel, bool update) {
+    closeSheet();
+    updLater_ = true;
+    if (!update || rel < 0 || rel >= int(updater.releases.size())) {
+        toast("Offered again the next time Songate starts. Settings \u203a Updates has it meanwhile");
+        return;
+    }
+    settingsCat = SetUpdates;
+    settingsQuery.clear();
+    settingsPhoneOpen_ = settingsPhoneDirect_ = true;
+    navigate(View::Settings);
+    settingsJump = Updater::releaseName(updater.releases[size_t(rel)].version);
+    settingsJumpAt = time;
+}
+
+void App::updateOfferHeader(const char*& icon, std::string& kick, std::string& title, std::string& sub) {
+    const UpdRelease& r = updater.releases[size_t(sheet.recipe)];
+    icon = ICON_DOWNLOAD;
+    kick = std::string(r.beta ? "Beta \u00b7 " : "") + "Update available";
+    title = Updater::releaseName(r.version);
+    sub = "You have " + Updater::pretty(Updater::thisVersion()) + " \u00b7 " + longDate(r.date) + " \u00b7 " + megabytes(r.zipSize);
+}
+
+void App::updateOfferRows(std::vector<SheetRow>& rows) {
+    using Row = SheetRow;
+    if (sheet.recipe < 0 || sheet.recipe >= int(updater.releases.size()) || updater.releases[size_t(sheet.recipe)].version != sheet.name) {
+        closeSheet();   // the list was read again meanwhile
+        return;
+    }
+    const int i = sheet.recipe;
+    const UpdRelease& r = updater.releases[size_t(i)];
+    const float textW = cardW(600) - 48 - 48;   // as view_smart.cpp draws a Text row
+    auto text = [&](const char* icon, const std::string& s) {
+        Row t{ Row::Text, icon, "", s };
+        t.h = g.wrap(s, { css::Sm }, int(textW), 12).size() * 19.f + 14;
+        rows.push_back(t);
+    };
+    int all = 0;
+    for (const UpdLog& sec : r.log) all += int(sec.items.size());
+    // (the whole list's size said here, where the whole list is: the few under What's new are its top)
+    rows.push_back({ Row::Action, ICON_DOWNLOAD, "Update",
+                     all > 1 ? "Opens it in Settings \u203a Updates: all " + std::to_string(all) + " changes, and Install"
+                             : std::string("Opens it in Settings \u203a Updates: what changed, and Install"),
+                     "", [this, i] { answerUpdateOffer(i, true); } });
+    rows.back().h = 62;
+    rows.push_back({ Row::Action, ICON_HOURGLASS, "Later", "Offered again the next time Songate starts", "", [this, i] { answerUpdateOffer(i, false); } });
+    rows.back().h = 62;
+    // The top of what is new: the first line of each part of the changelog, then their second lines, five at most
+    constexpr int kTop = 5;
+    std::vector<const UpdItem*> top;
+    for (size_t depth = 0; int(top.size()) < kTop; depth++) {
+        bool any = false;
+        for (const UpdLog& sec : r.log)
+            if (depth < sec.items.size() && int(top.size()) < kTop) { top.push_back(&sec.items[depth]); any = true; }
+        if (!any) break;
+    }
+    if (top.empty()) return;
+    rows.push_back({ Row::Group, nullptr, "What's new" });
+    rows.back().h = 40;
+    for (const UpdItem* it : top) text(changelogIcon(it->icon), it->text);
+}
+
 void App::checkUpdates(bool quiet) {
     if (!store.updates) { if (!quiet) allowUpdates(); return; }
     if (updater.busy()) return;
@@ -142,8 +231,11 @@ void App::updateTick() {
         std::string newModel;
         for (const ModelRow& r : modelList())
             if (r.offer >= 0 && !r.downloaded && Updater::modelUsable(updater.models[size_t(r.offer)]) && r.name != store.modelToasted) newModel = r.name;
-        if (updateQuiet) {   // the check at launch: a toast only for a newer version, once each
-            if (updater.error.empty() && n >= 0 && updater.releases[size_t(n)].version != store.updateToasted) {
+        if (updateQuiet) {   // the check at launch: a newer version gets its banner above Settings (App::updateOffer), a toast only
+                             // where there is no sidebar to carry it (a phone upright), once each
+            // (a phone upright has the banner too now, at the head of Settings' list, and a dot on the bar's Settings: view_phone.cpp)
+            const bool sayIt = false;
+            if (updater.error.empty() && n >= 0 && sayIt && updater.releases[size_t(n)].version != store.updateToasted) {
                 store.updateToasted = updater.releases[size_t(n)].version;
                 persistSoon(0.3f);
                 toast(Updater::releaseName(store.updateToasted) + " is out: Settings › Updates");
@@ -212,7 +304,7 @@ void App::updateSheetRows(std::vector<SheetRow>& rows) {
     const int i = sheet.recipe;
     const UpdRelease& r = updater.releases[size_t(i)];
     const int cmp = Updater::compare(r.version, Updater::thisVersion());
-    const float textW = 600 - 48 - 48;   // as view_smart.cpp draws a Text row
+    const float textW = cardW(600) - 48 - 48;   // as view_smart.cpp draws a Text row
     auto text = [&](const char* icon, const std::string& s, bool strong = false) {
         Row t{ Row::Text, icon, "", s };
         t.on = strong;   // a warning: in the text colour, not the quieter one
@@ -317,7 +409,7 @@ void App::modelSheetRows(std::vector<SheetRow>& rows) {
     for (const ModelRow& r : modelList()) if (r.name == sheet.name) { row = r; found = true; }
     if (!found) { closeSheet(); return; }
     const UpdModel* m = row.offer >= 0 ? &updater.models[size_t(row.offer)] : nullptr;
-    const float textW = 600 - 48 - 48;
+    const float textW = cardW(600) - 48 - 48;
     auto text = [&](const char* icon, const std::string& s, bool strong = false) {
         Row t{ Row::Text, icon, "", s };
         t.on = strong;

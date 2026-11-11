@@ -748,12 +748,13 @@ void App::drawSmartSheet() {
     // eight across, fewer where the sheet is narrower (a phone upright: at a fixed eight the tiles overlapped)
     const int IconCols = std::clamp(int((cardW(600) - 48 + 8) / (IconTile + 8)), 4, 8);
     const bool filePage = page == Sheet::FileMenu || page == Sheet::FileInfo || page == Sheet::FileLink;
-    const bool relPage = page == Sheet::Release || page == Sheet::Model;
+    const bool relPage = page == Sheet::Release || page == Sheet::Model || page == Sheet::UpdateOffer;
     if (filePage) {
         fileSheetRows(rows);
         if (sheet.page != page) return;   // the file went
     } else if (relPage) {
         if (page == Sheet::Model) modelSheetRows(rows);   // view_updates.cpp: Download, Use, Go back, then its notes
+        else if (page == Sheet::UpdateOffer) updateOfferRows(rows);   // … Update, Later, the top of what is new
         else updateSheetRows(rows);   // view_updates.cpp: Install / Go back, then the changelog
         if (sheet.page != page) return;
     } else if (page == Sheet::Report) {
@@ -768,6 +769,7 @@ void App::drawSmartSheet() {
         if (route.view == View::Playlists && store.playlists.size() > 1)
             rows.push_back({ Row::Action, ICON_SORT_DOWN, "Move", "", "", [this, ref] {
                                  closeSheet();
+                                 if (sortBegin(Grab::Playlists, ref)) return;   // by touch: the page's sort mode (tiles and handles to drag)
                                  grab = Grab{};
                                  grab.kind = Grab::Playlists;
                                  grab.pos = ref;
@@ -1007,6 +1009,7 @@ void App::drawSmartSheet() {
                 if (pg.songs.size() > 1)
                     rows.push_back({ Row::Action, ICON_SORT_DOWN, "Move", "", "", [this, at, pid] {
                                          closeSheet();
+                                         if (sortBegin(Grab::SrvList, at, false, -1, pid)) return;
                                          grab = Grab{};
                                          grab.kind = Grab::SrvList;
                                          grab.pos = at;
@@ -1081,6 +1084,7 @@ void App::drawSmartSheet() {
             if (at >= 0)
                 rows.push_back({ Row::Action, ICON_SORT_DOWN, "Move", "", "", [this, at] {
                                      closeSheet();
+                                     if (sortBegin(Grab::SrvPlaylists, at)) return;
                                      grab = Grab{};
                                      grab.kind = Grab::SrvPlaylists;
                                      grab.pos = at;
@@ -1116,7 +1120,7 @@ void App::drawSmartSheet() {
             const char* kind = bi.charger == 1 ? "Full power" : bi.charger == 2 ? "Low power" : bi.charger == 3 ? "Not supported" : "None";
             std::string w = kind;
             if (bi.charger && bi.chargerVolts * bi.chargerAmps > 0) { snprintf(t, sizeof t, "%.0f V · %.1f A · %.0f W", bi.chargerVolts, bi.chargerAmps, bi.chargerVolts * bi.chargerAmps); w = t; }
-            info(ICON_PLUG, "Charger", "", w);
+            if (bi.chargerKnown) info(ICON_PLUG, "Charger", "", w);   // (a PC: only that one is connected, which the first row says)
             if (bi.volts > 0) { snprintf(t, sizeof t, "%.2f V", bi.volts); info(ICON_GAUGE, "Voltage", "", t); }
             if (bi.tempC > 0) { snprintf(t, sizeof t, "%.1f °%s", store.batteryFahrenheit ? bi.tempC * 9 / 5 + 32 : bi.tempC, store.batteryFahrenheit ? "F" : "C"); info(ICON_THERMO, "Temperature", "", t); }
             if (bi.gauge) {
@@ -1124,11 +1128,13 @@ void App::drawSmartSheet() {
                 snprintf(t, sizeof t, "%s%.1f W · %.2f A", bi.gaugeAmps < 0 ? "\u2212" : "+", std::fabs(bi.gaugeVolts * bi.gaugeAmps), std::fabs(bi.gaugeAmps));
                 info(ICON_BOLT, "Power", "", t);
                 if (bi.fullMah > 0) {
-                    snprintf(t, sizeof t, "%.0f of %.0f mAh", bi.capMah, bi.fullMah);
+                    if (bi.wattHours) snprintf(t, sizeof t, "%.1f of %.1f Wh", bi.capMah / 1000, bi.fullMah / 1000);
+                    else snprintf(t, sizeof t, "%.0f of %.0f mAh", bi.capMah, bi.fullMah);
                     info(ICON_BATTERY, "Charge left", "", t);
                 }
             }
             if (bi.healthPct > 0) { snprintf(t, sizeof t, "%.0f%%", bi.healthPct); info(ICON_HEART, "Health", "", t); }
+            if (bi.cycles > 0) { snprintf(t, sizeof t, "%d", bi.cycles); info(ICON_HISTORY, "Charge cycles", "", t); }
         }
         rows.push_back({ Row::Action, ICON_GEAR, "Battery settings", "", "", [this] {
                              closeSheet();
@@ -1141,7 +1147,7 @@ void App::drawSmartSheet() {
     } else if (page == Sheet::Devices || page == Sheet::AirPlay) {
         // AirPlay's rows on its own page (the title bar's AirPlay button); a phone upright has one button for both, so Devices keeps
         // them there (the user, 2026-11-05: "In the android app it can stay in the same card in portrait")
-        const bool airHere = page == Sheet::AirPlay || css::W < css::H;
+        const bool airHere = page == Sheet::AirPlay || phoneSheets();
         if (page == Sheet::Devices) {
         // One place for what reaches other devices: AirPlay's rows go here when it comes (the user, 2026-11-02). Action rows, with an
         // icon and their second line: as Choice rows they showed one line in a row made for two (the user, 2026-11-03: "way bigger")
@@ -1290,8 +1296,7 @@ void App::drawSmartSheet() {
             rows.back().h = 58;
         }
 #endif
-        rows.push_back({ Row::Group, nullptr, "" });
-        rows.back().h = 10;
+        // (no gap before it: it stood 10 px further from Leave than Leave from the row above; the user, 2026-11-11)
         rows.push_back({ Row::Action, ICON_GEAR, "Device settings", "Pairing, sync, AirPlay and listening together's timing", "", [this] { closeSheet(); settingsCat = SetDevices; settingsPhoneOpen_ = settingsPhoneDirect_ = true; navigate(View::Settings); } });
         rows.back().h = 58;
     } else if (page == Sheet::Sleep) {
@@ -1379,6 +1384,7 @@ void App::drawSmartSheet() {
     std::string fileKick, fileTitle, fileSub;
     if (filePage) fileSheetHeader(fileIcon, fileKick, fileTitle, fileSub);
     if (page == Sheet::Model) modelSheetHeader(fileIcon, fileKick, fileTitle, fileSub);
+    else if (page == Sheet::UpdateOffer) updateOfferHeader(fileIcon, fileKick, fileTitle, fileSub);
     else if (relPage) updateSheetHeader(fileIcon, fileKick, fileTitle, fileSub);
     const bool facPage = page == Sheet::Factory;
     if (facPage) {
@@ -1437,7 +1443,7 @@ void App::drawSmartSheet() {
                           : actl ? "The playlist it plays, faded in"
                           : lacts ? "The game events that play it; off, they do what they usually do"
                           : rc ? rc->desc
-                          : devs ? (css::W < css::H ? "Together, handed over, or on speakers" : "Together, or handed over")
+                          : devs ? (phoneSheets() ? "Together, handed over, or on speakers" : "Together, or handed over")
                           : airp ? "Or let an iPhone play here"
                           : sleep ? "It fades out over its last 10 seconds, then pauses where you were"
                           : plFile ? std::to_string(sheet.fileTracks.size()) + (sheet.fileTracks.size() == 1 ? " track" : " tracks") +
@@ -1450,7 +1456,7 @@ void App::drawSmartSheet() {
     const bool narrowCard = w < 520;
     const int textW = int(w - 64 - 16 - 24 - 24 - 40);
     const std::vector<std::string> titleLines = narrowCard ? g.wrap(title, { css::Lg, Weight::Bold }, textW, 2) : std::vector<std::string>{ title };
-    const std::vector<std::string> subLines = narrowCard && !job && !jobs ? g.wrap(sub, { css::Sm }, textW + 40, 3) : std::vector<std::string>{ sub };
+    const std::vector<std::string> subLines = narrowCard ? g.wrap(sub, { css::Sm }, textW + 40, 3) : std::vector<std::string>{ sub };
     const float headExtra = (std::max<size_t>(titleLines.size(), 1) - 1) * 26.f + (std::max<size_t>(subLines.size(), 1) - 1) * 18.f;
     // a question's buttons, right to left (the main one, its other choices, Cancel): where they do not fit on one line (a phone
     // upright: the first start's three), a second line above; the main one stays at the foot on the right
@@ -1529,7 +1535,8 @@ void App::drawSmartSheet() {
     for (const auto& l : titleLines) { g.text(l, { css::Lg, Weight::Bold }, hx + 64 + 16, ty, pal.text, 1, Align::Left, textW); ty += 26; }
     ty = hy + 44 + (titleLines.size() - 1) * 26.f;
     // A job's count rises while the card is open: fixed-width digits, as the progress cards draw it, so nothing shifts
-    if (job || jobs) g.textNum(sub, { css::Sm }, hx + 64 + 16, ty, pal.text3);
+    // (wrapped on a narrow card as any other: "4 jobs at once: pick one to stop it or see its setting" ran to a phone's edge)
+    if (job || jobs) for (const auto& l : subLines) { g.textNum(l, { css::Sm }, hx + 64 + 16, ty, pal.text3); ty += 18; }
     else for (const auto& l : subLines) { g.text(l, { css::Sm }, hx + 64 + 16, ty, pal.text3, 1, Align::Left, narrowCard ? textW + 40 : textW); ty += 18; }
     hint(uid("sp.close"), "Close");
     if (iconButton(uid("sp.close"), ICON_X, x + w - 24 - 14, hy + 14)) { closeSheet(); return; }
@@ -1538,10 +1545,39 @@ void App::drawSmartSheet() {
     // ---- body
     const float by = y + headH;
     ScrollArea& sa = area("sheet", int(page) * 100 + sheet.recipe);
-    sa.view = { x, by, w, bodyH };
-    ui.pushArea(&sa);
+    // A release's sheet (a model's, the update's): what it does stays where it is, Install or Go back always in reach, and the
+    // changelog scrolls under it, fading out as it nears it (the user, 2026-11-11: "The install or go back row/button should
+    // always be visible while scrolling the log. So the text must fade out when it get closer to that box"). The rows that stay:
+    // the actions it begins with
+    int pinN = 0;
+    float pinH = 0;
+    if (relPage) {
+        while (pinN < int(rows.size()) && rows[size_t(pinN)].kind == Row::Action) pinH += rows[size_t(pinN++)].h;
+        if (pinN == int(rows.size())) { pinN = 0; pinH = 0; }   // nothing under them to scroll
+    }
+    if (pinN) {
+        sa.view = { x, by + 8 + pinH, w, bodyH - 8 - pinH };
+        pinnedScroll_ = &sa;   // the right stick scrolls it, the focus being on a row that stays (App::input)
+        pinnedScrollAt_ = time;
+    } else {
+        sa.view = { x, by, w, bodyH };
+        ui.pushArea(&sa);
+    }
     g.clip(x, by, w, bodyH);
-    float ry = by + 8 - sa.y;
+    float ry = by + 8 - (pinN ? 0 : sa.y);
+    // How much of a line at ty shows, under the rows that stay: the words themselves go, a line at a time, over the 30 px before
+    // them (nothing painted over the card: a strip in its colour showed as a darker band; the user's picture, 2026-11-11)
+    const float fade0 = g.fade();
+    auto nearPin = [&](float ty) {
+        if (!pinN) return 1.f;
+        // … and over the 30 px before the card's foot, the same way (the user: "a fade down here too just for consistency"). Each
+        // end only while there is more that way: at rest the first lines are whole, at the end the last ones
+        const auto ease = [](float t) { t = std::clamp(t, 0.f, 1.f); return t * t * (3 - 2 * t); };
+        const float more0 = std::clamp(sa.y / 20.f, 0.f, 1.f), more1 = std::clamp((sa.max() - sa.y) / 20.f, 0.f, 1.f);
+        const float top = 1 - more0 * (1 - ease((ty - sa.view.y) / 30.f));
+        const float foot = 1 - more1 * (1 - ease((sa.view.y + sa.view.h - (ty + 16)) / 30.f));
+        return top * foot;
+    };
     if (ask) {
         for (size_t k = 0; k < askQ.size(); k++) g.text(askQ[k], { css::Lg, Weight::Bold }, x + 24, ry + 8 + k * 26, pal.text, 1, Align::Left, int(w - 48));
         float ty = ry + 40 + askQExtra;
@@ -1558,31 +1594,44 @@ void App::drawSmartSheet() {
         }
         ry += askH - 8;
     }
+    cardRowIds_.clear();   // (this frame's rows: App::drawFocusRing)
     bool first = !footer;   // the form starts on Create: A makes it as shown, the D-pad reaches the rest
     for (size_t i = 0; i < rows.size(); i++) {
         const Row& r = rows[i];
         const Id id = uid("sp.row", int64_t(i) + 1000 * int(page));
+        if (pinN && int(i) == pinN) {   // from here they scroll, in the room under the rows that stay
+            g.unclip();
+            ui.pushArea(&sa);
+            g.clip(sa.view.x, sa.view.y, sa.view.w, sa.view.h);
+            ry = sa.view.y - sa.y;
+        }
         const bool visible = ry + r.h > by - 80 && ry < by + bodyH + 80;
         switch (r.kind) {
         case Row::Group:
             if (!r.label.empty()) {
                 float kx = x + 24;
+                g.setFade(fade0 * nearPin(ry + r.h - 22));
                 if (r.icon) { g.icon(r.icon, kx + 8, ry + r.h - 12, 16, pal.accentInk); kx += 26; }   // a changelog's section
                 kicker(r.label, kx, ry + r.h - 12, pal.text3, 0.08f);
+                g.setFade(fade0);
             }
             break;
         case Row::Text: {
-            // Wrapped lines after an icon (or a dot): a changelog's items. Focusable, so the D-pad scrolls through them.
-            ui.item(id, { x + 12, ry, w - 24, r.h }, 10);
+            // Wrapped lines after an icon (or a dot): a changelog's items. Words, not buttons: they take no focus and no ring
+            // (the user, 2026-11-11: "Text that is not a clickable button shouldn't have outline"); a long list is scrolled with
+            // the right stick ("the user uses the right stick"), the wheel or a finger, as every list
             if (!visible) break;
             const float lx = x + 24;
+            g.setFade(fade0 * nearPin(ry + 7));
             if (r.icon) g.icon(r.icon, lx + 9, ry + 7 + 10, 16, r.on ? pal.accentInk : pal.text2);
             else g.circle(lx + 9, ry + 7 + 10, 2.5f, pal.text3);
             float ty = ry + 7;
             for (const auto& l : g.wrap(r.sub, { css::Sm }, int(w - 48 - 48), 12)) {
+                g.setFade(fade0 * nearPin(ty));
                 g.text(l, { css::Sm }, lx + 32, ty, r.on ? pal.text : pal.text2);
                 ty += 19;
             }
+            g.setFade(fade0);
             break;
         }
         case Row::Grid: {
@@ -1695,11 +1744,12 @@ void App::drawSmartSheet() {
             // a place to play on: the top line chooses it (a check), its volume below while it plays
             const float topH = 58;
             const bool hit = !r.disabled && ui.item(id, { x + 12, ry, w - 24, topH }, 10, first ? DefaultFocus : 0);
+            cardRowIds_.push_back(id);
             if (!r.disabled) first = false;
             if (visible) {
                 const float a = r.disabled ? 0.45f : 1.f;
                 const bool hot = !r.disabled && (ui.pressed(id) || (ui.focused(id) && ui.showFocusRing()));
-                if (hot) g.roundRect(x + 12, ry, w - 24, topH, 10, pal.text, ui.pressed(id) ? 0.11f : 0.065f);
+                if (hot) g.roundRect(x + 12, ry + kCardRowInset, w - 24, topH - kCardRowInset * 2, 10, pal.text, ui.pressed(id) ? 0.11f : 0.065f);
                 g.icon(r.icon, x + 33, ry + topH / 2, 20, r.on ? pal.accentInk : pal.text2, a);
                 const int tw = int(w - 56 - 24 - 40);
                 g.text(r.label, { css::Base, Weight::SemiBold }, x + 56, ry + topH / 2 - 19, pal.text, a, Align::Left, tw);
@@ -1726,10 +1776,11 @@ void App::drawSmartSheet() {
         case Row::Toggle: {
             // A part to erase (the factory reset): the whole row switches it, as Settings' switch rows
             const bool hit = ui.item(id, { x + 12, ry, w - 24, r.h }, 10, first ? DefaultFocus : 0);
+            cardRowIds_.push_back(id);
             first = false;
             if (visible) {
                 const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
-                if (hot) g.roundRect(x + 12, ry, w - 24, r.h, 10, pal.text, ui.pressed(id) ? 0.11f : 0.065f);
+                if (hot) g.roundRect(x + 12, ry + kCardRowInset, w - 24, r.h - kCardRowInset * 2, 10, pal.text, ui.pressed(id) ? 0.11f : 0.065f);
                 const int tw = int(w - 48 - 40 - 16);
                 g.text(r.label, { css::Base, Weight::SemiBold }, x + 24, ry + r.h / 2 - 19, pal.text, 1, Align::Left, tw);
                 g.text(r.sub, { css::Sm }, x + 24, ry + r.h / 2 + 2, pal.text3, 1, Align::Left, tw);
@@ -1747,11 +1798,14 @@ void App::drawSmartSheet() {
             const bool def = (page == Sheet::Jobs || page == Sheet::EqPreset) && sheet.queuePos >= 0 ? int(i) == sheet.queuePos : first;
             // an action without anything to do only informs (Files' "Kept by Gatefold"): not focusable
             const bool focusable = r.kind != Row::Action || r.act;
+            // (the whole row takes the press; its light and its outline are a little smaller, so that the outlines of two rows, one
+            // leaving and one arriving, never run into each other: the user's recording, 2026-11-11)
             const bool hit = focusable && ui.item(id, { x + 12, ry, w - 24, r.h }, 10, def ? DefaultFocus : 0);
+            if (focusable) cardRowIds_.push_back(id);
             if (focusable) first = false;
             if (!visible) { if (hit && r.act) r.act(); break; }
             const bool hot = focusable && (ui.pressed(id) || (ui.focused(id) && ui.showFocusRing()));
-            if (hot) g.roundRect(x + 12, ry, w - 24, r.h, 10, pal.text, ui.pressed(id) ? 0.11f : 0.065f);
+            if (hot) g.roundRect(x + 12, ry + kCardRowInset, w - 24, r.h - kCardRowInset * 2, 10, pal.text, ui.pressed(id) ? 0.11f : 0.065f);
             float lx = x + 24;
             if (r.kind == Row::Choice) {
                 if (r.on) g.icon(ICON_CHECK, lx + 9, ry + r.h / 2, 18, pal.accentInk);
@@ -1792,7 +1846,7 @@ void App::drawSmartSheet() {
         if (sheet.page != page) break;   // the row moved to another page (or closed)
         ry += r.h;
     }
-    sa.content = ry + sa.y - by + 8;
+    sa.content = ry + sa.y - (pinN ? sa.view.y : by) + 8;
     g.unclip();
     ui.popArea();
     if (sheet.page != page || !footer) return;

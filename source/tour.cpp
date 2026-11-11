@@ -264,7 +264,11 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           "The Canvas gives the whole screen to the music, in three layouts: Cover, Lyrics and Minimal. Leave it alone "
           "and the controls fade away while the progress line grows into a spectrum. {-} or × closes it.",
           [](App& a) { a.navigate(View::Now, -1, {}, false); a.openCanvas(true); },
-          { { "cv.layout", 0 }, { "cv.layout", 1 }, { "cv.layout", 2 }, { "cv.mute" }, { "cv.vol" }, { "cv.sleep" }, { "cv.lyrics" }, { "cv.eq" }, { "cv.close" } },
+          { { "cv.layout", 0 }, { "cv.layout", 1 }, { "cv.layout", 2 }, { "cv.mute" }, { "cv.vol" }, { "cv.sleep" }, { "cv.lyrics" }, { "cv.eq" }, { "cv.close" }
+#ifdef GF_ANDROID
+            , { "ph.canvas" }   // a phone upright: the Canvas is sideways' only, and this step shows its button on Now playing (it turns the screen)
+#endif
+          },
           true },
         { 2, 6, ICON_CANVAS, "The Canvas, your way",
           "Settings › Canvas picks its layout, a slow float and zoom on the cover, how soon the controls fade, and the "
@@ -294,9 +298,9 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           "actions decide what it does when a game opens, when you go to HOME, when you return and when the game "
           "closes: nothing, play, resume, pause, or start one of your playlists.",
           settings(App::SetPlayback), { { "set.bg" } } },   // drawTour scrolls the page to it
-        { 2, 7, ICON_GAME, "Fades and game volumes",
-          "Each game action fades the music in or out over the time you set. The game in front keeps its own music "
-          "volume, and every other game shares one, set from the overlay. Automix playlists join there as here.",
+        { 2, 7, ICON_GAME, "Fades and game volume",
+          "Each game action fades the music in or out over the time you set. The overlay has two volumes: Music, and "
+          "Game for whatever game is running. Automix playlists join there as here.",
           settings(App::SetPlayback), { { "set.bgfout" }, { "set.bgfin" } } },
         { 0, 7, ICON_GAME, "The overlay",
           "While a game is running, open Ultrahand ({L} + {BTN-DOWN} + a click of the right stick {RS}, unless you changed it) and choose "
@@ -548,7 +552,7 @@ void App::drawTour() {
     };
     for (const TourTarget& tg : st.targets) {
         const std::string key = tg.key;
-        if (key == "@main") add({ sideW + edge_.side, float(css::TbH), css::W - sideW - edge_.side - edge_.mainR, float(css::H - css::TbH - css::BarH) });
+        if (key == "@main") add({ pageSideW() + edge_.side, float(css::TbH), css::W - pageSideW() - edge_.side - edge_.mainR, float(css::H - css::TbH - css::BarH) });
         else if (key == "@settingsCats") {
             // the ones in view: past what fits the list scrolls, and those below (About under the player bar) are not lit
             for (int i = 0; i < 16; i++) {

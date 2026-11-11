@@ -3,7 +3,8 @@
  * Playlists: every playlist on one page (the sidebar's "PLAYLISTS" header opens it), in the views the Folders page
  * has: tiles with four covers in the big ones, rows in the small ones. It is where they are put in order, as the
  * play queue's tracks are: + on one opens its menu, Move picks it up, the D-pad moves it, A or B puts it down
- * (App::grab); the sidebar follows. Liked stays first.
+ * (App::grab); the sidebar follows. Liked stays first. By touch, Move puts the page in sort mode instead (App::TouchSort): a tile
+ * is dragged whole, a row by the sidebar sorting's handle.
  */
 #include <algorithm>
 #include <strings.h>
@@ -40,7 +41,7 @@ void App::renameJoins(const std::string& from, const std::string& to) {
     if (changed) store.saveJoins();
 }
 
-void App::movePlaylist(int from, int to) {
+void App::movePlaylist(int from, int to, bool save) {
     const int n = int(store.playlists.size());
     if (from < 0 || from >= n || to < 0 || to >= n || from == to) return;
     const FolderPlaylist moved = store.playlists[size_t(from)];
@@ -55,7 +56,12 @@ void App::movePlaylist(int from, int to) {
     };
     fix(route);
     for (Route& r : history) fix(r);
-    store.save();
+    if (tsort_.on && tsort_.kind == Grab::List) {   // (a playlist's page in sort mode, as its history is)
+        if (tsort_.ref == from) tsort_.ref = to;
+        else if (from < to && tsort_.ref > from && tsort_.ref <= to) tsort_.ref--;
+        else if (to < from && tsort_.ref >= to && tsort_.ref < from) tsort_.ref++;
+    }
+    if (save) store.save();   // (not at each step of a row held: when it is put down, or the finger lifts)
 }
 
 void App::drawPlaylists(float x, float y, float w, float h, bool inLibrary) {
@@ -90,9 +96,12 @@ void App::drawPlaylists(float x, float y, float w, float h, bool inLibrary) {
     }
     kicker("Library", x + 28, cy, pal.text3);
     cy += 10;
-    g.text("Playlists", { css::Xxl, Weight::Bold }, x + 28, cy, pal.text, 1, Align::Left, int(w - 56 - (inLibrary ? 640 : 0)));
+    // a phone upright has no title bar: Local | Server (whose playlists these are) beside the title, while signed in to a server
+    const float srcW = phoneUpright() ? librarySource(x + w - 28, cy + 20, 36) : 0.f;
+    g.text("Playlists", { css::Xxl, Weight::Bold }, x + 28, cy, pal.text, 1, Align::Left, int(w - 56 - (inLibrary ? 640 : 0) - (srcW > 0 ? srcW + 12 : 0)));
     cy += 38;
-    g.text(held >= 0 ? "Moving “" + store.playlists[size_t(held)].name + "”: " GF_MOVING_LOW : sub, { css::Sm }, x + 28, cy + 4,
+    // (narrow, a phone upright: its name alone; how it moves would be cut short, and the toast has just said it)
+    g.text(held >= 0 ? "Moving “" + store.playlists[size_t(held)].name + (w < kNarrowList ? "”" : "”: " GF_MOVING_LOW) : sub, { css::Sm }, x + 28, cy + 4,
            held >= 0 ? pal.accentInk : pal.text3, 1, Align::Left, int(w - 56));
     cy += 22 + 16;
 
@@ -127,23 +136,38 @@ void App::drawPlaylists(float x, float y, float w, float h, bool inLibrary) {
     };
     auto nameOf = [&](int ref) { return ref < 0 ? std::string("Liked") : store.playlists[size_t(ref)].name; };
     auto keyOf = [&](int ref) { return ref < 0 ? int64_t(-1) : int64_t(uid(store.playlists[size_t(ref)].name + "\t" + store.playlists[size_t(ref)].path) & 0x7fffffff); };
+    // In sort mode (by touch: a playlist's menu, Move, after a finger): a tile is dragged whole, any way, the others sliding out of
+    // its way; a row by the sidebar sorting's handle, in its chevron's place. Liked stays first. Each is drawn where sortAt puts it,
+    // the one held last, lifted off the page. The page still scrolls from its gaps and edges, and by itself with a tile held
+    // near its top or foot (App::sortRun).
+    const bool sort = sorting(Grab::Playlists);
+    const int floats = sort ? (tsort_.held >= 0 ? tsort_.held : tsort_.settle) : -1;
     if (tiles) {
         const float inner = w - 32;
         const int cols = std::max(2, int(inner / 200));
         const float tw = inner / cols, cover = tw - 20, th = 10 + cover + 8 + 20 + 2 + 18 + 10;
         const int count = n + 1, rows = (count + cols - 1) / cols;
         if (held >= 0) grab.cols = cols;   // the D-pad moves a held tile along the grid
-        for (int k = 0; k < count; k++) {
-            const int ref = k - 1;
-            const float tx = x + 16 + (k % cols) * tw, ty = cy + (k / cols) * th;
+        const float top = cy;
+        auto slot = [&](int ref) -> SDL_FRect { return { x + 16 + ((ref + 1) % cols) * tw, top + ((ref + 1) / cols) * th, tw, th }; };
+        if (sort) sortRun(n, 0, n - 1, sa, slot, true);
+        for (int k = 0; k <= count; k++) {
+            const bool fl = k == count;   // (after the others: the tile held, or settling)
+            if (fl && (floats < 0 || floats >= n)) break;
+            const int ref = fl ? floats : k - 1;
+            if (!fl && ref >= 0 && ref == floats) continue;
+            const SDL_FPoint at = sort && ref >= 0 ? sortAt(ref, slot(ref)) : SDL_FPoint{ x + 16 + (k % cols) * tw, cy + (k / cols) * th };
+            const float tx = at.x, ty = at.y;
             const Id id = uid("pls.item", keyOf(ref));
             if (ty + th < y - 40 || ty > y + h + 40) {
-                if (ui.item(id, { tx, ty, tw, th }, 14)) navigate(View::List, ref);
+                if (ui.item(id, { tx, ty, tw, th }, 14) && !sort) navigate(View::List, ref);
                 if (ui.focused(id)) plHover = ref;
                 continue;
             }
             const std::vector<int> t = playlistTracks(ref);
-            const bool hit = ui.item(id, { tx, ty, tw, th }, 14);
+            if (fl) sortFloatBox(tx, ty, tw, th, 14);
+            const bool hit = ui.item(id, { tx, ty, tw, th }, 14) && !sort;   // (in sort mode a tap opens nothing)
+            if (sort && ref >= 0) sortGrip("pls.sort", ref, { tx, ty, tw, th }, { tx, ty, tw, th });   // (over the tile: the whole of it drags)
             if (ui.focused(id)) plHover = ref;
             const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
             if (ref == held) {   // picked up: lifted, the accent around it (the queue's Move)
@@ -171,12 +195,19 @@ void App::drawPlaylists(float x, float y, float w, float h, bool inLibrary) {
     } else {
         const float cov = rowH - 4 - 16;
         if (held >= 0) grab.cols = 1;
-        for (int k = 0; k <= n; k++) {
-            const int ref = k - 1;
-            const float ry = cy + k * rowH, rx = x + 14, rw = w - 28;
+        const float top = cy;
+        auto slot = [&](int ref) -> SDL_FRect { return { x + 14, top + (ref + 1) * rowH, w - 28, rowH }; };
+        if (sort) sortRun(n, 0, n - 1, sa, slot, false);
+        for (int k = 0; k <= n + 1; k++) {
+            const bool fl = k == n + 1;   // (after the others: the row held, or settling)
+            if (fl && (floats < 0 || floats >= n)) break;
+            const int ref = fl ? floats : k - 1;
+            if (!fl && ref >= 0 && ref == floats) continue;
+            const float ry = sort && ref >= 0 ? sortAt(ref, slot(ref)).y : cy + k * rowH, rx = x + 14, rw = w - 28;
             const Id id = uid("pls.item", keyOf(ref));
             const bool visible = !(ry + rowH < y - rowH || ry > y + h + rowH);
-            const bool hit = ui.item(id, { rx, ry, rw, rowH - 4 }, 10);
+            if (fl) sortFloatBox(rx, ry, rw, rowH - 4, 10);
+            const bool hit = ui.item(id, { rx, ry, rw, rowH - 4 }, 10) && !sort;   // (in sort mode a tap opens nothing)
             if (hit) navigate(View::List, ref);
             if (ui.focused(id)) plHover = ref;
             if (!visible) continue;
@@ -201,7 +232,8 @@ void App::drawPlaylists(float x, float y, float w, float h, bool inLibrary) {
                 g.text(s2, { css::Sm }, tx, mid + 1, pal.text3, 1, Align::Left, int(rw - 160));
             }
             if (playing) eqGlyph(rx + rw - 48 - 13 - (mode == ListMode::List ? g.measure(info(ref, t), { css::Sm }) + 14 : 0), mid, pal.accentInk);
-            g.icon(ICON_CHEV, rx + rw - 24, mid, 18, pal.text3);
+            if (sort && ref >= 0) sortHandle("pls.sort", ref, rx + rw - 14, mid, { rx, ry, rw, rowH - 4 });   // (in the chevron's place)
+            else g.icon(ICON_CHEV, rx + rw - 24, mid, 18, pal.text3);
         }
         cy += (n + 1) * rowH;
     }

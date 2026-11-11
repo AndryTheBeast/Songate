@@ -241,6 +241,16 @@ void Store::load() {
                 if (std::find(o.begin(), o.end(), i) == o.end()) o.push_back(i);
             batteryOrder = o;
         }
+        else if (k == "cvBatteryFade") cvBatteryFade = v == "1";
+        else if (k == "cvBatteryShow") { for (size_t i = 0; i < 7 && i < v.size(); i++) cvBatteryShow[i] = v[i] == '1'; }
+        else if (k == "cvBatteryOrder") {
+            std::vector<int> o;
+            for (char c : v)
+                if (c >= '0' && c <= '6' && std::find(o.begin(), o.end(), c - '0') == o.end()) o.push_back(c - '0');
+            for (int i = 0; i < 7; i++)
+                if (std::find(o.begin(), o.end(), i) == o.end()) o.push_back(i);
+            cvBatteryOrder = o;
+        }
         else if (k == "batteryCol") { for (size_t i = 0; i < size_t(BatteryStates) && i < v.size(); i++) batteryCol[i] = std::clamp(v[i] - 'a', 0, BatteryColours - 1); }
         else if (k == "batteryOutline") batteryOutline = std::clamp(atoi(v.c_str()), -1, BatteryColours - 1);
         else if (k == "batteryLook") { for (size_t i = 0; i < size_t(BatteryStates) && i < v.size(); i++) batteryLook[i] = std::clamp(v[i] - 'a', 0, BatteryLooks - 1); }
@@ -535,6 +545,10 @@ void Store::save() const {
         for (int i : batteryOrder) o += char('0' + i);
         for (int i = 0; i < BatteryStates; i++) { c += char('a' + batteryCol[i]); l += char('a' + batteryLook[i]); }
         appendf(f, "batteryOrder=%s\nbatteryCol=%s\nbatteryLook=%s\nbatteryOutline=%d\n", o.c_str(), c.c_str(), l.c_str(), batteryOutline);
+        std::string co, cs;
+        for (int i : cvBatteryOrder) co += char('0' + i);
+        for (bool b : cvBatteryShow) cs += b ? '1' : '0';
+        appendf(f, "cvBatteryFade=%d\ncvBatteryShow=%s\ncvBatteryOrder=%s\n", cvBatteryFade, cs.c_str(), co.c_str());
     }
     appendf(f, "stopCovers=%d\nstopThumbs=%d\nstopLevels=%d\nstopLyrics=%d\nstopDownloads=%d\n", stopCovers, stopThumbs, stopLevels, stopLyrics,
             stopDownloads);

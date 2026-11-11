@@ -386,7 +386,7 @@ void Engine::setConfig(const GfbgConfig& c) {
         cfg_.automixModel = std::min<u32>(cfg_.automixModel, u32(automix::Model::Count) - 1);
         cfg_.automixFile[sizeof cfg_.automixFile - 1] = 0;
         lvlTarget_ = levelFor(playing_);   // the levelling mode may have changed: eased to the new gain
-        applyGameVolume();   // the default may be the one the game in front uses
+        applyGameVolume();   // the game in front takes it at once
     }
     saveConfig();
 }
@@ -411,17 +411,15 @@ void Engine::setEq(const GfbgEq& e) {
 
 // ============================================================ game volume
 
-float Engine::gameVolumeFor(u64 program) const {
-    for (const auto& [p, v] : gameVolumes_) if (p == program) return v;
-    return cfg_.gameVolume;
-}
+// One volume for every game (cfg_.gameVolume; the user, 2026-11-10: "no profiles no nothing"). Protocol 6 kept one per
+// game as well, in bg-games.txt: load() removes that file.
 
 /** The game's own audio, through aud:a (11.0.0+) or audout:a before it. Open only for the call: these services allow few
  *  connections and am aborts when it finds one full (2021-0003, 2026-10-30). No connection free: tried again by the watcher. m_ held. */
 void Engine::applyGameVolume() {
     volumePending_ = false;
     if (!appPid_) return;
-    const float v = gameVolumeFor(appProgram_);
+    const float v = cfg_.gameVolume;
     const bool aud = hosversionAtLeast(11, 0, 0);
     if (R_FAILED(aud ? audaInitialize() : audoutaInitialize())) { volumePending_ = true; return; }
     if (aud) { audaSetAudioOutputProcessMasterVolume(appPid_, 0, v); audaExit(); }
@@ -432,36 +430,18 @@ GfbgGameVolume Engine::gameVolume() {
     Lock l(&m_);
     GfbgGameVolume g = {};
     g.programId = appPid_ ? appProgram_ : 0;
-    g.volume = appPid_ ? gameVolumeFor(appProgram_) : cfg_.gameVolume;
-    if (appPid_) for (const auto& e : gameVolumes_) if (e.first == appProgram_) g.own = 1;
+    g.volume = cfg_.gameVolume;
     return g;
 }
 
+/** With a game in front or without one: the game running takes it at once, the next one as it opens. */
 void Engine::setGameVolume(float v) {
-    {
-        Lock l(&m_);
-        if (!appPid_) return;
-        v = std::clamp(v, 0.f, 1.f);
-        bool found = false;
-        for (auto& e : gameVolumes_) if (e.first == appProgram_) { e.second = v; found = true; }
-        if (!found) gameVolumes_.push_back({ appProgram_, v });
-        applyGameVolume();
-    }
-    saveGameVolumes();
-}
-
-void Engine::saveGameVolumes() {
-    std::vector<std::pair<u64, float>> copy;
-    {
-        Lock l(&m_);
-        copy = gameVolumes_;
-    }
-    mkdir("sdmc:/config", 0777);
-    mkdir(Dir().c_str(), 0777);
-    if (FILE* f = fopen(cfgPath("bg-games.txt").c_str(), "wb")) {
-        for (const auto& [p, v] : copy) fprintf(f, "%016llx=%.3f\n", (unsigned long long)p, double(v));
-        fclose(f);
-    }
+    Lock l(&m_);
+    v = std::isfinite(v) ? std::clamp(v, 0.f, 1.f) : 1.f;
+    if (v == cfg_.gameVolume) return;
+    cfg_.gameVolume = v;
+    applyGameVolume();
+    eqSaveAt_ = nowMs() + 1500;   // bg-config.txt, once the slider settles (the watch thread)
 }
 
 void Engine::trackInfo(GfbgTrackInfo* out) {
@@ -1552,10 +1532,7 @@ void Engine::loadFiles() {
         if (b == std::string::npos) continue;
         places_.push_back({ strtoull(l.c_str(), nullptr, 16), std::max(0.0, atof(l.c_str() + a + 1)), l.substr(b + 1) });
     }
-    for (const auto& l : readLines(cfgPath("bg-games.txt"))) {
-        const size_t eq = l.find('=');
-        if (eq != std::string::npos) gameVolumes_.push_back({ strtoull(l.c_str(), nullptr, 16), std::clamp(float(atof(l.c_str() + eq + 1)), 0.f, 1.f) });
-    }
+    remove(cfgPath("bg-games.txt").c_str());   // protocol 6's volume per game: gone, every game has cfg_.gameVolume
 
     // Read a line at a time into the queue itself: a string per line cost several times a big queue, at boot, where
     // running the heap out aborts the module at every start. A queue too big for the heap keeps what fits.

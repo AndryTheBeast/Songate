@@ -275,8 +275,254 @@ void App::dragSort(std::vector<int>& order, int base, const char* key, int i, fl
         persistSoon(0.3f);
     }
     const bool hot = dy >= 0 || (ui.focused(hid) && ui.showFocusRing());
-    if (hot) g.roundRect(x - 44, cy - 20, 44, 40, 10, pal.text, 0.08f);
-    g.icon(ICON_MENU, x - 22, cy, 20, hot ? pal.text : pal.text2);
+    dragGlyph(x - 44, cy, hot);
+}
+
+/** The drag handle's drawing (Settings' lists and every list in sort mode): its 44 wide box from boxX, the glyph in its middle. */
+void App::dragGlyph(float boxX, float cy, bool hot) {
+    if (hot) g.roundRect(boxX, cy - 20, 44, 40, 10, pal.text, 0.08f);
+    g.icon(ICON_MENU, boxX + 22, cy, 20, hot ? pal.text : pal.text2);
+}
+
+// ============================================================ a list put in order by touch (its sort mode)
+// The song lists and the Playlists page (App::TouchSort, app.hpp): Settings' way above, for lists that are not Settings rows. The
+// list says where each item belongs this frame (slot) and draws each where sortAt puts it; the one held or settling last, over
+// sortFloatBox. Items are told apart by their place, and their slides move with them when two change places.
+
+bool App::sortBegin(Grab::Kind kind, int at, bool upNext, int ref, const std::string& srvPl) {
+    grabDrop();
+    sortEnd();
+    if (!sortByDrag()) return false;   // a button or a key chose Move: the row is picked up for the D-pad (App::grab)
+    tsort_ = TouchSort{};
+    tsort_.on = true;
+    tsort_.kind = kind;
+    tsort_.upNext = upNext;
+    tsort_.ref = ref;
+    tsort_.srvPl = srvPl;
+    tsort_.show = at;
+    tsort_.ran = true;
+    toast("Drag them into order, then " GF_TAP " Done");
+    return true;
+}
+
+void App::sortEnd() {
+    if (!tsort_.on) return;
+    sortSave();
+    tsort_ = TouchSort{};
+}
+
+/** What a finger lifting saves (and the mode ending): once for the whole drag, never at each place passed. */
+void App::sortSave() {
+    if (!tsort_.moved) return;
+    tsort_.moved = false;
+    switch (tsort_.kind) {
+    case Grab::Playlists: store.save(); break;
+    case Grab::SrvPlaylists: saveServerPlaylistOrder(); break;
+    case Grab::SrvList: {   // a server playlist's new order, to the server (as grabDrop)
+        const SrvPage& pg = srvPage_[0];
+        if (pg.key == "P:" + tsort_.srvPl) {
+            std::vector<std::string> ids;
+            for (const auto& so : pg.songs) ids.push_back(so.id);
+            subsonic.sendPlaylist(pg.name, tsort_.srvPl, ids);
+        }
+        break;
+    }
+    case Grab::List: persistSoon(0.3f); break;
+    default: persistSoon(0.5f); break;   // the queue (queueEdited asked already; App::update waited for the finger)
+    }
+}
+
+/** The item at from goes to to, the ones between closing up (each list's own way of holding its order). */
+void App::sortMove(int from, int to) {
+    if (from == to) return;
+    switch (tsort_.kind) {
+    case Grab::Playlists: movePlaylist(from, to, false); break;
+    case Grab::SrvPlaylists: moveServerPlaylist(from, to, false); break;
+    case Grab::SrvList: {
+        SrvPage& pg = srvPage_[0];
+        const int n = int(pg.songs.size());
+        if (pg.key != "P:" + tsort_.srvPl || from < 0 || to < 0 || from >= n || to >= n) return;
+        if (from < to) std::rotate(pg.songs.begin() + from, pg.songs.begin() + from + 1, pg.songs.begin() + to + 1);
+        else std::rotate(pg.songs.begin() + to, pg.songs.begin() + from, pg.songs.begin() + from + 1);
+        break;
+    }
+    case Grab::List: {   // a playlist of yours: its rows on the page are the files found; their paths change places in the playlist
+        if (tsort_.ref < 0 || tsort_.ref >= int(store.playlists.size()) || !store.playlists[size_t(tsort_.ref)].own()) return;
+        FolderPlaylist& p = store.playlists[size_t(tsort_.ref)];
+        const std::vector<int> rows = playlistTracks(tsort_.ref);
+        const int n = int(rows.size());
+        if (from < 0 || to < 0 || from >= n || to >= n) return;
+        const int d = to > from ? 1 : -1;
+        std::vector<std::vector<std::string>::iterator> its;
+        for (int k = from; k != to + d; k += d) {
+            const auto it = std::find(p.tracks.begin(), p.tracks.end(), lib.tracks[size_t(rows[size_t(k)])].path);
+            if (it == p.tracks.end()) return;
+            its.push_back(it);
+        }
+        const std::string moved = *its.front();
+        for (size_t k = 0; k + 1 < its.size(); k++) *its[k] = *its[k + 1];
+        *its.back() = moved;
+        if (p.automix) p.manual = true;   // moved by hand: it keeps this order until Order again
+        break;
+    }
+    default: queueMove(from, to); break;
+    }
+    tsort_.moved = true;
+}
+
+void App::sortRun(int n, int lo, int hi, ScrollArea& sa, const std::function<SDL_FRect(int)>& slot, bool grid) {
+    TouchSort& t = tsort_;
+    t.ran = true;
+    if (int(t.slide.size()) != n) {   // (the list changed under it: nothing held, nothing sliding)
+        t.slide.assign(size_t(std::max(0, n)), SDL_FPoint{ 0, 0 });
+        t.held = t.settle = -1;
+    }
+    hi = std::min(hi, n - 1);
+    if (n <= 0 || lo > hi) return;
+    const float k = store.motion ? std::exp(-dt / 0.07f) : 0.f;
+    for (int i = 0; i < n; i++) {
+        if (i == t.held) continue;
+        SDL_FPoint& s = t.slide[size_t(i)];
+        s.x *= k;
+        s.y *= k;
+        if (std::fabs(s.x) < 0.3f) s.x = 0;
+        if (std::fabs(s.y) < 0.3f) s.y = 0;
+    }
+    if (t.settle >= n || (t.settle >= 0 && t.slide[size_t(t.settle)].x == 0 && t.slide[size_t(t.settle)].y == 0)) t.settle = -1;
+    if (t.show >= 0) {   // the row Move was chosen on, in view (clear of Done at the foot)
+        if (t.show < n) {
+            const SDL_FRect r = slot(t.show);
+            if (r.y < sa.view.y + 8 || r.y + r.h > sa.view.y + sa.view.h - 90) {
+                sa.target += r.y + r.h / 2 - (sa.view.y + sa.view.h / 2);
+                sa.clamp();
+            }
+        }
+        t.show = -1;
+    }
+    if (t.held < 0) return;
+    if (t.held < lo || t.held > hi) { t.held = -1; return; }
+    const float fx = ui.sliderDrag(t.heldId), fy = ui.sliderDragY(t.heldId);
+    if (fy < 0) {   // let go: it settles from where the finger left it, and its new place is saved
+        const SDL_FRect r = slot(t.held);
+        t.slide[size_t(t.held)] = { t.hx - r.x, t.hy - r.y };
+        t.settle = t.held;
+        t.held = -1;
+        sortSave();
+        return;
+    }
+    // under the finger, but not far past the first or the last place
+    const SDL_FRect first = slot(lo), last = slot(hi);
+    t.hy = std::clamp(fy - t.offY, first.y - 10, last.y + 10);
+    // an item passed gives its place and slides from where it was: its offset is what it had plus the way between the two places
+    auto pass = [&](int to) {
+        const int from = t.held, d = to > from ? 1 : -1;
+        const SDL_FPoint mine = t.slide[size_t(from)];
+        for (int i = from; i != to; i += d) {
+            const SDL_FRect a = slot(i + d), b = slot(i);
+            t.slide[size_t(i)] = { t.slide[size_t(i + d)].x + a.x - b.x, t.slide[size_t(i + d)].y + a.y - b.y };
+        }
+        t.slide[size_t(to)] = mine;
+        sortMove(from, to);
+        t.settle = -1;
+        t.held = to;
+    };
+    if (grid) {
+        float minX = first.x, maxX = first.x;
+        for (int i = lo; i <= hi && i < lo + 64; i++) { const float sx = slot(i).x; minX = std::min(minX, sx); maxX = std::max(maxX, sx); }
+        t.hx = std::clamp(fx - t.offX, minX - 10, maxX + 10);
+        // the place its middle is over
+        const SDL_FRect me = slot(t.held);
+        const float cx = t.hx + me.w / 2, cy = t.hy + me.h / 2;
+        for (int i = lo; i <= hi; i++) {
+            const SDL_FRect r = slot(i);
+            if (cx >= r.x && cx < r.x + r.w && cy >= r.y && cy < r.y + r.h) { if (i != t.held) pass(i); break; }
+        }
+    } else {
+        // past half of the next row: they change places (Settings' rule)
+        t.hx = slot(t.held).x;
+        while (t.held < hi && t.hy - slot(t.held).y > slot(t.held + 1).h * 0.5f) pass(t.held + 1);
+        while (t.held > lo && slot(t.held).y - t.hy > slot(t.held - 1).h * 0.5f) pass(t.held - 1);
+    }
+    // held near the top or the foot of the list: the list moves under it, faster the nearer the edge
+    const float edge = std::min(56.f, sa.view.h * 0.18f), top = sa.view.y, foot = sa.view.y + sa.view.h;   // (a short panel: a narrow band)
+    float v = 0;
+    if (fy < top + edge) v = -(1 - std::max(0.f, fy - top) / edge);
+    else if (fy > foot - edge) v = 1 - std::max(0.f, foot - fy) / edge;
+    if (v != 0 && sa.max() > 0) {
+        sa.target = std::clamp(sa.target + v * 700 * dt, 0.f, sa.max());
+        sa.velocity = 0;
+        sa.manual = ui.now();
+    }
+}
+
+SDL_FPoint App::sortAt(int i, const SDL_FRect& slot) const {
+    const TouchSort& t = tsort_;
+    if (!t.on || i < 0 || i >= int(t.slide.size())) return { slot.x, slot.y };
+    if (i == t.held) return { t.hx, t.hy };
+    return { slot.x + t.slide[size_t(i)].x, slot.y + t.slide[size_t(i)].y };
+}
+
+void App::sortGrip(const char* key, int i, const SDL_FRect& touch, const SDL_FRect& at) {
+    TouchSort& t = tsort_;
+    Id id = uid(key, i);
+    // the item held keeps the id the finger took, wherever it is now; the one now in that place takes another meanwhile
+    if (t.held >= 0) {
+        if (i == t.held) id = t.heldId;
+        else if (id == t.heldId) id = uid(key, -1000 - i);
+    }
+    ui.item(id, touch, 10, Slider | Slider2D);   // held: it follows the finger at once (no scroll, no tap)
+    if (t.held < 0 && t.endIn == 0 && ui.sliderDragY(id) >= 0) {
+        t.held = i;
+        t.heldId = id;
+        t.settle = -1;
+        t.offX = ui.sliderDrag(id) - at.x;
+        t.offY = ui.sliderDragY(id) - at.y;
+        t.hx = at.x;
+        t.hy = at.y;
+        if (i < int(t.slide.size())) t.slide[size_t(i)] = { 0, 0 };
+    }
+}
+
+void App::sortHandle(const char* key, int i, float rx, float cy, const SDL_FRect& at) {
+    const float boxX = rx + 12 - 44;   // (Settings': the glyph 20 wide in the middle of its 44 box)
+    sortGrip(key, i, { boxX, cy - 22, 44, 44 }, at);
+    dragGlyph(boxX, cy, i == tsort_.held);
+}
+
+void App::sortFloatBox(float x, float y, float w, float h, float rad) {
+    // the shadow, 6 lower: round its box and inside it too (the strip of it under the row showed the page through, a bright lip
+    // on a page lighter than Settings' cards)
+    g.glowAround(x, y + 6, w, h, rad, 18, 10, { 0, 0, 0 }, 0.45f);
+    g.glowInside(x, y + 6, w, h, rad, { 0, 0, 0 }, 0.45f);
+    g.roundRect(x, y, w, h, rad, pal.bg, 1);
+    g.roundRect(x, y, w, h, rad, pal.surface, 0.9f);
+}
+
+/** Done, over the page's foot while a list is in sort mode. */
+void App::drawSortDone() {
+    sortPill_ = {};
+    if (!tsort_.on || canvas) return;
+    const Font bf{ css::Sm, Weight::SemiBold };
+    const float h = 52, doneW = 16 + 24 + g.measure("Done", bf) + 16, w = 9 + doneW + 9;
+    float bottom = css::H - css::BarH - 14;
+#ifdef GF_ANDROID
+    if (phonePortrait()) bottom = phoneFoot();
+#endif
+    const float x = std::round((css::W - w) / 2), y = bottom - h, cy = y + h / 2;
+    sortPill_ = { x - 8, y - 8, w + 16, h + 16 };
+#ifdef GF_DEV
+    const int layerWas = g.saidLayer;
+    g.saidLayer = 1;   // (tests: over the page)
+#endif
+    g.roundRect(x, y + 6, w, h, h / 2, { 0, 0, 0 }, 0.25f);
+    g.roundRect(x, y, w, h, h / 2, pal.surface2);
+    g.roundStroke(x, y, w, h, h / 2, 1, pal.text, 0.12f);
+    bool done = false;
+    button(uid("sort.done"), ICON_CHECK, "Done", x + 9, cy - 17, true, &done);
+    if (done) sortEnd();
+#ifdef GF_DEV
+    g.saidLayer = layerWas;
+#endif
 }
 
 void App::drawSettings(float x, float y, float w, float h) {
@@ -376,7 +622,7 @@ void App::drawSettings(float x, float y, float w, float h) {
         // By touch: a drag handle beside each tab's switch, held and dragged (the user chose it for a phone upright, 2026-11-04: "B";
         // Move put the tab down at the next touch). Then "only change to the sort mode by touch when touch is detected and be how it
         // was for joycons": the handle once a finger is on the screen, Move again at a button, a key or a click.
-        const int sortWay = css::W < kNarrowList || byTouch_ ? 1 : 0;
+        const int sortWay = css::W < kNarrowList || sortByDrag() ? 1 : 0;
         const float sortW = 40 + 12 + 44;
         auto sortCtl = [this](int i, int, float rx, float cy) {
             std::vector<int> rows;   // the tabs with a row here (sidebarTabsShown), by what they are
@@ -414,7 +660,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                            }
                            if (sortWay) return;
                            button(uid("set.tabmove", tab), ICON_SORT_DOWN, "Move", rx - 40 - 16 - mw, cy - 17, false, &c);
-                           if (c && !byTouch_) {
+                           if (c && !sortByDrag()) {
                                grab = Grab{};
                                grab.kind = Grab::Tabs;
                                grab.pos = i;
@@ -442,7 +688,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                       if (sortWay) { sortCtl(i, tab, rx, cy); return; }
                       bool c = false;
                       button(uid("set.tabmove", tab), ICON_SORT_DOWN, "Move", rx - 40 - 16 - mw, cy - 17, false, &c);
-                      if (c && !byTouch_) {
+                      if (c && !sortByDrag()) {
                           grab = Grab{};
                           grab.kind = Grab::Tabs;
                           grab.pos = i;
@@ -481,6 +727,8 @@ void App::drawSettings(float x, float y, float w, float h) {
             const Opt opts[4] = { { "From the cover", 0, coverPal }, { "Dark", 1, paletteFixed(FixedTheme::Dark) },
                                   { "Light", 3, paletteFixed(FixedTheme::Light) }, { "Custom", 4, custom } };
             const float gap = 12, cw = (bw - gap * 3) / 4, ch = 150;
+            // (the longest name with the chosen one's dot: where it does not fit on the tile's line, every tile as the narrow ones)
+            const bool smallNames = cw < 110 || g.measure(opts[0].name, { css::Base, Weight::SemiBold }) + 14 + 14 + 10 > cw;
             for (int i = 0; i < 4; i++) {
                 const float cx = bx + i * (cw + gap), cy = by;
                 const Id id = uid("set.theme", opts[i].id);
@@ -503,7 +751,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                 g.roundRect(tx, py + ph * 0.42f, pw * 0.32f, 6, 3, p.text3);
                 g.roundRect(tx, py + ph * 0.62f, pw * 0.24f, 14, 7, p.accent);
                 g.roundStroke(px, py, pw, ph, 9, 1, p.dark ? Rgb{ 1, 1, 1 } : Rgb{ 0, 0, 0 }, 0.06f);
-                if (cw < 110) {   // a narrow tile (a phone upright): its name centred, smaller, on two lines if it needs them
+                if (smallNames) {   // a narrow tile (a phone upright): its name centred, smaller, on two lines if it needs them
                     const Font nf{ css::Sm, Weight::SemiBold };
                     const auto nl2 = g.wrap(opts[i].name, nf, int(cw - 12), 2);
                     float ny = cy + ch - 20 - (nl2.size() - 1) * 8.f;
@@ -598,13 +846,18 @@ void App::drawSettings(float x, float y, float w, float h) {
         std::vector<Card> cards = { { "Interface colours", colourRows } };
         if (!customRows.empty()) cards.push_back({ "Custom", customRows });   // only while Custom is chosen
         cards.push_back({ "Layout",
-                          { toggleRow("Collapse the sidebar", "Icons only, more room for everything else", "set.side", store.sidebarCollapsed),
+                          { toggleRow("Collapse the sidebar",
+#ifdef GF_WINDOWED
+                                      // (narrow, it is folded whatever this says: said, so the switch is not taken for broken)
+                                      narrow_ ? "This window is narrow, so it is folded for now: your choice is for a window with room" :
+#endif
+                                      "Icons only, more room for everything else", "set.side", store.sidebarCollapsed),
                             toggleRow("Background motion", "The slowly drifting colours behind every view and the Canvas", "set.motion",
                                       store.motion) } });
 #ifdef GF_ANDROID
         // Size, sideways only (the user, 2026-11-04: "in portrait the default is standard but there will not be options to choose. in
         // landscape yes"): upright is always Standard, its row not shown there
-        if (css::W >= css::H)
+        if (!css::Phone)
             cards.back().rows.insert(cards.back().rows.begin(),
                                      segRow("Size", store.uiSize == 0 ? "As on the Switch and the PC" : store.uiSize == 1 ? "A little larger, for a phone held close"
                                                                                                            : "Larger still: less fits on each page",
@@ -659,7 +912,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                                      store.mixHint == 1 ? "On the cover; on the Lyrics tab, in the lyrics' place"
                                                         : "Above the cover; on the Lyrics tab, in the lyrics' place",
                                      "set.mixhint", { "Automatic", "On the cover", "Above" }, store.mixHint, [this](int i) { store.mixHint = i; }));
-        if (css::W >= css::H) cards.push_back({ "Automix", mixRows });   // upright: Full only, nothing to choose (App::mixCanvasMode)
+        if (!css::Phone) cards.push_back({ "Automix", mixRows });   // upright: Full only, nothing to choose (App::mixCanvasMode)
         cards.push_back({ "Sidebar", sidebarRows });
         {   // the #-to-Z rail down a list's right edge, per list and per library (the user, 2026-11-09: each library its own set, the
             // card listing the lists that library has; the title bar's switch says which): all on to begin with
@@ -692,7 +945,7 @@ void App::drawSettings(float x, float y, float w, float h) {
             vis = batteryItems();
             const Font bf{ css::Sm, Weight::SemiBold };
             const float mw = g.measure("Move", bf) + 32 + 24;
-            const bool sortWay = css::W < kNarrowList || byTouch_;
+            const bool sortWay = css::W < kNarrowList || sortByDrag();
             const float sortW = 40 + 12 + 44;
             static const char* names[7] = { "Percentage", "Time", "Charger watts", "Temperature", "Voltage", "Health", "Power" };
             static const char* hints[7] = { "Beside the battery, top right, in this order. Press the battery for everything about it",
@@ -707,11 +960,27 @@ void App::drawSettings(float x, float y, float w, float h) {
             float used = 0;
             for (int it : vis)
                 if (*batteryShown(it)) used += (used > 0 ? sep : 0) + float(g.measure(widest[it], tf));
+            // Home | Canvas (the user, 2026-11-11: "a setting to switch between canvas info and home info, each one shows the battery
+            // information settings for each mode"): the rows under it are that side's own, its order too. The Canvas's first row:
+            // whether its battery leaves with the controls when the Canvas goes idle (the Canvas page's "Controls fade after")
+            const bool forCanvas = batFor_ == 1;
+            top.push_back(segRow("Set it for", forCanvas ? "The battery on the Canvas, and what shows beside it there"
+                                                         : phoneUpright() ? "The battery at the top of the screen, and what shows beside it there"   // (upright: no title bar)
+                                                         : "The battery in the title bar, and what shows beside it there",
+                                 "set.batfor", { "Home", "Canvas" }, batFor_, [this](int i) { batFor_ = i; if (grab.kind == Grab::Battery) grab = Grab{}; }));
+            if (forCanvas) {
+                Row r{ "Fade with the controls", "", store.cvBatteryFade ? "When the Canvas goes idle the battery leaves with its controls, and returns with them"
+                                                                         : "Off: the battery stays on the Canvas while its controls are away", 40,
+                       [this](float rx, float cy) { if (toggle(uid("set.cvbatfade"), rx - 40, cy, store.cvBatteryFade)) { store.cvBatteryFade = !store.cvBatteryFade; persistSoon(0.3f); } } };
+                top.push_back(r);
+            }
             for (int i = 0; i < int(vis.size()); i++) {
                 const int it = vis[size_t(i)];
                 const bool held = grab.kind == Grab::Battery && grab.pos == i;
-                const bool noRoom = batteryRoom_ > 0 && !*batteryShown(it) && used + (used > 0 ? sep : 0) + float(g.measure(widest[it], tf)) > batteryRoom_;
-                Row r{ names[it], "", held && !sortWay ? GF_MOVING_WORDS : noRoom ? "No room beside the battery: turn another off first" : hints[it],
+                // (the Canvas has room for all of them: nothing greyed there; the user, 2026-11-11)
+                const bool noRoom = !forCanvas && batteryRoom_ > 0 && !*batteryShown(it) && used + (used > 0 ? sep : 0) + float(g.measure(widest[it], tf)) > batteryRoom_;
+                Row r{ names[it], "", held && !sortWay ? GF_MOVING_WORDS : noRoom ? "No room beside the battery: turn another off first"
+                                       : it == 0 && forCanvas ? "Beside the Canvas's battery, in this order. Press it for everything about it" : hints[it],
                        sortWay ? sortW : 40 + 16 + mw,
                        [this, it, i, mw, sortWay, noRoom](float rx, float cy) {
                            bool* on = batteryShown(it);
@@ -722,7 +991,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                            if (sortWay) { dragSort(vis, 1000, "set.batdrag", i, rx, cy, [this] { setBatteryItems(vis); }); return; }
                            bool c = false;
                            button(uid("set.batmove", it), ICON_SORT_DOWN, "Move", rx - 40 - 16 - mw, cy - 17, false, &c);
-                           if (c && !byTouch_) {
+                           if (c && !sortByDrag()) {
                                grab = Grab{};
                                grab.kind = Grab::Battery;
                                grab.pos = i;
@@ -733,7 +1002,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                 r.dragKey = 1000 + it;
                 top.push_back(r);
             }
-            if (battery.infoOk)
+            if (battery.infoOk && !(battery.info.missing >> 3 & 1))   // (no temperature read here: no unit to choose)
                 top.push_back(segRow("Temperature in", "", "set.batunit", { "°C", "°F" }, store.batteryFahrenheit ? 1 : 0,
                                      [this](int i) { store.batteryFahrenheit = i == 1; persistSoon(0.3f); }));
             cards.push_back({ "Battery", top });
@@ -754,7 +1023,13 @@ void App::drawSettings(float x, float y, float w, float h) {
                 for (int c = 0; c < nc; c++) {
                     const float sx = narrow ? bx + c * pitch + pitch / 2 - 13 : bx + bw - nc * 30 + 4 + c * 30;
                     const Id id = uid(key, keyBase + c);
-                    if (ui.item(id, { sx, scy - 13, 26, 26 }, 13)) { pick(c); persistSoon(0.3f); }
+#ifdef GF_ANDROID
+                    // a finger: the swatch's whole place along the row and 42 high (drawn the same; they were 26 by 26)
+                    const SDL_FRect hitR{ sx + 13 - pitch / 2, scy - 21, pitch, 42 };
+#else
+                    const SDL_FRect hitR{ sx, scy - 13, 26, 26 };
+#endif
+                    if (ui.item(id, hitR, 13)) { pick(c); persistSoon(0.3f); }
                     const float a = dim ? 0.4f : 1.f;
                     if (c == 2) g.roundRectH(sx + 1, scy - 12, 24, 24, 12, pal.accent2, pal.accent, a);
                     else if (c == 3) g.roundRectH(sx + 1, scy - 12, 24, 24, 12, batteryInk(3, 0), batteryInk(3, 100), a);
@@ -921,7 +1196,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                                            if (stopped) { setJobStopped(Stoppable::Thumbs, false); return; }
                                            if (left > 0) { setJobStopped(Stoppable::Thumbs, true); return; }
                                            for (int t = 0; t < int(lib.tracks.size()); t++) thumbFor(t, false);
-                                           toast("Making them in the background: the card above Settings shows how far it is");
+                                           toast(std::string("Making them in the background: ") + workCardWords());
                                        });
                 covers.value = std::to_string(bgs.coverCount) + " of " + std::to_string(lib.tracks.size());
                 bgRows.push_back(covers);
@@ -946,6 +1221,7 @@ void App::drawSettings(float x, float y, float w, float h) {
         sections.push_back(
             { "Playback", ICON_PLAY,
               { { "", { segRow("Order", automixQueue() ? "An Automix playlist keeps its own order: no Shuffle"
+                                                    : phoneUpright() ? "Also the Order button on Now playing"   // (upright: no player bar)
                                                     : "Also the first button in the player bar", "set.order", orders, int(store.order),
                                [this](int i) { setOrder(Order(i)); }, automixQueue() ? 1u << 3 : 0u),
                         Row{ "Stop after the current song", "", "Then playback stops until you start it again", 40,
@@ -1525,7 +1801,8 @@ void App::drawSettings(float x, float y, float w, float h) {
         onRow.focus = uid("set.updon");
         std::vector<Row> top = { onRow };
         if (store.updates) {
-            top.push_back(toggleRow("Check when Songate starts", "A newer version is announced once, at the bottom of the screen", "set.updstart",
+            top.push_back(toggleRow("Check when Songate starts", phoneUpright() ? "A newer version shows at the top of Settings, until you answer it"   // (upright: no sidebar)
+                                                                 : "A newer version shows above Settings in the sidebar, until you answer it", "set.updstart",
                                     store.updateAtStart));
             std::string hint;
             if (updater.busy()) hint = updateStatus();
@@ -1868,10 +2145,17 @@ void App::drawSettings(float x, float y, float w, float h) {
                 Row code{ "", "", "", 0, nullptr };
                 code.blockH = 150;
                 const std::string shown = cv.code.substr(0, 3) + " " + cv.code.substr(3);
-                const std::string left = "Type this code on the other device. It works for " + std::to_string(cv.codeSeconds) + (cv.codeSeconds == 1 ? " more second, for one try." : " more seconds, for one try.");
-                code.block = [this, shown, left](float bx, float by, float bw) {
+                const std::string what = "Type this code on the other device.";
+                const std::string howLong = "It works for " + std::to_string(cv.codeSeconds) + (cv.codeSeconds == 1 ? " more second, for one try." : " more seconds, for one try.");
+                // a phone upright: its two sentences on a line each (as one they ran off both sides of the card: the user's
+                // screenshot, 2026-11-11); the one that counts down in fixed-width digits
+                const bool two = css::W < kNarrowList;
+                if (two) code.blockH = 174;
+                code.block = [this, shown, what, howLong, two](float bx, float by, float bw) {
                     g.text(shown, { 58, Weight::SemiBold }, bx + bw / 2, by + 16, pal.text, 1, Align::Center);
-                    g.text(left, { css::Md }, bx + bw / 2, by + 100, pal.text2, 1, Align::Center);
+                    if (!two) { g.text(what + " " + howLong, { css::Md }, bx + bw / 2, by + 100, pal.text2, 1, Align::Center); return; }
+                    g.text(what, { css::Md }, bx + bw / 2, by + 100, pal.text2, 1, Align::Center, int(bw));
+                    g.textNum(howLong, { css::Md }, bx + bw / 2, by + 100 + 24, pal.text2, 1, Align::Center);
                 };
                 cards.push_back({ "Pairing", { code, buttonRow("Stop pairing", "", "set.cnstop", ICON_X, "Cancel", [this] { connect.cancelCode(); }) } });
                 if (cnCodeFocus_) {   // Show a code went away with the press: the page goes to the code, not where focus fell back to
@@ -1884,7 +2168,8 @@ void App::drawSettings(float x, float y, float w, float h) {
             const bool syncBusy = syncWaiting || sv.state == Syncer::State::Reading || sv.state == Syncer::State::Trading || sv.state == Syncer::State::Asking ||
                                   sv.state == Syncer::State::Backing || sv.state == Syncer::State::Applying || sv.state == Syncer::State::Sharing;
             std::string syncNote;
-            if (syncWaiting || sv.state == Syncer::State::Reading || sv.state == Syncer::State::Trading) syncNote = "Syncing…";   // no counters: each new number is a new text to draw
+            if (syncWaiting || sv.state == Syncer::State::Reading || sv.state == Syncer::State::Trading || sv.state == Syncer::State::Backing ||
+                sv.state == Syncer::State::Applying) syncNote = "Syncing…";   // no counters: each new number is a new text to draw
             else if (sv.state == Syncer::State::Sharing) syncNote = "Sharing measurements and covers…";
             else if (sv.state == Syncer::State::Failed) syncNote = sv.error;
             else if (sv.state == Syncer::State::Done) syncNote = "Last sync: " + sv.summary;
@@ -2030,7 +2315,8 @@ void App::drawSettings(float x, float y, float w, float h) {
                                } };
                         ar.focus = uid("set.airplay");
                         // ... and the other way (the user, 2026-11-10: Receive had a switch, playing on speakers had none)
-                        Row sr{ "Play on AirPlay speakers", "", store.airplaySpeakers ? "Speakers and TVs on this network are listed under the title bar's AirPlay button"
+                        Row sr{ "Play on AirPlay speakers", "", store.airplaySpeakers ? phoneUpright() ? "Speakers and TVs on this network are listed in the Devices card, on Now playing"   // (upright: no title bar)
+                                                                                         : "Speakers and TVs on this network are listed under the title bar's AirPlay button"
                                                                                        : "Off: Songate does not look for speakers, and plays only here", 40, [this](float rx, float cy) {
                                    if (toggle(uid("set.airspk"), rx - 40, cy, store.airplaySpeakers)) {
                                        store.airplaySpeakers = !store.airplaySpeakers;
@@ -2293,6 +2579,13 @@ void App::drawSettings(float x, float y, float w, float h) {
         cy += 16;
         g.text("Settings", { css::Xxl, Weight::ExtraBold }, lx - 1, cy, pal.text);
         cy += 50;
+#ifdef GF_ANDROID
+        {   // what the sidebar carries above Settings (no sidebar upright): the work's cards, a newer version's banner (view_phone.cpp)
+            const float used = phoneWorkCard(lx, cy, lw);
+            cy += used;
+            la.content += used;
+        }
+#endif
         const Id sid = uid("set.find");
         if (ui.item(sid, { lx, cy, lw, 44 }, 12)) openFindSetting();
         g.roundRect(lx, cy, lw, 44, 12, pal.text, ui.pressed(sid) ? 0.09f : 0.05f);
@@ -2378,7 +2671,13 @@ void App::drawSettings(float x, float y, float w, float h) {
     }
 
     // ------------------------------------------------------------ right pane (narrow: the whole width)
+#if defined(GF_WINDOWED) && !defined(GF_ANDROID)
+    // (a very wide window: a row's name and its switch no further apart than kPaneMax, beside the list, as on any page this wide)
+    constexpr float kPaneMax = 1160;
+    const float px = narrow ? x + 18 : lx + lw + 28, pw = std::min(kPaneMax, x + w - (narrow ? 18 : 24) - px);
+#else
     const float px = narrow ? x + 18 : lx + lw + 28, pw = x + w - (narrow ? 18 : 24) - px;
+#endif
     settingsPaneX = px - 8;
     ScrollArea& sa = area("settings.pane");
     sa.view = { px - 8, y, x + w - (px - 8), h };
@@ -2536,9 +2835,7 @@ void App::drawSettings(float x, float y, float w, float h) {
         }
         if (floating) {   // lifted off the card: a shadow under it, opaque, the accent round it
             const float fx = px + 8, fy = floatY + 4, fw = pw - 16, fh = floating->h - 8;
-            g.glowAround(fx, fy + 6, fw, fh, 12, 18, 10, { 0, 0, 0 }, 0.45f);
-            g.roundRect(fx, fy, fw, fh, 12, pal.bg, 1);
-            g.roundRect(fx, fy, fw, fh, 12, pal.surface, 0.9f);
+            sortFloatBox(fx, fy, fw, fh, 12);   // (one drawing with every list in sort mode)
             drawRow(*floating, floatY);
         }
         py += ch + 16;

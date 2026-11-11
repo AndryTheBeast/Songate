@@ -425,6 +425,10 @@ void Syncer::work(Job job) {
                 return;
             }
             view_.state = State::Backing;
+            // "answered yes": the other device stops saying it waits for a confirmation. What follows here (the backup, the
+            // changes, the card) takes a while on a console, and it read "Waiting for … to confirm" all that time, after the
+            // user had confirmed (the user, 2026-11-11)
+            connect_->send(job.peerId, message('Y', ""));
         }
         if (backup && !backup()) { fail("The settings could not be backed up: nothing changed"); return; }
     }
@@ -460,6 +464,10 @@ void Syncer::work(Job job) {
                 until = seconds() + 120;
                 std::lock_guard<std::mutex> g(m_);
                 view_.peerAsks = true;
+            }
+            else if (!m.empty() && char(m[0]) == 'Y') {   // it said yes: no longer asking, its changes are being made
+                std::lock_guard<std::mutex> g(m_);
+                view_.peerAsks = false;
             }
             else later_.push_back(std::move(m));
         }

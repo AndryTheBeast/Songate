@@ -112,18 +112,15 @@ private:
     // ---- Volume mute-toggle state ----------------------------------------
     // Slider pointers (owned by m_list — do NOT delete here).
     VolumeTrackBar      *m_music_slider        = nullptr;
-    VolumeTrackBar      *m_game_slider         = nullptr;  // null if no game running
-    VolumeTrackBar      *m_game_default_slider = nullptr;
+    VolumeTrackBar      *m_game_slider         = nullptr;  // every game's volume, shown always
 
     // Current slider values (0-100), kept in sync by the value-changed listeners.
     u8  m_music_vol        = 100;
     u8  m_game_vol         = 100;
-    u8  m_game_default_vol = 100;
 
     // Pre-mute backup values — persisted to disk so they survive overlay close.
     u8  m_music_vol_backup        = 100;
     u8  m_game_vol_backup         = 100;
-    u8  m_game_default_vol_backup = 100;
 
     // Title ID needed by handleInput to call config::set_title_volume().
     u64 m_tid = 0;

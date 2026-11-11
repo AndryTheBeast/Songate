@@ -537,6 +537,7 @@ void App::drawSheet() {
         if (q.order.size() > 1 && (!sheet.upNext || qp > q.pos))
             items.push_back({ ICON_SORT_DOWN, "Move", "", [this, qp, upNext = sheet.upNext] {
                                   closeSheet();
+                                  if (sortBegin(Grab::Queue, qp, upNext)) return;   // by touch: the list's sort mode (handles to drag)
                                   grab = Grab{ Grab::Queue, qp, upNext, 1 };
                                   ui.focus(upNext ? uid("np.next", qp - q.pos - 1) : uid("pl.r", qp));
                                   ui.setPadMode(true);
@@ -572,6 +573,7 @@ void App::drawSheet() {
                 if (row < int(rows.size()) && rows.size() > 1)
                     items.push_back({ ICON_SORT_DOWN, "Move", pl.automix ? "Your order stays" : "", [this, row, ref = route.ref] {
                                           closeSheet();
+                                          if (sortBegin(Grab::List, row, false, ref)) return;
                                           grab = Grab{ Grab::List, row, false, 1, ref };
                                           ui.focus(uid("pl.r", row));
                                           ui.setPadMode(true);
@@ -709,7 +711,11 @@ void App::drawSheet() {
     } else if (page == Sheet::Info) {
         const TrackInfo& in = sheet.info;
         auto info = [&](const char* label, const std::string& v) {
-            if (!v.empty()) items.push_back({ nullptr, label, v, [] {}, false, 40, true });
+            if (v.empty()) return;
+            // a value longer than its room (the file's path, on a phone upright) takes the lines it needs, three at most
+            // (a narrow card only: the console's and the PC's keep their one line, as they were)
+            const int lines = w < 520 ? int(g.wrap(v, { css::Base }, int(w - 48 - 120), 3).size()) : 1;
+            items.push_back({ nullptr, label, v, [] {}, false, 40 + std::max(0, lines - 1) * 20.f, true });
         };
         info("Title", tr.title);
         info("Artist", tr.artist);
@@ -780,7 +786,9 @@ void App::drawSheet() {
     for (const auto& it : items) bodyH += it.h;
     if (page == Sheet::Cover) bodyH += 22 + (tr.albumIdx >= 0 ? 44 : 0);   // the folder line, and Use for where there is an album (below)
     if (page == Sheet::Delete) bodyH = 110;
-    if (page == Sheet::Tags) bodyH += 34;
+    const std::vector<std::string> tagsNote = page == Sheet::Tags
+        ? g.wrap("Kept by Songate and shown everywhere in the app. The file itself is not changed.", { css::Sm }, int(w - 48), 3) : std::vector<std::string>{};
+    if (page == Sheet::Tags) bodyH += 34 + (std::max<size_t>(1, tagsNote.size()) - 1) * 18.f;   // (two lines on a phone upright: it was cut)
     bodyH = std::min(bodyH + 8, maxBody);
     const float h = headH + bodyH + footH + 16, y = cardY(h);
     g.glow(x + w / 2, y + h / 2 + 30, w * 0.75f, { 0, 0, 0 }, 0.5f);
@@ -868,7 +876,11 @@ void App::drawSheet() {
         if (page == Sheet::Info) {
             // label column, value wrapped beside it
             g.textC(it.label, { css::Sm }, lx, ry + 20, pal.text3);
-            g.textC(it.detail, { css::Base }, lx + 120, ry + 20, pal.text, 1, Align::Left, int(w - 48 - 120));
+            if (it.h <= 40) g.textC(it.detail, { css::Base }, lx + 120, ry + 20, pal.text, 1, Align::Left, int(w - 48 - 120));
+            else {
+                float ty = ry + 20;
+                for (const auto& l : g.wrap(it.detail, { css::Base }, int(w - 48 - 120), 3)) { g.textC(l, { css::Base }, lx + 120, ty, pal.text); ty += 20; }
+            }
         } else if (page == Sheet::Tags) {
             g.textC(it.label, { css::Base, Weight::SemiBold }, lx, ry + it.h / 2, pal.text2);
             const std::string v = it.detail.empty() ? "—" : it.detail;
@@ -902,9 +914,9 @@ void App::drawSheet() {
         ry += it.h;
     }
     if (page == Sheet::Tags && sheet.page == page) {
-        g.text("Kept by Songate and shown everywhere in the app. The file itself is not changed.", { css::Sm }, x + 24, ry + 10, pal.text3, 1,
-               Align::Left, int(w - 48));
-        ry += 34;
+        float ty = ry + 10;
+        for (const auto& l : tagsNote) { g.text(l, { css::Sm }, x + 24, ty, pal.text3); ty += 18; }
+        ry += 34 + (std::max<size_t>(1, tagsNote.size()) - 1) * 18.f;
     }
     sa.content = ry + sa.y - by + 8;
     g.unclip();

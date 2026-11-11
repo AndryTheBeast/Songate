@@ -19,7 +19,7 @@ void App::allowConnections() {
             "Allow Songate to look for other devices?",
             "While it is on and Songate is open, Songate says hello on this network, with " GF_YOUR_CONSOLE "'s name and a random number. "
             "Nothing of your library leaves it, and no other device can read or change anything until you pair it with a code."
-#ifdef GF_WINDOWED
+#if defined(GF_WINDOWED) && !defined(GF_ANDROID)   // (a PC: Android asks nothing, and is not Windows)
             " Windows will then ask whether Songate may use the network. Allow makes it easiest. If you cancel that, Songate can still "
             "call the other device, as long as that one can be reached."
 #endif

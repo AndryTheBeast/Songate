@@ -56,6 +56,14 @@ public class SongateActivity extends SDLActivity {
             multicast.acquire();   // Devices' broadcasts and AirPlay's mDNS reach the app
         }
         super.onCreate(savedInstanceState);
+        // Android's own mark for the view that has the keys' focus is not Songate's: after typing (SDL gives its surface the focus
+        // back) and a key from a keyboard or a pad, it drew a green frame round the whole screen (seen 2026-11-11 in the test
+        // scripts' frames, which type with keys). Songate draws its own focus ring
+        if (Build.VERSION.SDK_INT >= 26) {
+            if (mSurface != null) mSurface.setDefaultFocusHighlightEnabled(false);
+            if (mLayout != null) mLayout.setDefaultFocusHighlightEnabled(false);
+            getWindow().getDecorView().setDefaultFocusHighlightEnabled(false);
+        }
         // The camera's cutouts and the rounded corners, to the app each time Android lays the window out (a turn, a fold):
         // Settings › Appearance › Screen edges decides what steps aside (App::updateEdges)
         getWindow().getDecorView().setOnApplyWindowInsetsListener((v, insets) -> {
@@ -193,6 +201,96 @@ public class SongateActivity extends SDLActivity {
                 a.requestPermissions(new String[] { Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE }, 1);
             }
         });
+    }
+
+    /** The Canvas opened from a phone held upright (it is sideways' only): the screen turned sideways and kept there, either way
+     *  round as the phone is held; given back afterwards to what it was (SDL's: every way, as the phone's own setting allows),
+     *  so the sensor turns it upright again when that is how it is held. */
+    private static int orientationBefore = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_USER;
+    private static boolean landscapeHeld = false;
+    public static void holdLandscape(final boolean on) {
+        final SongateActivity a = self;
+        if (a == null) return;
+        a.runOnUiThread(() -> {
+            if (on == landscapeHeld) return;
+            if (on) {
+                orientationBefore = a.getRequestedOrientation();
+                a.setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+            } else {
+                a.setRequestedOrientation(orientationBefore);
+            }
+            landscapeHeld = on;
+        });
+    }
+
+    /** The battery beyond its charge (plat::batteryInfo), a "name=value" a line; what the phone does not say has no line:
+     *  volts, temp (°C), plugged (0/1), amps (+ into the battery, − out of it), left and full (mAh), health (%), ttf (minutes to
+     *  full, Android's own estimate), cycles. */
+    public static String batteryInfo() {
+        final SongateActivity a = self;
+        if (a == null) return "";
+        StringBuilder out = new StringBuilder();
+        try {
+            Intent st = a.registerReceiver(null, new android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+            if (st == null) return "";
+            android.os.BatteryManager bm = (android.os.BatteryManager) a.getSystemService(Context.BATTERY_SERVICE);
+            int mv = st.getIntExtra(android.os.BatteryManager.EXTRA_VOLTAGE, 0);
+            int t10 = st.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, Integer.MIN_VALUE);
+            int plugged = st.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0);
+            int status = st.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, 0);
+            int level = st.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1), scale = st.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, 100);
+            if (mv > 2500 && mv < 20000) out.append("volts=").append(mv / 1000.0).append('\n');
+            if (t10 > -400 && t10 < 1000 && t10 != 0) out.append("temp=").append(t10 / 10.0).append('\n');
+            out.append("plugged=").append(plugged != 0 ? 1 : 0).append('\n');
+            if (bm != null) {
+                // the current: microamps by the documentation, milliamps on some phones; and its sign is not the same everywhere, so
+                // it is set from what the phone is doing (charging: in; no charger: out)
+                long now = bm.getLongProperty(android.os.BatteryManager.BATTERY_PROPERTY_CURRENT_NOW);
+                if (now != Long.MIN_VALUE && now != 0 && now != Integer.MIN_VALUE) {
+                    double amps = Math.abs(now) > 20000 ? now / 1e6 : now / 1e3;
+                    if (plugged == 0 && amps > 0) amps = -amps;
+                    if (status == android.os.BatteryManager.BATTERY_STATUS_CHARGING && amps < 0) amps = -amps;
+                    if (Math.abs(amps) < 12) out.append("amps=").append(amps).append('\n');
+                }
+                long uah = bm.getLongProperty(android.os.BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER);
+                double designed = 0;
+                try {   // what the maker says it holds (no public way: the system's own power profile)
+                    Class<?> pp = Class.forName("com.android.internal.os.PowerProfile");
+                    Object p = pp.getConstructor(Context.class).newInstance(a);
+                    designed = ((Number) pp.getMethod("getBatteryCapacity").invoke(p)).doubleValue();
+                } catch (Throwable e) {
+                    designed = 0;
+                }
+                if (uah > 100000 && uah < 30000000 && level > 0 && scale > 0) {
+                    double left = uah / 1000.0, pct = level * 100.0 / scale;
+                    out.append("left=").append(left).append('\n');
+                    if (pct >= 20) {   // (under that, a whole percent is too coarse to tell what full is)
+                        double full = left / pct * 100;
+                        out.append("full=").append(full).append('\n');
+                        if (designed > 500 && full / designed > 0.4 && full / designed < 1.15)
+                            out.append("health=").append(Math.min(100.0, full / designed * 100)).append('\n');
+                    }
+                }
+                if (plugged != 0) {
+                    long ms = bm.computeChargeTimeRemaining();
+                    if (ms > 0) out.append("ttf=").append(ms / 60000).append('\n');
+                }
+            }
+            if (Build.VERSION.SDK_INT >= 34) {
+                int cycles = st.getIntExtra("android.os.extra.CYCLE_COUNT", 0);
+                if (cycles > 0) out.append("cycles=").append(cycles).append('\n');
+            }
+        } catch (Throwable e) {
+            Log.w("Songate", "batteryInfo: " + e);
+        }
+        return out.toString();
+    }
+
+    /** Real pixels to a dp, as the display has it now (the user's Display size changes it): the layout's scale comes from the
+     *  window's size in dp (App::fitWindow). */
+    public static float density() {
+        final SongateActivity a = self;
+        return a != null ? a.getResources().getDisplayMetrics().density : 0f;
     }
 
     /** The shared volumes, one a line: the phone's own first, then each card that is in. Their app folders say where they are. */

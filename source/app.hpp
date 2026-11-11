@@ -62,6 +62,13 @@ inline int W = 1280, H = 720;   // follows the window: the shorter way 1280×720
 #else
 constexpr int W = 1280, H = 720;
 #endif
+#ifdef GF_ANDROID
+// The phone's own layout (view_phone.cpp): a window held upright and under kPhoneDp wide. A tablet or an open foldable held
+// upright keeps the console's layout, its sidebar folded when the width is short (App::fitWindow decides)
+inline bool Phone = false;
+#else
+constexpr bool Phone = false;
+#endif
 constexpr float TbH = 46, BarH = 92, SideW = 236, SideWCollapsed = 68;
 // --fs-* scale, one pixel up from the desktop values for a handheld screen
 constexpr int Xs = 12, Sm = 13, Base = 15, Md = 16, Lg = 19, Xl = 25, Xxl = 34, Hero = 52;
@@ -113,6 +120,7 @@ struct Sheet {
                 PlMenu, PlIcon,     // PlMenu / PlIcon: a playlist page's ⋯ and its icons (recipe: the playlist, name: its name)
                 FileMenu, FileInfo, FileLink,     // Files: a file's menu, its details, the track an .lrc goes with (dir: the file)
                 Release,                          // Settings → Updates: a release's changelog and Install (recipe: its index)
+                UpdateOffer,                      // the update banner pressed: Update, Later, the top of what is new (recipe, name: as Release)
                 Model,                            // … an Automix model: Download, Use, Go back (name: the model's)
                 Factory,                          // Settings → Reset → Factory reset: what to erase (App::factoryPick)
                 Report, Crashes,                  // Settings › Support: the report's form, Atmosphère's crash reports (view_support.cpp)
@@ -283,7 +291,7 @@ private:
     // should be the only one default and available for portrait"), else Settings › Appearance › Automix
     int mixCanvasMode() const {
 #ifdef GF_ANDROID
-        if (css::H > css::W) return 0;
+        if (css::Phone) return 0;
 #endif
         return store.mixAnimCanvas;
     }
@@ -578,7 +586,9 @@ private:
     // The battery drawn (shell.cpp): the title bar's, and each state's in Settings. s: its scale (1: 24 x 12); state: Store's battery
     // states (on battery, low, charging slowly, charging, charging fast, charged)
     void drawBatteryIcon(float bx, float cy, float s, double pct, int state, float alpha = 1);
-    float drawBatteryCluster(float rx, float cy, unsigned pct, float limit);   // the battery, what is beside it, its press: left edge
+    // the battery, what is beside it, its press: left edge. side: 0 the title bar's (Home), 1 the Canvas's own items and order
+    float drawBatteryCluster(float rx, float cy, unsigned pct, float limit, int side = 0);
+    int batFor_ = 0;            // Settings › Appearance › Battery › Set it for: 0 Home, 1 Canvas (the side its rows edit)
     double batPhase_[6] = {};   // each state's animation, 0..1 and round again: advanced by the frame's time over its period, so a
     double batPhaseAt_ = -1;   // change of pace or charger speeds it up or slows it down without a jump
     // (every platform has them; only Android's dev build watches) Dev, Android: a frame that does not finish (the user's recording, 2026-11-05: after a turn the app stopped drawing, its last
@@ -591,9 +601,11 @@ private:
     float batteryRoom_ = 0;     // the title bar's room for what shows beside the battery, last frame (Settings greys what would not fit)
     int batteryState(double pct) const;
     Rgb batteryInk(int colour, double pct) const;
-    std::vector<int> batteryItems() const;             // what may show beside it, in your order (the charger's and the battery's
-    void setBatteryItems(const std::vector<int>& vis); // details only where the power service tells them); put back in your order
-    bool* batteryShown(int item);
+    // what may show beside it, in your order (the charger's and the battery's details only where the power service tells them);
+    // put back in your order. side: 0 Home, 1 Canvas; −1 the side Settings is on (batFor_)
+    std::vector<int> batteryItems(int side = -1) const;
+    void setBatteryItems(const std::vector<int>& vis, int side = -1);
+    bool* batteryShown(int item, int side = -1);
     // A row of a list put in order by touch (Settings: the sidebar's tabs, the battery's details): its handle, held and dragged
     void dragSort(std::vector<int>& order, int base, const char* key, int i, float rx, float cy, const std::function<void()>& after,
                   const std::vector<int>* rows = nullptr);
@@ -674,9 +686,9 @@ private:
     LyricIndex lyrIndex;
     /** The search field's words: lyrics too once every song's lyrics are read (the user, 2026-11-07); before, as they were. */
     const char* searchHint() const {
-        // plural, as the tabs and the pages say it, and "songs" (the user, 2026-11-09)
+        // the tabs' own names, in their order (the user, 2026-11-11: "Songs, Albums, Artists or Genres", and Lyrics once all are read)
         const LyricIndex::Progress p = lyrIndex.progress();
-        return !p.checking && p.total > 0 && p.read >= p.total ? "Artists, albums, songs or lyrics" : "Artists, albums or songs";
+        return !p.checking && p.total > 0 && p.read >= p.total ? "Songs, Albums, Artists, Genres or Lyrics" : "Songs, Albums, Artists or Genres";
     }
     std::vector<LyricIndex::Hit> searchLyrics_;
     uint64_t searchTicket_ = 0;
@@ -706,6 +718,15 @@ private:
     double time = 0;
     float dt = 0;
     bool byTouch_ = false;                  // the last input was a finger, not a button, a key, the stick or a click (App::frame)
+    std::vector<Id> cardRowIds_;            // this frame's card rows (their outline is drawn inside the row: App::drawFocusRing)
+    static constexpr float kCardRowInset = 4;
+    bool byMouse_ = false;                  // the last input was a mouse's click, not a finger, a button, a key or the stick
+    /** What is put in order is dragged by its handle (a finger or a mouse, the user 2026-11-11: "for mouse sorting use the touch way
+     *  too"); else Move picks it up for the D-pad. */
+    bool sortByDrag() const { return byTouch_ || byMouse_; }
+    bool chirpsDue();   // (declared here, for every build: it sat among the dev build's and a release did not compile)
+    bool sortTapAt(float x, float y) const;  // a list in sort mode: a press let go here was a tap that is not on a handle
+    bool devClicked_ = false, devSortTap_ = false;   // (devctl.cpp: a test's mouse button)
     int tabFloat_ = -1;                     // Settings → Sidebar: the tab row held by touch or settling, drawn over the others
     bool running = true;
     float sideW = css::SideW;
@@ -876,6 +897,52 @@ private:
     struct Grab { enum Kind { Queue, Playlists, Tabs, List, Battery, SrvList, SrvPlaylists } kind = Queue; int pos = -1; bool upNext = false; int cols = 1; int ref = -1; } grab;
     void grabStep(int d);
     void grabDrop();
+    // The same lists put in order BY TOUCH (the user, 2026-11-11: "a Dpad way to do it and a touch way like we have on setting -
+    // appearance - sidebar sorting"): the menu's Move after a finger puts the list in a sort mode instead of picking one row up.
+    // Every row then shows the sidebar sorting's handle in the place of its length (tiles are dragged whole, any way); held, a row
+    // follows the finger at once, floats with its shadow, and the rows it passes slide into the place left. Done, a tap elsewhere,
+    // back, a button or leaving the page end it. Nothing is written while a finger holds a row: saved when it lifts (sortSave).
+    // The engine is beside Settings' own (view_settings.cpp: sortRun and its friends).
+    struct TouchSort {
+        bool on = false;
+        Grab::Kind kind = Grab::Queue;
+        bool upNext = false;        // Queue: Up next's rows (the first 15 after the song playing), not the Playlist page's
+        int ref = -1;               // List: which playlist
+        std::string srvPl;          // SrvList: the server playlist's id
+        int held = -1;              // the item under the finger, by its place now
+        int settle = -1;            // the one let go, still on its way to its place: drawn over the others until there
+        Id heldId = 0;              // the handle (or tile) the finger took: the item keeps it wherever it goes
+        float offX = 0, offY = 0;   // the finger's place inside the held item
+        float hx = 0, hy = 0;       // where the held item is drawn (the screen's pixels)
+        std::vector<SDL_FPoint> slide;   // each item's offset from its place, easing back to 0
+        bool moved = false;         // the order changed since it was last saved
+        bool sendSrv = false;       // … a server playlist's: sent when the finger lifts
+        bool ran = false;           // its list was drawn this frame (not: the page was left, the mode ends)
+        int endIn = 0;              // a tap elsewhere: ends after the frame that swallows the tap (App::input)
+        int show = -1;              // the row Move was chosen on: its list scrolls to it once
+    } tsort_;
+    bool sorting(Grab::Kind k, bool upNext = false) const { return tsort_.on && tsort_.kind == k && tsort_.upNext == upNext; }
+    /** Move chosen in a menu: by touch the list's sort mode, else the row picked up for the D-pad (App::grab). True: by touch. */
+    bool sortBegin(Grab::Kind kind, int at, bool upNext = false, int ref = -1, const std::string& srvPl = {});
+    void sortEnd();
+    void sortSave();
+    void sortMove(int from, int to);
+    /** Each frame before the list's items are drawn: n items, those in [lo, hi] can move; slot(i): where item i belongs on the
+     *  screen this frame; grid: tiles, dragged any way (else rows, up and down). */
+    void sortRun(int n, int lo, int hi, ScrollArea& sa, const std::function<SDL_FRect(int)>& slot, bool grid);
+    SDL_FPoint sortAt(int i, const SDL_FRect& slot) const;    // where item i is drawn: its slot, sliding, or under the finger
+    bool sortFloats(int i) const { return tsort_.on && (i == tsort_.held || i == tsort_.settle); }
+    /** What takes the finger for item i (a handle's box, or a whole tile), at: where the item is drawn now. */
+    void sortGrip(const char* key, int i, const SDL_FRect& touch, const SDL_FRect& at);
+    /** The sidebar sorting's handle for row i, its glyph's right edge at rx. */
+    void sortHandle(const char* key, int i, float rx, float cy, const SDL_FRect& at);
+    void dragGlyph(float boxX, float cy, bool hot);          // Settings' and these: one drawing
+    void sortFloatBox(float x, float y, float w, float h, float rad);   // lifted off the page: Settings' shadow and ground
+    void drawSortDone();
+    SDL_FRect sortPill_{};       // where Done is (the toast keeps clear of it)
+    bool rowBare_ = false;       // trackRow, coverRow, serverRow: drawn without the length (a handle takes its place)
+    float fingerDownX_ = 0, fingerDownY_ = 0;   // where the last finger came down (a tap, or a drag: App::input)
+    bool grabSave_ = false;      // a playlist moved on the Playlists page while held: saved at grabDrop, not at each step
     void applyLoaded(TrackLoader::Result& r);
     void applyCover(TrackLoader::Result& r);
     TrackLoader::Result coverWait_;   // a loaded cover kept for the frame after its tags (one thing at a time)
@@ -934,6 +1001,7 @@ private:
     void draw();
     void drawBackground();
     void drawTitlebar();
+    void drawSyncMark(float ix, float iy);   // the two arrows while devices sync (the title bar's; a phone upright's top line)
     /** By touch there is no B: a back button comes in while the last input was a finger and there is somewhere to go back to
      *  (the user, 2026-11-08). backShown(): 0..1, eased, for the places that make room for it. */
     float backShown();
@@ -1164,6 +1232,7 @@ private:
     int bodyFocus = -1;   // drawTrackBody: the index of the row or tile under focus, −1 when none
     int bodyGrab = -1;    // drawTrackBody: the index drawn picked up (the queue's Move), −1 when none
     int bodyCols = 1;     // drawTrackBody: tiles in a row last drawn (1 in the row views)
+    ScrollArea* bodySortArea = nullptr;   // drawTrackBody, drawServerBody: set, the list is in sort mode (by touch) and this is its scroll area
     float viewSwitch(const char* key, float rx, float cy, int& mode, unsigned hidden = 0);   // hidden: bit i, view i left out
     /** The #-to-Z rail down a list's right edge (railX: its left edge; top, h: the list's view): the letters present, the
      *  section showing lit; a tap or A glides there; a finger slid along it scrubs, the letter under it in a bubble (the user,
@@ -1213,7 +1282,7 @@ private:
     // ================= view_playlists.cpp: every playlist on a page, and their order
     void drawPlaylists(float x, float y, float w, float h, bool inLibrary = false);
     std::vector<int> playlistTracks(int ref) const;   // −1 Liked
-    void movePlaylist(int from, int to);              // the sidebar follows; open pages of playlists move with them
+    void movePlaylist(int from, int to, bool save = true);   // the sidebar follows; open pages of playlists move with them
     void erasePlaylist(int ref);                      // Delete: pages of it leave the history, later ones keep theirs
     int plHover = -2, plHoverShown = -2;              // the page's playlist under focus (−1 Liked, −2 none): + opens its menu
 
@@ -1288,8 +1357,37 @@ public:
     void frame();
     // A card or sheet as wide as it wants, but never wider than the screen (a phone upright); upright, the sheets rise from its foot
     float cardW(float want) const { return std::min(want, float(css::W) - 16); }
-    float cardY(float h) const { return css::H > css::W ? std::max(8.f, float(css::H) - h - 8) : (css::H - h) / 2; }
+    float cardY(float h) const { return phoneSheets() ? std::max(8.f, float(css::H) - h - 8) : (css::H - h) / 2; }
     static constexpr float kNarrowList = 600;   // a list narrower than this (a phone upright) shows its rows without columns
+    /** Search's filter tabs on a narrow page: a phone upright draws that control itself, over the list (view_phone.cpp), and the
+     *  list under it is the tab's, as on a wide page; any other narrow page has none (Songs, then In the lyrics, on one page). */
+    bool phoneSearchTabs() const { return phoneUpright(); }
+    /** Search's filter tabs on a wide page that is not wide enough for them beside Play, Shuffle and New search (a folded-open
+     *  sidebar in a short window, a small phone sideways, a tablet upright): on a line of their own under the head, from the
+     *  cover's side. They ran under the buttons there. */
+    bool searchTabsOwnLine(float w, const std::vector<std::string>& names) {
+        if (w < kNarrowList) return false;
+        const Font sf{ css::Sm, Weight::SemiBold };
+        // the cover and its margins; Play, Shuffle and New search at its smallest (round); the control; the views and the right margin
+        float need = 28 + 120 + 22 + (34 + 8) - 8 + 6 + 12 + (6 + 38.f * 4) + 28;
+        for (const auto& t : names) need += g.measure(t, sf) + 26;
+        for (const char* b : { "Play", "Shuffle" }) need += 16 + 24 + g.measure(b, sf) + 16 + 8;
+        return need > w;
+    }
+    static constexpr float kSearchTabsLineH = 46;
+    /** Where the background work's card is, for the toasts that point at it: above Settings in the sidebar; a phone upright has it
+     *  in Settings, at the head of its list. */
+    const char* workCardWords() const { return phoneUpright() ? "the card in Settings shows how far it is" : "the card above Settings shows how far it is"; }
+    /** A phone held upright (Android only: no title bar and no sidebar there, so what they carry has a place on the pages). */
+    bool phoneUpright() const { return css::Phone; }
+    /** Sheets rise from the foot: the phone's own layout, and any other window taller than wide that is no tablet's (the PC's). */
+    bool phoneSheets() const {
+#ifdef GF_ANDROID
+        return css::Phone;
+#else
+        return css::H > css::W;
+#endif
+    }
     int optShowTouch_ = 0;   // dev builds: every touch area outlined ("touch" in options.txt in the settings folder)
     float settingsCtlMax_ = 0;   // Settings: the width a stacked row's control may take (segmented shrinks to it)
     float setSliderW() const { return settingsCtlMax_ > 0 ? settingsCtlMax_ : 180.f; }   // a Settings slider: 180, or its line's width
@@ -1297,10 +1395,31 @@ public:
     bool settingsPhoneOpen_ = false;   // narrow Settings: a category's page shown (else the list of categories)
 #ifdef GF_WINDOWED
     static constexpr int kNarrowW = 1170;   // under this the pages need the sidebar's room: it folds by itself, and comes back
-    bool sideOpenedNarrow_ = false;
-    bool sidebarFolded() const { return css::W < kNarrowW ? !sideOpenedNarrow_ : store.sidebarCollapsed; }
+    // … on a PC it comes back a little later than it went (kNarrowBack wider), so an edge dragged to and fro about that width does
+    // not fold and open it each time. Android has none: its width changes with a turn only, and the same width must give the same
+    // layout whichever way it was reached
+#ifdef GF_ANDROID
+    static constexpr int kNarrowBack = 0;
+#else
+    static constexpr int kNarrowBack = 40;
+#endif
+    bool narrow_ = false;      // the window is narrow, the sidebar folded by itself (App::fitWindow); your own choice
+                               // (store.sidebarCollapsed, Settings › Appearance) is kept as it is, for when there is room again
+    // Narrow, the title bar's button opens the sidebar over the page, which stays as it is under it (there is no room to push it
+    // aside): until something in it is chosen, the page is pressed, or back. peekK_: how much of its open width lies over the
+    // page, 1 while narrow; when the window gets its room back with it open, the page slides out from under it (1 to 0)
+    bool sidePeek_ = false;
+    float peekK_ = 0;
+    Route peekRoute_{};
+    bool sidebarFolded() const { return narrow_ ? !sidePeek_ : store.sidebarCollapsed; }
+    /** Where the page starts: the sidebar's width, but for what of it lies over the page */
+    float pageSideW() const { return sideW - peekK_ * (sideW - css::SideWCollapsed); }
+    float rasterScale_ = 0;      // the scale the words and icons are made at: scale_ once the window's edge has come to rest
+    double scaleMovedAt_ = -10;  // the scale last changed (a drag under the least size changes it every frame)
+    float minFor_ = 0;           // the screen scale the window's least size was last set for
 #else
     bool sidebarFolded() const { return store.sidebarCollapsed; }
+    float pageSideW() const { return sideW; }
 #endif
     Uint64 lastTick_ = 0;
     int hz_ = 60;   // the screen's refreshes a second
@@ -1332,16 +1451,32 @@ public:
     void storageGiven();
     // A phone held upright (view_phone.cpp): its own layout of the same pages. Up next and the lyrics page are Now playing's own,
     // opened and closed with their animation (the P values, 0..1); the seek bar is the visualizer until touched (phoneSeekP_)
-    bool phonePortrait() const { return css::H > css::W; }
+    bool phonePortrait() const { return css::Phone; }
     void drawPhone();
     bool phoneQueue_ = false, phoneLyrics_ = false;
     float phoneQueueP_ = 0, phoneLyricsP_ = 0, phoneSeekP_ = 1;
     double phoneSeekAt_ = -10;   // the seek bar last touched
-    int phoneSearchKind_ = 0;    // Search upright: its pill (0 Tracks, 1 Albums, 2 Artists)
     double turnAt_ = -10;        // the phone last turned (upright ⇄ sideways): App::frame fades the new layout in
+    // The scale rule (App::fitWindow): under kPhoneDp across, a window held upright is a phone's (its own layout); that layout
+    // is kPhoneMinW..kPhoneMaxW app pixels across
+    static constexpr float kPhoneDp = 600, kPhoneMinW = 400, kPhoneMaxW = 560;
+    float density_ = 2.625f;     // Android's pixels to a dp, as the scale was last made from
+    double densityAt_ = 0;
     float phoneToastBottom_ = 0;  // Now playing upright: where a toast sits (its foot: the gap above the seek bar)
     float phoneJoinMove_ = -1;   // Now playing upright: an Automix join's glide (0..1) this frame; -1 no join
     SDL_FRect phoneCoverRest_{};  // … and where its cover rests
+    // The Canvas from upright (the user, 2026-11-11: "Canvas is landscape only. Portrait can have a button to activate canvas but it
+    // switches to landscape"): 1 the turn asked for (plat::holdLandscape), the Canvas opens once the screen is sideways; 2 open, the
+    // screen held sideways until it closes, then given back to the phone's own turning (upright again when held so)
+    int canvasTurn_ = 0;
+    double canvasTurnAt_ = 0;
+    void openCanvasTurning();
+    void endCanvasTurn();
+    // What the sidebar carries above Settings, for a phone upright (no sidebar): the work's cards and a newer version's banner at
+    // the head of Settings' list (phoneWorkCard: its height there, 0 with nothing to show), and a mark on the bar's Settings
+    float phoneWorkCard(float x, float y, float w);
+    int phoneNowTab_ = 0;         // Now playing's second page upright: 0 Lyrics, 1 Palette (sideways' tabs but Up next, a sheet here)
+    float phoneFoot() const;      // upright: where the page ends over the bar (and the mini player), for what floats there
     bool hiddenNow() const { return SDL_GetWindowFlags(window_) & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN); }
 #endif
     double titleAt_ = 0;
@@ -1357,7 +1492,8 @@ public:
     float lightsNear_ = 0;                  // how long the mouse has been near the lights (updateLights)
     bool cameFromInside_ = false;
     int lightDown_ = -1;
-    SDL_FRect titleKeep_[5] = {};           // what is pressed in the title bar, not dragged: the rest of it moves the window
+    bool dragNoVsync_ = false;              // an edge is held: frames are not queued behind the screen's refresh (App::resizeWatch)
+    SDL_FRect titleKeep_[6] = {};           // what is pressed in the title bar, not dragged: the rest of it moves the window
     static SDL_HitTestResult hitTest(SDL_Window* w, const SDL_Point* p, void* self);
     bool typingByTouch_ = false;            // the last input was a finger or a pad: the text card brings the on-screen keyboard
     bool closePending_ = false;             // × during the text card: done when it has closed
@@ -1369,6 +1505,18 @@ public:
 #ifdef GF_DEV
     long statFrames_ = 0, statLate_ = 0;    // what a test run prints at the end
     double statSum_ = 0, statWorst_ = 0, statWork_ = 0;
+#ifndef GF_ANDROID
+    // A test's hand on the window (devctl.cpp, GF_CTL): a size, a screen and a scale made up; a frame saved; a click; frame times
+    void devControl();
+    void devShot();
+    int devPw_ = 0, devPh_ = 0, devScreenW_ = 0, devScreenH_ = 0, devTapUp_ = 0;
+    float devDpi_ = 0, devWheel_ = 0;
+    bool devMoved_ = false;
+    uint64_t devPad_ = 0;
+    std::string devShot_;
+    long devN_ = 0;
+    double devSum_ = 0, devWorst_ = 0, devWork_ = 0;
+#endif
 #endif
 #endif
 private:
@@ -1377,7 +1525,22 @@ private:
 #ifdef GF_DEV
     bool freshStart_ = false, freshRestore_ = false;   // the New user self test (dev only): at shutdown, the folder set aside / put back
 #endif
-    bool updateQuiet = false;           // the check at launch: only a toast when a newer version is out
+    bool updateQuiet = false;           // the check at launch: nothing said unless a newer version is out
+    // A newer version, offered (the user, 2026-11-11): a banner where the background work shows its progress, above Settings, in
+    // front of that work's cards; pressed, its sheet (Sheet::UpdateOffer): Update, Later, and the top of what is new. Either
+    // answer puts the banner away until Songate next starts, and the work's cards are back in their place; the sheet closed
+    // without one leaves it. Update opens Settings › Updates at that version. Only with Check when Songate starts on; betas count
+    // only with Beta versions on (Updater::newer: a release is above its own betas)
+    bool updLater_ = false;             // answered this run
+    ScrollArea* pinnedScroll_ = nullptr;   // a sheet whose first rows stay while the rest scrolls (drawSheet): the rest's area, and
+    double pinnedScrollAt_ = -10;          // when it was last drawn: the right stick scrolls it while it is up
+    float updBanner_ = 0;               // 0..1: the banner in the work cards' place
+    int updateOffer() const;            // the release to offer, or -1
+    void drawUpdateBanner(float x, float bottom, float w, bool collapsed, int rel);
+    void openUpdateOffer(int rel);
+    void answerUpdateOffer(int rel, bool update);
+    void updateOfferRows(std::vector<SheetRow>& rows);
+    void updateOfferHeader(const char*& icon, std::string& kick, std::string& title, std::string& sub);
     std::vector<UpdBackup> backupsShown;
     double backupsAt = -100;
     std::string backupRoot() const;     // store.backupDir, else sdmc:/config/songate-nx-backups
@@ -1775,7 +1938,8 @@ private:
     std::vector<std::string> srvPlOrder_;
     bool srvPlOrderRead_ = false;
     void applyServerPlaylistOrder();
-    void moveServerPlaylist(int from, int to);
+    void moveServerPlaylist(int from, int to, bool save = true);
+    void saveServerPlaylistOrder();
     unsigned srvPlaylistsGen_ = ~0u;
     const std::vector<Subsonic::Playlist>* serverPlaylistList();
     void sendPlaylistToServer(const std::string& name, const std::vector<int>& tracks);
@@ -1932,7 +2096,7 @@ private:
     /** Listening together's chirps due from this device (from its wake sound before the first to after the last): "playing" to the
      *  system meanwhile, which Bluetooth passes to the speaker (the user, 2026-11-07: a Marshall Kilburn II plays nothing, Android's own
      *  sounds neither, while the phone says paused; "for all devices"). */
-    bool chirpsDue();
+    // (bool chirpsDue() is declared by sortByDrag, for every build)
     bool selfTestFresh_ = false; // the New user test running: the first start's question cards come, and it answers them
     void newUserTestAsk();       // its card: what it does, Start
     void newUserTestGo();        // Start: Songate closes, sets the folder aside, starts as new

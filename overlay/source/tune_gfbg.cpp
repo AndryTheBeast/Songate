@@ -394,24 +394,10 @@ Result tuneSetVolume(float volume) { return gfbgSetVolume(&srv, volume); }
 
 Result tuneGetTitleVolume(float* out) {
     GfbgGameVolume g{};
-    gfGameVolume(&g);
-    *out = g.programId ? g.volume : 1.f;
+    *out = gfGameVolume(&g) ? g.volume : 1.f;   // one volume for every game, a game in front or not
     return 0;
 }
 Result tuneSetTitleVolume(float volume) { return gfbgSetGameVolume(&srv, volume); }
-
-Result tuneGetDefaultTitleVolume(float* out) {
-    GfbgConfig c{};
-    *out = gfConfig(&c) ? c.gameVolume : 1.f;
-    return 0;
-}
-Result tuneSetDefaultTitleVolume(float volume) {
-    GfbgConfig c{};
-    if (!gfConfig(&c)) return MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
-    c.gameVolume = volume;
-    gfSetConfig(c);
-    return 0;
-}
 
 Result tuneGetRepeatMode(TuneRepeatMode* out) { *out = repeatOf(state().mode); return 0; }
 

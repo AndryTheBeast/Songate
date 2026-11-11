@@ -336,6 +336,33 @@ void gaugeInfo(BatteryInfo& o) {
         const double r = rep * 0.5, f = full * 0.5;
         if (f >= 1500 && f <= 6000 && r <= f * 1.05) { o.capMah = r; o.fullMah = f; }
     }
+    // Charge cycles (the user, 2026-11-11). The chip's own counter (Cycles, 0x17, hundredths of a cycle) is only what the system
+    // has not counted yet: over two cycles the system adds it to its own total, kept with the fuel gauge's learned parameters
+    // (set:sys, PtmFuelGaugeParameter.cycles_actual, hundredths too), and starts the chip's again. The two together are the
+    // battery's count (the console read 1.01 from the chip alone, against some 340). The system's part changes every two cycles:
+    // asked at the first reading and every ten minutes after. Not known, or what no battery could have: left out
+    u16 cyc = 0;
+    if (readGauge(0x17, cyc) && cyc != 0xFFFF) {
+        static u32 counted = 0;
+        static bool haveCounted = false;
+        static int until = 0;
+        if (until-- <= 0) {
+            until = 60;
+            haveCounted = false;
+            if (R_SUCCEEDED(setsysInitialize())) {
+                SetSysPtmFuelGaugeParameter fg{};
+                if (R_SUCCEEDED(setsysGetPtmFuelGaugeParameter(&fg))) { counted = fg.cycles_actual; haveCounted = true; }
+                setsysExit();
+            }
+        }
+        char t[48];
+        snprintf(t, sizeof t, " cycles=%u counted=%d", unsigned(cyc), haveCounted ? int(counted) : -1);   // (as read, for the log)
+        o.raw += t;
+        if (haveCounted) {
+            const int n = int((double(counted) + cyc) / 100.0 + 0.5);
+            if (n > 0 && n < 5000) o.cycles = n;
+        }
+    }
     if (readGauge(0x11, tte) && tte != 0xFFFF && tte > 0) o.tteMin = int(tte * 5.625 / 60);   // TTE
     if (readGauge(0x20, ttf) && ttf != 0xFFFF && ttf > 0) o.ttfMin = int(ttf * 5.625 / 60);   // TTF
 }

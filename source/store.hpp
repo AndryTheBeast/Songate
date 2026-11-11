@@ -122,6 +122,13 @@ struct Store {
     // what shows beside it, in your order (the user, 2026-11-05: "sortable from settings like the side bar is"): 0 percentage, 1 time,
     // 2 charger watts, 3 temperature, 4 voltage, 5 health, 6 power
     std::vector<int> batteryOrder{ 0, 1, 2, 3, 4, 5, 6 };
+    // the Canvas's own (the user, 2026-11-11: "battery information and icon in canvas too", "a setting to switch between canvas
+    // info and home info"): what shows beside it there (the same seven, by their numbers), in which order, and whether it leaves
+    // with the controls when the Canvas goes idle ("remove the battery on the canvas setting and replace with Fade when Canvas
+    // goes idle"; off: it stays)
+    bool cvBatteryFade = false;
+    bool cvBatteryShow[7]{ true, false, false, false, false, false, false };
+    std::vector<int> cvBatteryOrder{ 0, 1, 2, 3, 4, 5, 6 };
     // each state's colour and animation ("choose colour for each state, charging animation (by how fast is charging), discharging
     // animation, animation when its fully charged"; "consistent with the UI and magical too"; "a gradual gradient from full/empty";
     // "the accent color from the cover or theme pallete"). States: 0 on battery, 1 low, 2 charging slowly, 3 charging,

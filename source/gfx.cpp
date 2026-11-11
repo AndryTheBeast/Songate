@@ -155,6 +155,12 @@ void Gfx::setDisplay(float scale, int hz) {
     measured_.clear();
     ellipsized_.clear();
     wrapped_.clear();
+#if defined(GF_WINDOWED) && !defined(GF_ANDROID)
+    // A PC's window at another scale (maximised, another screen, an edge come to rest under the least size): every word is made
+    // again in the next frame, however many there are. Spread over a few frames as a new page's are (newBudget_), the page stood
+    // there for a moment with words missing
+    newBudget_ = 1 << 20;
+#endif
 }
 
 void Gfx::endFrame() {

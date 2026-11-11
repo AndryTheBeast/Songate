@@ -64,28 +64,16 @@ Result tuneGetVolume(float *out);
 Result tuneSetVolume(float volume);
 
 /**
- * @brief Get the volume of the current title
+ * @brief Get the volume every game plays at (Songate: one for all of them)
  * @param[out] out volume value (linear factor).
  */
 Result tuneGetTitleVolume(float *out);
 
 /**
- * @brief Set the volume of the current title
+ * @brief Set the volume every game plays at; a game running takes it at once
  * @param[in] volume volume value (linear factor).
  */
 Result tuneSetTitleVolume(float volume);
-
-/**
- * @brief Get the default volume of all titles
- * @param[out] out volume value (linear factor).
- */
-Result tuneGetDefaultTitleVolume(float *out);
-
-/**
- * @brief Set the default volume of all titles
- * @param[in] volume volume value (linear factor).
- */
-Result tuneSetDefaultTitleVolume(float volume);
 
 /**
  * @brief Get the current loop status.

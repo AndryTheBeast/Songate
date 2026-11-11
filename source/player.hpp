@@ -84,6 +84,7 @@ public:
 #ifdef GF_DEV
     /** Dev: a quiet chirp each whole second of the song, for one microphone to time real music by (tools/clicktest/analyze.py). */
     void syncChirps(bool on) { syncChirps_ = on; }
+#endif
     /** Listening together's delay, measured (micmeasure.hpp): a chirp at each of these moments on the shared clock, as this device's sound
      *  is timed (its Timing included), over whatever plays. Replaces the ones before; {} none. */
     void tones(std::vector<double> sharedStarts, int slot = 0) {
@@ -100,7 +101,6 @@ public:
     }
     /** A steady_clock reading (seconds) on the shared clock: the microphone's stamps. Any thread. */
     double sharedAt(double steady) const { return steady + syncTimeNow_.load() - syncTimeAt_.load(); }
-#endif
     /**
      * Sound from elsewhere (AirPlay): read gives 48 kHz stereo on the audio thread, and plays over nothing else: the caller stops the
      * music first. Through levelling (streamLevel, from the stream's own measurement), the equalizer, then the volume set times gain.

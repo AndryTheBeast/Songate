@@ -14,7 +14,9 @@
 #include "plicons.inc"
 
 namespace {
-constexpr float RowH = 40;
+// (a phone upright: the plain row holds two lines, the title over the artist, and at 40 they ran into each other; the user,
+// 2026-11-11: "super close one song to another compared to landscape". 52 there, as before everywhere else)
+#define RowH (css::W < 600 ? 52.f : 40.f)
 
 struct GridLayout {
     int cols;
@@ -237,6 +239,9 @@ void App::drawArtists(float x, float y, float w, float h, bool genre, bool inLib
         c = false;
         bx += button(uid("gen.addall"), ICON_PLUS, narrow ? "Add all" : "Add all as playlists", bx, headBottom, false, &c) + 8;
         if (c) addGenresAsPlaylists();
+        // narrow (a phone upright): the three buttons reach under the views (Add all sat under them): the views on a line of their own
+        const bool viewsBelow = narrow && bx > x + w - 28 - (6 + 38.f * 3) - 4;
+        if (viewsBelow) headBottom += 34 + 10;
         viewSwitch("gen.view", x + w - 28, headBottom + 17, gmode, 1u);   // (By album would be the tiles again: three views, as Folders')
         if (gmode != store.viewGenres) { store.viewGenres = gmode; persistSoon(0.3f); }
         headBottom += 34 + 16;

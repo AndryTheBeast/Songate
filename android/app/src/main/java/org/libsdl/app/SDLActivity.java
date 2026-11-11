@@ -734,7 +734,12 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
 
         // Try a transition to resumed state
         if (mNextNativeState == NativeState.RESUMED) {
-            if (mSurface.mIsSurfaceReady && mHasFocus && mIsResumedCalled) {
+            // Songate: with multi-window (Android 7 and later) the app is paused when it is stopped, not when it loses the
+            // focus (onWindowFocusChanged), so it resumes as soon as it is started and has its surface again, focus or not.
+            // Waiting for the focus as well left a new, black surface undrawn for as long as Android was late giving it
+            // (seen 2026-11-11 after quick home and back: all black for seconds; and beside another app in split screen,
+            // which has the focus, until Songate was touched)
+            if (mSurface.mIsSurfaceReady && (mHasFocus || mHasMultiWindow) && mIsResumedCalled) {
                 if (mSDLThread == null) {
                     // This is the entry point to the C app.
                     // Start up the C app thread and enable sensor input for the first time

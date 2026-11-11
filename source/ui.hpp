@@ -15,6 +15,7 @@
 #include <SDL2/SDL.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -42,6 +43,9 @@ struct ScrollArea {
     SDL_FRect view{};
     float y = 0, target = 0, content = 0, velocity = 0;
     double manual = -100;   // Ui::now() when it was last scrolled by hand (touch, right stick, D-pad): followers wait a while
+#if defined(GF_WINDOWED) && !defined(GF_ANDROID)
+    float wasW = 0, wasContent = 0;   // as it was last pushed (Ui::pushArea keeps its place when a window's edge moves)
+#endif
     float max() const { return std::max(0.f, content - view.h); }
     void clamp() { target = std::min(std::max(target, 0.f), max()); y = std::min(std::max(y, 0.f), max()); }
 };
@@ -61,6 +65,20 @@ public:
     void setModal(bool on) { modal_ = on; }
     bool modal() const { return modal_; }
     void pushArea(ScrollArea* a) {
+#if defined(GF_WINDOWED) && !defined(GF_ANDROID)
+        // A window's edge dragged, or the sidebar folding: a page that is laid out again for its new width (a grid's columns, words
+        // on more or fewer lines) gets longer or shorter, and what was in view would be somewhere else. It keeps its place: as far
+        // through the page as it was (a grid: the same albums in view, to within a row). A list of rows is as long as it was, and
+        // stays where it is
+        if (a->wasW > 0 && a->wasContent > 0 && a->content > 0 && a->y > 0 && std::fabs(a->view.w - a->wasW) > 0.01f &&
+            std::fabs(a->content - a->wasContent) > 0.01f) {
+            const float k = a->content / a->wasContent;
+            a->y *= k;
+            a->target *= k;
+        }
+        a->wasW = a->view.w;
+        a->wasContent = a->content;
+#endif
         area_ = a;
         if (onArea) onArea(a);
         if (modal_ && region_ != Region::Modal) return;
@@ -91,6 +109,8 @@ public:
     /** True once when a touch drag of this slider ends. */
     bool sliderReleased(Id id) const { return released_ == id; }
     float lastDragX() const { return dragX_; }
+    /** The slider a finger is on now (taken at the touch itself, before any frame), 0 when none. */
+    Id dragId() const { return drag_; }
     /** A Slider2D's other axis: −1/+1 from ↑/↓ this frame, and the finger's y while it is dragged (else −1). */
     int sliderStepY(Id id) const { return focus_ == id ? sliderStepY_ : 0; }
     float sliderDragY(Id id) const { return drag_ == id ? dragY_ : -1; }

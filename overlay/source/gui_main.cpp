@@ -24,28 +24,27 @@ static std::string     g_browser_return_root;
 
 // ---------------------------------------------------------------------------
 // Volume mute-backup persistence
-// Three integers (0-100), one per line: Music, Game, Game (default).
+// Two integers (0-100), one per line: Music, Game.
+// Before protocol 7 there were three (Music, the game in front, every other game): the third is
+// the one that became Game, so a file with three lines gives its third as Game's.
 // ---------------------------------------------------------------------------
 static std::string volBackupFile() { return gfCfgFile("overlay-volume.txt"); }
 
-static void readVolBackups(u8 &music, u8 &game, u8 &game_def) {
-    music = game = game_def = 100;
+static void readVolBackups(u8 &music, u8 &game) {
+    music = game = 100;
     FILE* f = fopen(volBackupFile().c_str(), "r");
     if (!f) return;
     int m = 100, g = 100, gd = 100;
-    fscanf(f, "%d\n%d\n%d", &m, &g, &gd);
+    const int n = fscanf(f, "%d\n%d\n%d", &m, &g, &gd);
     fclose(f);
-    music    = static_cast<u8>(std::clamp(m,  0, 100));
-    game     = static_cast<u8>(std::clamp(g,  0, 100));
-    game_def = static_cast<u8>(std::clamp(gd, 0, 100));
+    music = static_cast<u8>(std::clamp(m, 0, 100));
+    game  = static_cast<u8>(std::clamp(n >= 3 ? gd : g, 0, 100));
 }
 
-static void writeVolBackups(u8 music, u8 game, u8 game_def) {
+static void writeVolBackups(u8 music, u8 game) {
     FILE* f = fopen(volBackupFile().c_str(), "w");
     if (!f) return;
-    fprintf(f, "%d\n%d\n%d\n", static_cast<int>(music),
-                                static_cast<int>(game),
-                                static_cast<int>(game_def));
+    fprintf(f, "%d\n%d\n", static_cast<int>(music), static_cast<int>(game));
     fclose(f);
 }
 
@@ -73,38 +72,6 @@ void setBrowserReturnPath(const std::string& cwd, const std::string& root) {
 // ---------------------------------------------------------------------------
 namespace {
 
-/**
- * Gatefold: the running game's own name (its control data, in the console's language), for the
- * Settings page's game volume. Empty when it cannot be read; long names are shortened to fit.
- */
-std::string gameName(u64 programId) {
-    std::string out;
-    if (R_FAILED(nsInitialize())) return out;
-    // About 130 KB with the icon: borrowed for the call only, an overlay's heap is small.
-    auto* data = static_cast<NsApplicationControlData*>(std::malloc(sizeof(NsApplicationControlData)));
-    // A game made of several programs runs one of them (the id's low bits); the application is the base id.
-    for (u64 id : { programId, u64(programId & ~u64(0xFFF)) }) {
-        u64 size = 0;
-        NacpLanguageEntry* e = nullptr;
-        if (data && R_SUCCEEDED(nsGetApplicationControlData(NsApplicationControlSource_Storage, id, data, sizeof *data, &size)) &&
-            R_SUCCEEDED(nacpGetLanguageEntry(&data->nacp, &e)) && e && e->name[0]) {
-            const void* nul = std::memchr(e->name, 0, sizeof e->name);
-            out.assign(e->name, nul ? static_cast<const char*>(nul) - e->name : sizeof e->name);
-            break;
-        }
-    }
-    std::free(data);
-    nsExit();
-    constexpr size_t kMax = 26;   // what fits beside the percentage
-    if (out.size() > kMax) {
-        size_t cut = kMax;
-        while (cut > 0 && (static_cast<unsigned char>(out[cut]) & 0xC0) == 0x80) cut--;   // not inside a UTF-8 character
-        out = out.substr(0, cut);
-        while (!out.empty() && out.back() == ' ') out.pop_back();
-        out += "…";
-    }
-    return out;
-}
     enum class FocusMode { Pass, Play, Pause };
 
     constexpr const char* focusLabel(FocusMode m) {
@@ -497,18 +464,16 @@ tsl::elm::Element* SettingsGui::createUI() {
     // ---- Volume ----
     m_list->addItem(new tsl::elm::CategoryHeader("Volume "+ult::DIVIDER_SYMBOL+"  Toggle Mute"));
 
-    float tune_volume = 1.f, title_volume = 1.f, default_title_volume = 1.f;
+    float tune_volume = 1.f, title_volume = 1.f;
     tuneGetVolume(&tune_volume);
     tuneGetTitleVolume(&title_volume);
-    tuneGetDefaultTitleVolume(&default_title_volume);
 
     // Load persisted pre-mute backups so Y-toggle survives overlay reopen.
-    readVolBackups(m_music_vol_backup, m_game_vol_backup, m_game_default_vol_backup);
+    readVolBackups(m_music_vol_backup, m_game_vol_backup);
 
     // Initialise current-vol tracking from actual IPC values.
-    m_music_vol        = static_cast<u8>(std::clamp(static_cast<int>(tune_volume          * 100.f + 0.5f), 0, 100));
-    m_game_vol         = static_cast<u8>(std::clamp(static_cast<int>(title_volume         * 100.f + 0.5f), 0, 100));
-    m_game_default_vol = static_cast<u8>(std::clamp(static_cast<int>(default_title_volume * 100.f + 0.5f), 0, 100));
+    m_music_vol = static_cast<u8>(std::clamp(static_cast<int>(tune_volume  * 100.f + 0.5f), 0, 100));
+    m_game_vol  = static_cast<u8>(std::clamp(static_cast<int>(title_volume * 100.f + 0.5f), 0, 100));
 
     // Helper: same mute-toggle logic as the Y-key handler, usable from icon taps.
     // Captures SettingsGui members by pointer so the lambda stays copyable.
@@ -525,7 +490,7 @@ tsl::elm::Element* SettingsGui::createUI() {
             }
             slider->setProgress(*vol);
             applyFn(*vol);
-            writeVolBackups(m_music_vol_backup, m_game_vol_backup, m_game_default_vol_backup);
+            writeVolBackups(m_music_vol_backup, m_game_vol_backup);
         };
     };
 
@@ -541,44 +506,19 @@ tsl::elm::Element* SettingsGui::createUI() {
         [](u8 v) { tuneSetVolume(float(v) / 100.f); }));
     m_list->addItem(tune_volume_slider);
     
-    // Gatefold: the game in front's own volume, remembered per game, and the one every other
-    // game gets. Neither shows for the HOME menu or for Gatefold itself.
-    GfbgGameVolume game{};
-    gfGameVolume(&game);
-    if (game.programId) {
-        const std::string name = gameName(game.programId);
-        auto title_volume_slider = new VolumeTrackBar("", false, false, true, name.empty() ? "This Game" : name, "%", false);
-        title_volume_slider->setProgress(title_volume * 100);
-        title_volume_slider->setValueChangedListener([this](u8 value) {
-            m_game_vol = value;
-            tuneSetTitleVolume(float(value) / 100.f);
-        });
-        m_game_slider = title_volume_slider;
-        title_volume_slider->setIconTapCallback(makeMuteTap(
-            &m_game_slider, &m_game_vol, &m_game_vol_backup,
-            [](u8 v) { tuneSetTitleVolume(float(v) / 100.f); }));
-        m_list->addItem(title_volume_slider);
-    }
-
-    auto default_title_volume_slider = new VolumeTrackBar("", false, false, true, "Games", "%", false);
-    default_title_volume_slider->setProgress(static_cast<u8>(std::clamp(default_title_volume * 100.f + 0.5f, 0.f, 100.f)));
-    m_game_default_vol = default_title_volume_slider->getProgress();
-    default_title_volume_slider->setValueChangedListener([this](u8 value) {
-        m_game_default_vol = value;
-        tuneSetDefaultTitleVolume(float(value) / 100.f);
+    // Gatefold: one volume for every game (the user, 2026-11-10: "no profiles no nothing"). Shown always,
+    // a game running or not: the game in front takes it at once, the next one as it opens.
+    auto title_volume_slider = new VolumeTrackBar("", false, false, true, "Game", "%", false);
+    title_volume_slider->setProgress(m_game_vol);
+    title_volume_slider->setValueChangedListener([this](u8 value) {
+        m_game_vol = value;
+        tuneSetTitleVolume(float(value) / 100.f);
     });
-    m_game_default_slider = default_title_volume_slider;
-    default_title_volume_slider->setIconTapCallback(makeMuteTap(
-        &m_game_default_slider, &m_game_default_vol, &m_game_default_vol_backup,
-        [](u8 v) { tuneSetDefaultTitleVolume(float(v) / 100.f); }));
-    m_list->addItem(default_title_volume_slider);
-    // What "Games" means, centred in a line under it: a game you have set a volume for (the slider above,
-    // named after it) keeps its own.
-    m_list->addItem(new tsl::elm::CustomDrawer([](tsl::gfx::Renderer *r, s32 x, s32 y, s32 w, s32) {
-        static constexpr const char* kHint = "For games without a volume of their own";
-        const s32 tw = static_cast<s32>(r->getTextDimensions(kHint, false, 15).first);
-        r->drawString(kHint, false, x + (w - tw) / 2, y + 20, 15, tsl::offTextColor);
-    }), 32);
+    m_game_slider = title_volume_slider;
+    title_volume_slider->setIconTapCallback(makeMuteTap(
+        &m_game_slider, &m_game_vol, &m_game_vol_backup,
+        [](u8 v) { tuneSetTitleVolume(float(v) / 100.f); }));
+    m_list->addItem(title_volume_slider);
 
     // ---- Games: what the music does at each game event (Gatefold's background player) ----
     // Each item cycles with A, like sys-tune's Title Focus: Nothing, Play (a random folder,
@@ -903,7 +843,7 @@ void SettingsGui::update() {
             m_tid      = tid;
             m_last_tid = tid;
 
-            // Gatefold: "Games" (the default) is one volume for all of them, nothing to reload per title.
+            // Gatefold: "Game" is one volume for all of them, nothing to reload per title.
         }
     }
 
@@ -972,7 +912,7 @@ bool SettingsGui::handleInput(u64 keysDown, u64 keysHeld, const HidTouchState &t
             }
             slider->setProgress(vol);
             applyFn(vol);
-            writeVolBackups(m_music_vol_backup, m_game_vol_backup, m_game_default_vol_backup);
+            writeVolBackups(m_music_vol_backup, m_game_vol_backup);
             triggerNavigationFeedback();
             return true;
         };
@@ -982,14 +922,7 @@ bool SettingsGui::handleInput(u64 keysDown, u64 keysHeld, const HidTouchState &t
             return true;
 
         if (doMuteToggle(m_game_slider, m_game_vol, m_game_vol_backup,
-            [this](u8 v) {
-                const float fv = float(v) / 100.f;
-                tuneSetTitleVolume(fv);
-            }))
-            return true;
-
-        if (doMuteToggle(m_game_default_slider, m_game_default_vol, m_game_default_vol_backup,
-            [](u8 v) { tuneSetDefaultTitleVolume(float(v) / 100.f); }))
+            [](u8 v) { tuneSetTitleVolume(float(v) / 100.f); }))
             return true;
     }
 

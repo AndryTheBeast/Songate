@@ -88,6 +88,12 @@ void keepOnSwipe(bool on);
 void mediaProgress(double position, double duration, bool liked, int order);
 /** Cmd::Seek's place, in seconds. */
 double commandSeek();
+/** The Canvas opened from a phone held upright: the screen is turned sideways and kept there (on), then given back to the phone's own
+ *  turning (off), which puts it upright again when that is how it is held. */
+void holdLandscape(bool on);
+/** Android's density: real pixels to a dp (a 160th of an inch as the device's maker and the user's Display size have it; 2.625 on
+ *  a 1080-wide phone of 411 dp). The window's size in dp is what the layout's scale comes from (App::fitWindow). */
+float screenDensity();
 #endif
 /** A file name, or a path ending in one, is a release's installer. */
 bool isInstaller(const std::string& name);
@@ -138,8 +144,14 @@ struct BatteryInfo {
     double gaugeVolts = 0, gaugeAmps = 0;   // the cell's average voltage and current (+ into the battery, − out of it)
     double capMah = 0, fullMah = 0;         // the charge in it now and when full (0: not known)
     int tteMin = -1, ttfMin = -1;           // its own time to empty and to full, in minutes (−1: not known)
+    // What a platform cannot read is left out, never shown as zero (the PC, 2026-11-11). missing: a bit for each of
+    // Settings' battery items it has no reading for (2 charger watts, 3 temperature, 4 voltage, 5 health, 6 power)
+    unsigned missing = 0;
+    bool chargerKnown = true;   // false: only whether one is connected (charger: 1 or 0), not its kind nor what it gives
+    bool wattHours = false;     // capMah and fullMah are in mWh (a PC's battery reports energy, not charge)
+    int cycles = 0;             // charge cycles so far (0: not known)
 };
-/** False where there is none to read (only the Switch for now). */
+/** False where there is none to read. */
 bool batteryInfo(BatteryInfo& out);
 void sysInfo(std::string& firmware, std::string& atmosphere, bool& docked);
 /** When the machine last started, in time() seconds: a different one means it restarted. */

@@ -639,6 +639,33 @@ void App::drawCanvas() {
         ui.link(trans[0], -1, 0, 0);
         ui.link(trans[2], 1, 0, 0);
     }
+    // The battery, where the title bar has it on every other page (the user, 2026-11-11: "in the same position as the home one but
+    // on canvas"): the same battery, its states' colours and animations, with the Canvas's own choice of what shows beside it
+    // (Settings › Appearance › Battery › Canvas). It stays while the controls are away, or leaves and returns with them (Fade
+    // with the controls). Pressed: its card, as the title bar's
+    {
+        unsigned pct = 0;
+        // A fade of its own (the user, 2026-11-11: "appear and disappear with a smooth fade"): it took the controls' own, a quick
+        // one with their 14 px slide, and so dropped away. Now it stays in its place and eases out and in over 0.45 s, leaving and
+        // returning when they do
+        static float batK = 1;
+        const bool wanted = !store.cvBatteryFade || !(idle || canvasViz > 0.12f);
+        batK = !store.motion ? (wanted ? 1.f : 0.f) : std::clamp(batK + (wanted ? 1.f : -1.f) * float(dt) / 0.45f, 0.f, 1.f);
+        const float ba = batK * batK * (3 - 2 * batK);
+        if (ba > 0.01f && plat::batteryLevel(pct)) {
+            const float wasFade = g.fade();
+            g.setGhost(wasGhost);
+            g.setShift(0, 0);
+            g.setFade(wasFade * ba);
+#ifdef GF_WINDOWED
+            const float er = edge_.tbR;   // clear of a camera in that corner (Screen edges)
+#else
+            const float er = 0;
+#endif
+            drawBatteryCluster(css::W - 18 - er, css::TbH / 2.f, pct, css::W * 0.4f, 1);
+            g.setFade(wasFade);
+        }
+    }
     g.setGhost(wasGhost);
     g.setShift(0, 0);
 }

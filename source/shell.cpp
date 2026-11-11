@@ -201,6 +201,7 @@ void App::draw() {
     if (phonePortrait()) {   // a phone held upright: its own layout (view_phone.cpp), the same overlays over it
         ui.region(Region::Main);
         drawPhone();
+        drawSortDone();   // a list in sort mode (by touch): Done over the page's foot
         profMark(4);
 #ifdef GF_DEV
         g.saidLayer = 1;   // (tests: the overlays from here)
@@ -232,7 +233,7 @@ void App::draw() {
     const bool hidden = shown <= 0.001f;
     g.holdCache(shown < 1);   // what it shows stays cached meanwhile, so its return is not a stutter
 
-    const float mx = std::round(sideW + edge_.side), my = css::TbH, mw = css::W - mx - std::round(edge_.mainR), mh = css::H - css::TbH - css::BarH;
+    const float mx = std::round(pageSideW() + edge_.side), my = css::TbH, mw = css::W - mx - std::round(edge_.mainR), mh = css::H - css::TbH - css::BarH;
     ui.region(Region::Main);
     g.clip(mx, my, mw, mh);
     switch (route.view) {
@@ -262,6 +263,18 @@ void App::draw() {
     if (shown < 1) g.setFade(shown);
     if (!hidden) {
         ui.region(Region::Side);
+#ifdef GF_WINDOWED
+        // The sidebar open over a narrow window's page (sidePeek_): the page dims under it and takes no press but the one that
+        // closes it; the sidebar on a ground of its own, a line and a soft shadow at its edge
+        if (peekK_ > 0.001f && sideW > css::SideWCollapsed + 0.5f) {
+            const float over = sideOpen() * peekK_, px = std::round(sideW + edge_.side);
+            if (sidePeek_ && ui.item(uid("side.scrim"), { mx, my, mw, mh }, 0)) sidePeek_ = false;
+            g.rect(mx, my, css::W - mx, mh, { 0, 0, 0 }, 0.34f * over);
+            for (int i = 0; i < 6; i++) g.rect(px + i * 3.f, my, 3, mh, { 0, 0, 0 }, 0.16f * over * (6 - i) / 6.f);
+            g.rect(0, my, px, mh, pal.bg, peekK_);
+            g.rect(px, my, 1, mh, pal.text, 0.1f * over);
+        }
+#endif
         drawSidebar();
         ui.region(Region::Title);
         drawTitlebar();
@@ -272,6 +285,7 @@ void App::draw() {
         drawPlayerbar();
     }
     g.setFade(1);
+    drawSortDone();   // a list in sort mode (by touch): Done over the page's foot
     if (glideOn_) {
         drawNowCover(glideCover_.x, glideCover_.y, glideCover_.w);
         glideOn_ = false;
@@ -496,6 +510,9 @@ void App::drawBackground() {
 
 float App::backShown() {
     backOn_ = kBackForce || (touchUi_ && !canvas && (!history.empty() || route.view != View::Now));
+#ifdef GF_ANDROID
+    backOn_ = false;   // Android has its own back, a gesture or a button (the user, 2026-11-11: "does not make sense on android")
+#endif
     // eased towards what is wanted, once a frame: a change of mind mid-way carries on from where it is (no restart, no jump)
     if (backTick_ != time) {
         const float dt = std::clamp(float(time - backTick_), 0.f, 0.05f);
@@ -505,6 +522,37 @@ float App::backShown() {
         if (std::fabs(to - backAnim_) < 0.004f) backAnim_ = to;
     }
     return backAnim_;
+}
+
+/** The sync mark, centred on (ix, iy): two arrows chasing each other round a circle while a sync or a copy between devices runs,
+ *  fading in and out (the title bar's; a phone upright has it beside its name too). Called once a frame: it steps its own fade. */
+void App::drawSyncMark(float ix, float iy) {
+    bool busy = syncBusy;
+#ifdef GF_DEV
+    static const bool demo = getenv("GF_SYNCICON") != nullptr;   // the preview has no second device
+    if (demo) busy = std::fmod(time, 8.0) < 5.0;
+#endif
+    syncIconA = std::clamp(syncIconA + (busy ? 1 : -1) * dt / 0.3f, 0.f, 1.f);
+    if (syncIconA <= 0) return;
+    const float r = 5.8f, a = syncIconA * syncIconA * (3 - 2 * syncIconA);
+    constexpr float kPi = 3.14159265f;
+    const float spin = store.motion ? float(std::fmod(time, 1.4) / 1.4) * 2 * kPi : 0.f;   // clockwise, a turn in 1.4 s
+    std::vector<SDL_FPoint> arc;
+    for (int k = 0; k < 2; k++) {
+        // The classic sync mark (the user's picture, 2026-11-02): two arcs half a turn apart, each ending in a large solid
+        // head whose base sits across the ring, centred on its line, and whose point runs on along the tangent. At the
+        // title bar icons' weight: 18 px, Lucide's stroke of 2 in 24.
+        const float a0 = spin + k * kPi, a1 = a0 + 2.2f;
+        arc.clear();
+        for (int i = 0; i <= 14; i++) {
+            const float t = a0 + (a1 - a0) * i / 14;
+            arc.push_back({ ix + r * std::cos(t), iy + r * std::sin(t) });
+        }
+        g.polyline(arc, 1.6f, pal.text2, a);
+        const float px = ix + r * std::cos(a1), py = iy + r * std::sin(a1);
+        const float tx = -std::sin(a1), ty = std::cos(a1), nx = std::cos(a1), ny = std::sin(a1), w = 2.7f, l = 3.6f;
+        g.triangle({ px + nx * w, py + ny * w }, { px + tx * l, py + ty * l }, { px - nx * w, py - ny * w }, pal.text2, a);
+    }
 }
 
 void App::drawTitlebar() {
@@ -517,7 +565,7 @@ void App::drawTitlebar() {
     hint(uid("tb.sidebar"), sidebarFolded() ? "Show the sidebar" : "Hide the sidebar");
     if (iconButton(uid("tb.sidebar"), ICON_SIDEBAR, x + 17, cy)) {
 #ifdef GF_WINDOWED
-        if (css::W < kNarrowW) sideOpenedNarrow_ = !sideOpenedNarrow_;   // for now: the setting is for windows with room
+        if (narrow_) sidePeek_ = !sidePeek_;   // narrow: over the page, for now (your own choice is for a window with room)
         else
 #endif
         { store.sidebarCollapsed = !store.sidebarCollapsed; store.save(); }
@@ -583,47 +631,24 @@ void App::drawTitlebar() {
     // Syncing (the user, 2026-11-02: "like the iPhones have when syncing with iTunes", top left): two arrows chasing each other
     // round a circle while a sync or a copy runs, just right of the name, or of the sidebar button when the name is away
     {
-        bool busy = syncBusy;
-#ifdef GF_DEV
-        static const bool demo = getenv("GF_SYNCICON") != nullptr;   // the preview has no second device
-        if (demo) busy = std::fmod(time, 8.0) < 5.0;
-#endif
-        syncIconA = std::clamp(syncIconA + (busy ? 1 : -1) * dt / 0.3f, 0.f, 1.f);
-        if (syncIconA > 0) {
-            const float in = std::clamp((open - 0.35f) / 0.65f, 0.f, 1.f), ina = in * in * (3 - 2 * in);
-            // centred on the name's letters, not the bar: they are lower case but the S, from 20.5 to their baseline at 31
-            // (measured in the preview), so their middle is 2.8 px under the bar's (the user: "isn't centered with the text");
-            // on the bar's middle beside the sidebar button when the name is away
-            const float r = 5.8f, a = syncIconA * syncIconA * (3 - 2 * syncIconA);
-            const float ix = x + r + 1 + (g.wordmarkW() + 12) * ina, iy = cy + 2.8f * ina;
-            constexpr float kPi = 3.14159265f;
-            const float spin = store.motion ? float(std::fmod(time, 1.4) / 1.4) * 2 * kPi : 0.f;   // clockwise, a turn in 1.4 s
-            std::vector<SDL_FPoint> arc;
-            for (int k = 0; k < 2; k++) {
-                // The classic sync mark (the user's picture, 2026-11-02): two arcs half a turn apart, each ending in a large solid
-                // head whose base sits across the ring, centred on its line, and whose point runs on along the tangent. At the
-                // title bar icons' weight: 18 px, Lucide's stroke of 2 in 24.
-                const float a0 = spin + k * kPi, a1 = a0 + 2.2f;
-                arc.clear();
-                for (int i = 0; i <= 14; i++) {
-                    const float t = a0 + (a1 - a0) * i / 14;
-                    arc.push_back({ ix + r * std::cos(t), iy + r * std::sin(t) });
-                }
-                g.polyline(arc, 1.6f, pal.text2, a);
-                const float px = ix + r * std::cos(a1), py = iy + r * std::sin(a1);
-                const float tx = -std::sin(a1), ty = std::cos(a1), nx = std::cos(a1), ny = std::sin(a1), w = 2.7f, l = 3.6f;
-                g.triangle({ px + nx * w, py + ny * w }, { px + tx * l, py + ty * l }, { px - nx * w, py - ny * w }, pal.text2, a);
-            }
-        }
+        const float in = std::clamp((open - 0.35f) / 0.65f, 0.f, 1.f), ina = in * in * (3 - 2 * in);
+        // centred on the name's letters, not the bar: they are lower case but the S, from 20.5 to their baseline at 31
+        // (measured in the preview), so their middle is 2.8 px under the bar's (the user: "isn't centered with the text");
+        // on the bar's middle beside the sidebar button when the name is away
+        drawSyncMark(x + 5.8f + 1 + (g.wordmarkW() + 12) * ina, cy + 2.8f * ina);
     }
 
     // .search: centred in what is left of the bar; opens the console keyboard
 #ifdef GF_WINDOWED
     // where it is with the lights away: it does not move with them; clear of a camera at either end or in the middle (Screen edges)
-    float left = std::max({ sideW + edge_.side + 12, 10 + edge_.tbL + 40 + 120.f, edge_.searchL, srcNeed }), right = css::W - 150 - edge_.tbR;
+    // (right: the devices button after it clear of the clock and the battery: at W - 150 it ran into the clock once a narrow window
+    // took the field to its limit, and the battery's percentage had no room left; a 1280-wide one has the field in the middle, well
+    // short of either)
+    float left = std::max({ pageSideW() + edge_.side + 12, 10 + edge_.tbL + 40 + 120.f, edge_.searchL, srcNeed }), right = css::W - 192 - 54 - edge_.tbR;
 #if defined(GF_AIRPLAY) || defined(GF_PREVIEW)
     left += 8 + 34;   // (AirPlay's button, before it)
 #endif
+    if (right - left < 220) right += 54;   // (no room for both: the field before the percentage)
     if (edge_.searchR > 0) right = std::min(right, edge_.searchR);
 #else
 #if defined(GF_AIRPLAY) || defined(GF_PREVIEW)
@@ -632,24 +657,32 @@ void App::drawTitlebar() {
     const float left = std::max({ sideW + 12, x + 120, srcNeed }), right = css::W - 150;
 #endif
 #endif
-    const float sw = std::min(520.f, right - left), sy = cy - 16;
-    // with the sidebar folded: in the middle of the window (the user, 2026-11-07), clear of what is either side; it glides as the
-    // sidebar opens and folds
-    const float sxOpen = left + (right - left - sw) / 2, sxMid = std::clamp((css::W - sw) / 2, left, right - sw);
-    const float sx = sxMid + (sxOpen - sxMid) * std::clamp(open, 0.f, 1.f);
+    // No room for a field worth the name (a narrow window with Local | Server and a camera's cutout in the bar: its words ran
+    // out of it, over the clock): the search button alone, as round as the others
+    const bool searchSmall = right - left < 200;
+    const float sw = searchSmall ? 34.f : std::min(520.f, right - left), sy = cy - 16;
+    // in the middle of the window, the sidebar folded (the user, 2026-11-07) or open (2026-11-11: "could we also center it when the
+    // sidebar is not collapsed?"), clear of what is either side: it stays where it is as the sidebar opens and folds
+    const float sx = searchSmall ? left : std::clamp((css::W - sw) / 2, left, std::max(left, right - sw));
     const Id sid = uid("tb.search");
-    if (ui.item(sid, { sx, sy, sw, 32 }, 9)) openSearch();
+    if (searchSmall) {
+        hint(sid, "Search");
+        if (iconButton(sid, ICON_SEARCH, sx + 17, cy)) openSearch();
+    } else if (ui.item(sid, { sx, sy, sw, 32 }, 9)) openSearch();
 #ifdef GF_WINDOWED
     titleKeep_[1] = { sx, 0, sw, css::TbH };
 #endif
+    if (!searchSmall) {
     const bool hot = ui.focused(sid) && ui.showFocusRing();
     g.roundRect(sx, sy, sw, 32, 9, hot ? pal.surface : pal.text, hot ? 1.f : 0.065f);
     g.roundStroke(sx, sy, sw, 32, 9, 1, hot ? pal.accent : pal.text, hot ? 0.55f : 0.09f);
     g.icon(ICON_SEARCH, sx + 12 + 8, cy, 16, pal.text3);
     const std::string q = route.view == View::Search ? route.query : std::string();
+    const bool keyShown = sw >= 290;   // (a short field: its words whole before the key's name)
     g.textC(q.empty() ? searchHint() : q, { css::Sm }, sx + 12 + 16 + 8, cy, q.empty() ? pal.text3 : pal.text, 1, Align::Left,
-            int(sw - 90));
+            int(keyShown ? sw - 90 : sw - 48));
     // <kbd>: the button that opens search
+    if (keyShown) {
     const Font kf{ css::Xs };
 #ifdef GF_WINDOWED
     const std::string searchKey = plat::capName("Y");
@@ -659,6 +692,8 @@ void App::drawTitlebar() {
     const float kw = g.measure(searchKey, kf) + 12;
     g.roundStroke(sx + sw - 12 - kw, cy - 9, kw, 18, 5, 1, pal.text, 0.15f);
     g.textC(searchKey, kf, sx + sw - 12 - kw / 2, cy, pal.text3, 1, Align::Center);
+    }
+    }
 
 #if defined(GF_AIRPLAY) || defined(GF_PREVIEW)
     {   // AirPlay (the user, 2026-11-05: "separate Airplay from Playing together", "in the left of search", "at the same distance from search
@@ -709,6 +744,9 @@ void App::drawTitlebar() {
     unsigned pct = 0;
     const bool haveBattery = plat::batteryLevel(pct);
     float rx = css::W - 18 - edge_.tbR;
+#ifdef GF_WINDOWED
+    titleKeep_[5] = {};
+#endif
     if (haveBattery) rx = drawBatteryCluster(rx, cy, pct, sx + sw + 8 + 34 + 28);
     g.textNum(clock, { css::Base, Weight::SemiBold }, rx, cy - g.lineHeight({ css::Base, Weight::SemiBold }) / 2.f, pal.text2, 1, Align::Right);   // (numbers that change: fixed-width digits)
 }
@@ -718,7 +756,7 @@ void App::drawTitlebar() {
 /** The battery at the right of a top bar (the title bar's; the phone's upright: the user, 2026-11-05: "apply the new battery
  *  customisation to android portrait mode too"): rx its right edge, cy its middle, limit where what is beside it must stop (the
  *  search bar, the wordmark), the clock's room kept. Returns the left of it all, where the clock goes. */
-float App::drawBatteryCluster(float rx, float cy, unsigned pct, float limit) {
+float App::drawBatteryCluster(float rx, float cy, unsigned pct, float limit, int side) {
     constexpr float kClockGap = 10;   // more room left of it for the clock: its focus ring reaches 4 px outside it
     // BETA 3 (the user, 2026-11-05: "Let the user customise almost everything about the battery"): its colour, an animation for each
     // state (low; charging slowly, normally, fast; charged), and what shows beside it; all in Settings › Appearance › Battery
@@ -748,8 +786,8 @@ float App::drawBatteryCluster(float rx, float cy, unsigned pct, float limit) {
     std::string label;
     auto add = [&](const std::string& s) { if (!s.empty()) label += (label.empty() ? "" : "  ·  ") + s; };
     const plat::BatteryInfo& bi = battery.info;
-    for (int it : batteryItems()) {
-        if (!*batteryShown(it)) continue;
+    for (int it : batteryItems(side)) {
+        if (!*batteryShown(it, side)) continue;
         char t[40] = {};
         switch (it) {
             case 0: snprintf(t, sizeof t, "%u%%", pct); break;
@@ -765,8 +803,9 @@ float App::drawBatteryCluster(float rx, float cy, unsigned pct, float limit) {
     // what does not fit between the search bar (and the devices button) and the clock is left out, from the end: the search bar is
     // never covered (the user's preview, 2026-11-05: everything on ran the clock into it)
     {
-        const float clockW = float(g.measure("00:00", { css::Base, Weight::SemiBold })) + kClockGap;
-        batteryRoom_ = rx - 14 - clockW - limit;
+        // (the Canvas has no clock beside it, and its room is not the title bar's: Settings greys nothing there)
+        const float clockW = side == 1 ? 0.f : float(g.measure("00:00", { css::Base, Weight::SemiBold })) + kClockGap;
+        if (side == 0) batteryRoom_ = rx - 14 - clockW - limit;
         while (!label.empty() && rx - 14 - float(g.measure(label, { css::Base })) - clockW < limit) {
             const size_t cut = label.rfind("  ·  ");
             label = cut == std::string::npos ? std::string() : label.substr(0, cut);
@@ -775,10 +814,15 @@ float App::drawBatteryCluster(float rx, float cy, unsigned pct, float limit) {
     if (!label.empty()) rx -= g.textNum(label, { css::Base }, rx, cy - g.lineHeight({ css::Base }) / 2.f, pal.text3, 1, Align::Right) + 14;
     else rx -= 4;
     // pressed (or a touch): everything about it, in its card
-    const Id bid = uid("tb.battery");
+    const Id bid = uid(side == 1 ? "cv.battery" : "tb.battery");
     // (its focus ring is the app's, as every other's: App::drawFocusRing; a second of its own inside it made two, the user's
     // screenshot, 2026-11-05: "not consistent with normal outlines")
     if (ui.item(bid, { rx + 6, cy - 16, right - rx - 2, 32 }, 8)) openBattery();
+#ifdef GF_WINDOWED
+    // pressed, not dragged: in a window the title bar moves the window wherever nothing is kept, and Windows never told the app
+    // the mouse was over the battery (the user's recording, 2026-11-11: no outline, no card, unless full screen)
+    if (side == 0) titleKeep_[5] = { rx + 6, 0, right - rx - 2, float(css::TbH) };
+#endif
     return rx - kClockGap;   // the clock clear of its focus ring (the user, 2026-11-05: "almost clipping the clock")
 }
 
@@ -811,20 +855,25 @@ Rgb App::batteryInk(int c, double pct) const {
     }
 }
 
-std::vector<int> App::batteryItems() const {
+std::vector<int> App::batteryItems(int side) const {
+    if (side < 0) side = batFor_;
     std::vector<int> v;
-    for (int i : store.batteryOrder)
-        if (i < 2 || (battery.infoOk && (i != 6 || battery.info.gauge))) v.push_back(i);
+    for (int i : side == 1 ? store.cvBatteryOrder : store.batteryOrder)
+        // (health is in the battery's card only: the user, 2026-11-11, "should not be an option in settings to show beside the battery")
+        if (i < 2 || (i != 5 && battery.infoOk && !(battery.info.missing >> i & 1) && (i != 6 || battery.info.gauge))) v.push_back(i);
     return v;
 }
 
-void App::setBatteryItems(const std::vector<int>& vis) {
+void App::setBatteryItems(const std::vector<int>& vis, int side) {
+    if (side < 0) side = batFor_;
     size_t k = 0;
-    for (int& i : store.batteryOrder)
+    for (int& i : side == 1 ? store.cvBatteryOrder : store.batteryOrder)
         if (k < vis.size() && std::find(vis.begin(), vis.end(), i) != vis.end()) i = vis[k++];
 }
 
-bool* App::batteryShown(int item) {
+bool* App::batteryShown(int item, int side) {
+    if (side < 0) side = batFor_;
+    if (side == 1) return &store.cvBatteryShow[std::clamp(item, 0, 6)];
     bool* f[7] = { &store.batteryPercent, &store.batteryEstimate, &store.batteryWatts, &store.batteryTemp, &store.batteryVolts, &store.batteryHealth,
                    &store.batteryPower };
     return f[std::clamp(item, 0, 6)];
@@ -1183,9 +1232,18 @@ void App::drawSidebar() {
     // .side-foot
     y = css::H - css::BarH - 12 - 38 - 2;
     // One stack above Settings: the first job running in front, the others peeking out behind it (furthest drawn first).
+    // A newer version's banner takes this place while it is offered, the work's cards back when it is answered (one fades
+    // out, then the other in: never both)
     {
+        const int offer = updateOffer();
+        const float want = offer >= 0 ? 1.f : 0.f;
+        updBanner_ = store.motion ? updBanner_ + (want - updBanner_) * (1 - std::exp(-dt / 0.12f)) : want;
+        if (std::fabs(updBanner_ - want) < 0.004f) updBanner_ = want;
+        const float ub = updBanner_, fadeWas = g.fade();
         const JobStack st = jobStack();
         const float bottom = y - 11 - 6, frontH = collapsed ? 22 : 44, peek = collapsed ? 4 : 7;
+        if (ub < 0.5f) {
+        g.setFade(fadeWas * (1 - ub * 2));
         // Only the strip above the front card is drawn: the front card is see-through, and the others must not show in it.
         // The cards behind are counted in fractions (a job leaving or arriving is part of one), so they slide, never jump.
         g.clip(x0, 0, w, bottom - frontH);
@@ -1199,6 +1257,13 @@ void App::drawSidebar() {
         if (st.body > 0.01f) drawJobCard(st, x0, bottom, w, collapsed);
         // The last job stopped (or done) with the focus on the stack: Settings, just under where it was, takes it.
         else if (ui.focused(uid("side.job"))) ui.focus(uid("nav.settings", 0));
+        }
+        g.setFade(fadeWas);
+        if (ub >= 0.5f && offer >= 0) {
+            g.setFade(fadeWas * (ub * 2 - 1));
+            drawUpdateBanner(x0, bottom, w, collapsed, offer);
+            g.setFade(fadeWas);
+        } else if (ub < 0.5f && ui.focused(uid("side.update"))) ui.focus(uid("nav.settings", 0));   // answered with the focus on it
     }
     g.rect(x0 + 8, y - 11, w - 16, 1, pal.text, 0.09f);
     if (navItem("nav.settings", ICON_GEAR, "Settings", v == View::Settings, "", 38, navFont)) navigate(View::Settings);
@@ -1552,7 +1617,7 @@ void App::backgroundJobs(Job (&jobs)[JobSlots], bool (&busy)[JobSlots]) {
         jobs[9] = { "Writing tags", tagDone_, tagTotal_, SetLibrary, Stoppable::TagWrites, "Written into files", false, ICON_TAG };
         busy[9] = true;
     }
-#ifdef GF_PREVIEW
+#if defined(GF_PREVIEW) || (defined(GF_WINDOWED) && defined(GF_DEV))   // (Android's dev build: test-update / test-jobs in its settings folder, platform_android.cpp; the PC's dev build: the same names in its environment)
     // The PC preview has no background player, and its covers are made too fast to overlap: GF_JOBS=1 shows all
     // three at once (hostshim.cpp), so the stack and its menus can be looked at.
     if (getenv("GF_JOBS")) {
@@ -1589,7 +1654,28 @@ App::JobStack App::jobStack() const {
 float App::jobsHeight(bool collapsed) const {
     // The front card's height as the stack fades in, and a peek for each card behind it.
     const JobStack st = jobStack();
-    return (collapsed ? 30 : 52) * st.body + (collapsed ? 4 : 6) * st.behind;
+    const float jobs = (collapsed ? 30 : 52) * st.body + (collapsed ? 4 : 6) * st.behind;
+    return jobs + ((collapsed ? 30.f : 52.f) - jobs) * updBanner_;   // (a newer version's banner in their place: one card's height)
+}
+
+/** A newer version, in the work cards' place and made as they are: the same card, in the accent; a dot, what it is, this version
+ *  and the new one, the download mark. Pressed: its sheet (openUpdateOffer). Collapsed: the dot. */
+void App::drawUpdateBanner(float x, float bottom, float w, bool collapsed, int rel) {
+    const float h = collapsed ? 22 : 44, y = bottom - h, cy = y + h / 2;
+    const Id id = uid("side.update");
+    hint(id, "Update available");
+    if (ui.item(id, { x, y, w, h }, 10)) openUpdateOffer(rel);
+    const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
+    g.roundRect(x, y, w, h, 10, pal.accent, hot ? 0.2f : 0.12f);
+    g.roundStroke(x, y, w, h, 10, 1, pal.accent, 0.4f);
+    if (collapsed) { g.circle(x + w / 2, cy, 4, pal.accent); return; }
+    g.circle(x + 15, cy, 4.5f, pal.accent);
+    g.icon(ICON_DOWNLOAD, x + w - 18, cy, 16, pal.accentInk);
+    const float tx = x + 28;
+    const int tw = int(x + w - 34 - tx);
+    g.text("Update available", { css::Xs, Weight::SemiBold }, tx, y + 8, pal.text, 1, Align::Left, tw);
+    g.text(Updater::pretty(Updater::thisVersion()) + " to " + Updater::pretty(updater.releases[size_t(rel)].version), { css::Xs }, tx, y + 24, pal.text3, 1,
+           Align::Left, tw);
 }
 
 std::string App::jobCount(const Job& j) const {
@@ -1723,7 +1809,7 @@ void App::drawCoverNotice() {
     if (lyr) {
         if (make) {
             releaseLyrics();
-            toast("Reading them in the background: the card above Settings shows how far it is");
+            toast(std::string("Reading them in the background: ") + workCardWords());
         } else if (later) {
             toast("Settings › Lyrics › Lyrics read reads them when you want");
         }
@@ -1733,7 +1819,7 @@ void App::drawCoverNotice() {
     if (app) {
         if (make) {
             releaseCovers();
-            toast("Making them in the background: the card above Settings shows how far it is");
+            toast(std::string("Making them in the background: ") + workCardWords());
         } else if (later) {
             toast("Settings › Library › Covers ready makes them when you want");
         }
@@ -1743,7 +1829,7 @@ void App::drawCoverNotice() {
     if (make) {
         setJobStopped(Stoppable::Thumbs, false);
         for (int t = 0; t < int(lib.tracks.size()); t++) thumbFor(t, false);
-        toast("Making them in the background: the card above Settings shows how far it is");
+        toast(std::string("Making them in the background: ") + workCardWords());
         closeCoverNotice();
     }
     if (later) closeCoverNotice();
@@ -1803,18 +1889,29 @@ void App::drawToast() {
     if (toastT <= 0) return;
     const float a = std::min(1.f, toastT / 0.25f) * std::min(1.f, (3.2f - toastT) / 0.2f + 0.01f);
     const Font f{ css::Sm, Weight::SemiBold };
-    const float w = std::min(float(g.measure(toastText, f) + 36), css::W - 24.f), h = 40;   // (never wider than the screen)
+    // never wider than the screen: words that do not fit on one line (a phone upright, a narrow window) take a second and a third
+    // instead of ending in "…"
+    const bool fits = g.measure(toastText, f) + 36 <= css::W - 24;
+    const std::vector<std::string> lines = fits ? std::vector<std::string>{ toastText } : g.wrap(toastText, f, int(css::W - 24 - 36), 3);
+    float widest = 0;
+    for (const auto& l : lines) widest = std::max(widest, float(g.measure(l, f)));
+    const float w = std::min(widest + 36, css::W - 24.f), h = 40 + (std::max<size_t>(lines.size(), 1) - 1) * 18.f;
     float bottom = css::H - css::BarH - 20;
 #ifdef GF_ANDROID
     // upright: over the bar of five and, off Now playing, the mini player (it sat on the mini player's title)
     // (Now playing: in the gap above its seek bar, clear of the cover, the transport and the badges)
-    if (phonePortrait()) bottom = route.view == View::Now && phoneToastBottom_ > 0 ? phoneToastBottom_ : css::H - 68 - (64 + 16 + 12);
+    // (… where that gap holds it: a short screen closes the gap up, and two lines never fit it: then under the top line)
+    if (phonePortrait()) bottom = route.view != View::Now ? css::H - 68 - (64 + 16 + 12) : phoneToastBottom_ > 0 && h <= 40 ? phoneToastBottom_ : 52 + 6 + h;
+    // … and with a sheet up (they rise from the foot and cover those places: the toast lay across their rows), under the top line
+    if (phonePortrait() && (sheet.page != Sheet::Closed || phoneQueue_)) bottom = 52 + 6 + h;
 #endif
+    if (sortPill_.w > 0 && bottom > sortPill_.y - 4 && bottom - h < sortPill_.y + sortPill_.h) bottom = sortPill_.y - 4;   // (a list in sort mode: clear of Done)
     const float x = (css::W - w) / 2, y = bottom - h + (1 - a) * 8;
     g.roundRect(x, y + 6, w, h, 12, { 0, 0, 0 }, 0.25f * a);
     g.roundRect(x, y, w, h, 12, pal.surface2, a);
     g.roundStroke(x, y, w, h, 12, 1, pal.text, 0.09f * a);
-    g.textC(toastText, f, x + 18, y + h / 2, pal.text, a, Align::Left, int(w - 36));
+    float ly = y + 20;
+    for (const auto& l : lines) { g.textC(l, f, x + 18, ly, pal.text, a, Align::Left, int(w - 36)); ly += 18; }
 }
 
 void App::drawFocusRing() {
@@ -1823,6 +1920,11 @@ void App::drawFocusRing() {
     if (!id || !ui.hasItem(id)) return;
     SDL_FRect r = ui.rectOf(id);
     if (r.w <= 0) return;
+    // (the page under the sidebar opened over it, a narrow window: a press there closes the sidebar, and it is nothing to outline;
+    // the user's screenshot, 2026-11-11, a ring round the whole page)
+    if (id == uid("side.scrim")) return;
+    // a card's row: its outline inside the row, as its light is (view_smart.cpp), clear of the rows either side
+    if (std::find(cardRowIds_.begin(), cardRowIds_.end(), id) != cardRowIds_.end()) { r.y += kCardRowInset; r.h -= kCardRowInset * 2; }
     // the player bar's seek: its touch area reaches up to the play button; the ring hugs the waveform instead, clear of it (the user,
     // 2026-11-06: "the outline of the waveform and scrub line is clipping the pause/play button")
     if (id == uid("pb.seek")) { r.y += 6; r.h -= 12; }

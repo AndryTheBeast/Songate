@@ -157,7 +157,7 @@ int64_t freeBytes(const std::string&) { return -1; }
 bool appletMode() { return false; }
 bool randomBytes(uint8_t* out, size_t n) { for (size_t i = 0; i < n; i++) out[i] = uint8_t(rand()); return true; }
 
-int bgProtocol() { return 6; }   // gfbg.h's GFBG_PROTOCOL
+int bgProtocol() { return 7; }   // gfbg.h's GFBG_PROTOCOL
 bool bgRestart(std::string&) {
     printf("[updater] the background player restarts\n");
     return true;

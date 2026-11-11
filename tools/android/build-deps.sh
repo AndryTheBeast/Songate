@@ -87,6 +87,8 @@ b_mbedtls() {
     -DUSE_STATIC_MBEDTLS_LIBRARY=ON -DMBEDTLS_FATAL_WARNINGS=OFF -DINSTALL_MBEDTLS_HEADERS=ON
 }
 b_curl() {     # Mbed TLS, as the console's; the system's certificates folder
+  # (under MSYS the shell rewrites CURL_CA_PATH below into a Windows path, C:/devkitPro/msys2/system/...: the libraries built so
+  # far carry that, so source/net.cpp says the folder itself at run time, CURLOPT_CAPATH; found 2026-11-11)
   unpack "$WINDL/curl/curl-8.11.1.tar.xz" curl-8.11.1
   cm curl "$SRC/curl-8.11.1" -DBUILD_CURL_EXE=OFF -DBUILD_STATIC_LIBS=ON -DCURL_USE_MBEDTLS=ON -DHTTP_ONLY=ON -DCURL_DISABLE_LDAP=ON \
     -DCURL_USE_LIBPSL=OFF -DUSE_LIBIDN2=OFF -DUSE_NGHTTP2=OFF -DCURL_BROTLI=OFF -DCURL_ZSTD=OFF -DCURL_USE_LIBSSH2=OFF \

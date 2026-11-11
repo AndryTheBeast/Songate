@@ -6,6 +6,9 @@ Routes are below (ROUTES): each starts from Songate opened afresh on its Now pla
    "type:words"      type into the typing card and OK       "swipe:up"     scroll the page (up shows what is below)
    "wait:1.5"        wait                                   "shot:label"   screenshot, items and findings under that label
    "?name"           tap the control when it is there (no fault when it is not)
+   "pages:label"     the page scrolled to its end: a shot at each screen of it (label, label-2, ...), then back at its top
+   "drag:name:dx:dy" a finger down on the control, moved by dx, dy (the app's pixels) and kept down (a list in sort mode: a handle
+                     or a tile dragged; a shot shows it held)     "lift"   the finger lifted where it is
 At the end: <out>/report.txt (every stop's findings) and contact sheets <out>/sheet-NN.png, six stops each. The settings
 folder is the device's own: routes change nothing for good (what they open they close; a playlist they make they remove)."""
 import json
@@ -24,6 +27,7 @@ ONLY = sys.argv[3:]
 os.makedirs(OUT, exist_ok=True)
 stops = []
 missing = []
+finger = [0.0, 0.0]   # where a "drag:" step's finger is, until "lift"
 
 N = "ph.nav"   # the bottom bar upright: ph.nav (Now playing), #1 Library, #2 Search, #3 Playlists, #4 Settings
 
@@ -31,10 +35,17 @@ ROUTES = {
     # ---- Now playing
     "now": ["shot:now", "ph.more", "wait:0.8", "shot:now-more", "key:4", "ph.queue", "wait:0.8", "shot:now-upnext", "key:4",
             "ph.lyrics", "wait:1", "shot:now-lyrics", "?ph.lmore", "wait:0.8", "shot:now-lyrics-more", "key:4", "key:4",
-            "ph.sleep", "wait:0.8", "shot:now-sleep", "key:4", "ph.order", "wait:0.5", "shot:now-order", "ph.order", "ph.order",
+            "ph.sleep", "wait:0.8", "shot:now-sleep", "key:4", "ph.order", "wait:0.5", "shot:now-order", "ph.order", "ph.order", "ph.order",
             "ph.devices", "wait:0.8", "shot:now-devices", "key:4", "hold:ph.eq", "wait:1", "shot:now-eq-hold", "key:4",
             "ph.eq", "wait:0.6", "shot:now-eq-tap", "ph.eq",
             "hold:ph.seek", "shot:now-seek-touched", "wait:1.2", "shot:now-seek-after"],
+    # ---- the Canvas from upright: its button turns the screen sideways and opens it; closed, upright again
+    "canvas-turn": ["ph.canvas", "wait:3", "shot:canvas-sideways", "key:4", "wait:3", "shot:canvas-closed-upright"],
+    # ---- Now playing's second page: Lyrics and Palette; Up next: its Playlist button (the whole page), a row dragged by its handle (sort mode)
+    "now2": ["ph.lyrics", "wait:1.2", "shot:lyrics-tab", "text:Palette", "wait:0.8", "shot:palette-tab", "text:Lyrics", "key:4", "wait:1",
+             "ph.queue", "wait:1", "shot:upnext", "hold:ph.qrow*2", "wait:0.8", "shot:upnext-row-menu", "text:Move", "wait:1", "shot:upnext-sorting",
+             "drag:ph.qsort*:0:100", "shot:upnext-held", "lift", "wait:0.6", "shot:upnext-moved", "?sort.done", "wait:0.5", "?sh.close", "wait:0.5",
+             "?ph.qpage", "wait:1.2", "shot:playlist-page", "swipe:up", "shot:playlist-page-below", "key:4"],
     # ---- the Library page and what it opens (each part from the Library tab again: back from a page returns to the one before)
     "library": [N + "#1", "wait:0.8", "shot:lib", "swipe:up", "shot:lib-below",
                 "reset:" + N + "#1", "ph.lrow", "wait:1", "shot:tracks", "trk.filter", "wait:0.8", "shot:tracks-filter", "key:4", "trk.sort", "wait:0.8", "shot:tracks-sort", "key:4",
@@ -47,7 +58,9 @@ ROUTES = {
                 "reset:" + N + "#1", "ph.lrow#5", "wait:1", "shot:liked"],
     # ---- Search
     "search": [N + "#2", "wait:0.8", "shot:search", "ph.sfield", "wait:0.8", "shot:search-card", "type:Geoxor", "wait:1.2", "shot:search-tracks",
-               "text:Albums", "wait:0.8", "shot:search-albums", "text:Artists", "wait:0.8", "shot:search-artists"],
+               "text:Albums", "wait:0.8", "shot:search-albums", "text:Artists", "wait:0.8", "shot:search-artists",
+               "text:Genres", "wait:0.8", "shot:search-genres", "text:Playlists", "wait:0.8", "shot:search-playlists",
+               "text:Lyrics", "wait:0.8", "shot:search-lyrics", "text:Songs", "wait:0.5"],
     # ---- Playlists (each part from the Playlists tab again)
     "playlists": [N + "#3", "wait:0.8", "shot:playlists", "pls.new", "wait:0.8", "shot:pl-new", "text:Automix playlist", "wait:1.2", "shot:pl-automix", "key:4", "wait:0.5",
                   "reset:" + N + "#3", "pls.new", "wait:0.6", "text:Smart playlist", "wait:1", "shot:pl-smart", "?sp.row", "wait:1", "shot:pl-smart-form", "key:4", "key:4",
@@ -56,16 +69,15 @@ ROUTES = {
                   "reset:" + N + "#3", "pls.item#-1", "wait:1", "shot:pl-liked"],
     # ---- Settings: the list and each page (by its name, from the top of the list; four screens of each page)
     "settings": [N + "#4", "wait:0.8", "shot:set", "swipe:up", "shot:set-below"]
-                + sum([["reset:" + N + "#4", "?ph.back", "wait:0.5", "swipe:down", "swipe:down"] + (["swipe:up"] if k >= 7 else []) + [f"text:{c}", "wait:1", f"shot:{c.lower()}",
-                        "swipe:up", f"shot:{c.lower()}-2", "swipe:up", f"shot:{c.lower()}-3", "swipe:up", f"shot:{c.lower()}-4",
-                        "swipe:up", f"shot:{c.lower()}-5", "key:4"]
+                + sum([["reset:" + N + "#4", "?ph.back", "wait:0.5", "swipe:down", "swipe:down"] + (["swipe:up"] if k >= 7 else []) + [f"text:{c}", "wait:1",
+                        f"pages:{c.lower()}", "key:4"]
                        for k, c in enumerate(["Appearance", "Playback", "Equalizer", "Library", "Storage", "Lyrics", "Canvas", "Visualizer",
                                               "Controls", "Devices", "Last.fm", "Reset", "Updates", "Support", "Debug", "About"])], []),
     # ---- the Canvas and its three layouts
     "s-canvas": ["reset:nav.now", "pb.canvas", "wait:1.5", "shot:canvas", "cv.layout", "wait:1", "shot:cover", "cv.layout#1", "wait:1", "shot:lyrics",
                "cv.layout#2", "wait:1", "shot:minimal", "cv.sleep", "wait:0.8", "shot:sleep", "key:4", "key:4"],
     # ---- a playlist of your own: made, its page, renamed (the typing card), its icon sheet, removed (its question answered)
-    "ownlist": ["reset:" + N + "#3", "pls.new", "wait:0.6", "sp.row#7000", "type:CrawlList", "wait:1.2", "shot:made",
+    "ownlist": ["reset:" + N + "#3", "pls.new", "wait:0.6", "text:A playlist of your own", "type:CrawlList", "wait:1.2", "shot:made",
                 "pl.rename", "wait:0.8", "shot:rename", "key:4", "wait:0.6", "pl.icon", "wait:0.8", "shot:icons", "key:4",
                 "pl.remove", "wait:0.8", "shot:remove-ask", "?sp.yes", "?sp.confirm", "wait:1", "shot:removed"],
     # ---- Up next: a row held (its menu)
@@ -100,6 +112,24 @@ ROUTES = {
                 "reset:nav.now", "pb.canvas", "wait:1.5", "shot:canvas", "key:4", "wait:0.8",
                 "reset:nav.queue", "wait:1", "shot:queue", "reset:nav.playlists", "wait:1", "nav.newpl", "wait:0.8", "text:A playlist of your own",
                 "type:CrawlSide", "wait:1.5", "shot:own-list", "?pl.remove", "wait:0.8", "?sp.yes", "wait:1", "shot:own-removed"],
+    # ---- a server signed in (run by name: these need one): Local | Server on Library, Search and Playlists, the server's pages
+    "server": [N + "#1", "wait:1", "shot:lib-local", "lib.source[1]", "wait:2.5", "shot:lib-server", "ph.lrow", "wait:2.5", "shot:songs", "key:4", "wait:0.8",
+               "ph.lrow#1", "wait:2", "shot:albums", "key:4", "wait:0.8", "ph.lsalbum", "wait:2.5", "shot:album", "key:4", "wait:0.8",
+               "ph.lrow#2", "wait:2", "shot:artists", "key:4", "wait:0.8", "ph.lrow#3", "wait:2", "shot:genres", "key:4", "wait:0.8",
+               "ph.lrow#4", "wait:2", "shot:folders", "key:4", "wait:0.8", N + "#3", "wait:2", "shot:playlists", "pls.srv*", "wait:2.5", "shot:playlist",
+               "key:4", N + "#2", "wait:1", "shot:search-empty", "ph.sfield", "wait:0.8", "type:abba", "wait:2.5", "shot:search-songs",
+               "text:Albums", "wait:1.5", "shot:search-albums", "text:Artists", "wait:1.5", "shot:search-artists", "text:Playlists", "wait:1.5",
+               "shot:search-playlists", "text:Songs", "wait:0.5", N + "#1", "wait:1", "lib.source[0]", "wait:1.5"],
+    # ---- the Playlists page: its menu's Move by touch: sort mode, a tile dragged (needs two of yours; made and removed here)
+    "move": ["reset:" + N + "#3", "pls.new", "wait:0.6", "text:A playlist of your own", "type:CrawlA", "wait:1.2", "reset:" + N + "#3",
+             "pls.new", "wait:0.6", "text:A playlist of your own", "type:CrawlB", "wait:1.2", "reset:" + N + "#3", "wait:1", "shot:two",
+             "hold:pls.item#*2", "wait:0.8", "shot:menu", "text:Move", "wait:1", "shot:sorting", "drag:pls.sort*:-150:40", "shot:held", "lift", "wait:0.6", "shot:moved", "?sort.done", "wait:0.5",
+             "text:CrawlA", "wait:1", "pl.remove", "wait:0.8", "?sp.yes", "wait:1", "reset:" + N + "#3", "wait:0.8", "text:CrawlB", "wait:1", "pl.remove",
+             "wait:0.8", "?sp.yes", "wait:1", "shot:removed"],
+    # ---- what the sidebar carries above Settings, upright: the work's cards and a newer version's banner at the head of Settings' list
+    # (test-jobs and test-update in the settings folder for this route only: SETUP below)
+    "work": ["reset:" + N + "#4", "?ph.back", "wait:1.5", "shot:banner", "side.update", "wait:1", "shot:offer", "text:Later", "wait:2", "shot:cards",
+             "side.job", "wait:1", "shot:jobs-list", "key:4"],
     # ---- the mini player and the sheet of a track's menu from Now playing
     "mini": [N + "#1", "wait:0.6", "shot:mini", "ph.mini", "wait:1", "shot:mini-opened"],
 }
@@ -138,12 +168,15 @@ def swipe(direction):
 
 
 def resolve(name):
-    """A control by name, or "prefix*": the first of that list on screen, below the top bar."""
+    """A control by name, or "prefix*": the first of that list on screen, below the top bar ("prefix*2": the second down)."""
+    nth = 0
+    if name.endswith("*2"):
+        name, nth = name[:-1], 1
     if not name.endswith("*"):
         return name
     s = screen()
-    on = [(v[1], k) for k, v in s.items.items() if k.startswith(name[:-1]) and v[1] > 60 and v[1] + v[3] < s.h - 150]
-    return min(on)[1] if on else name
+    on = sorted((v[1], k) for k, v in s.items.items() if k.startswith(name[:-1]) and v[1] > 60 and v[1] + v[3] < s.h - 150)
+    return on[nth][1] if len(on) > nth else name
 
 
 def reset(tab):
@@ -154,14 +187,20 @@ def reset(tab):
             break
         adb("shell", "input", "keyevent", "4")
         time.sleep(0.7)
+    before = set(screen().items)
     if not tap_item(tab):
         missing.append(f"reset: no {tab}")
     time.sleep(0.8)
+    if set(screen().items) == before:   # nothing changed: a tap lost (the opening, a card going away), or already there: once more
+        tap_item(tab)
+        time.sleep(0.8)
 
 
 SIZE = os.environ.get("CRAWL_SIZE")
 SIZE_BEFORE = run_as("grep ^uiSize= files/Songate/settings.txt").strip()
-SETUP = {"files": ("sed -i s/^hiddenTabs=.*/hiddenTabs=0/ files/Songate/settings.txt", "sed -i s/^hiddenTabs=0$/hiddenTabs=64/ files/Songate/settings.txt")}
+SETUP = {"files": ("sed -i s/^hiddenTabs=.*/hiddenTabs=0/ files/Songate/settings.txt", "sed -i s/^hiddenTabs=0$/hiddenTabs=64/ files/Songate/settings.txt"),
+         "work": ("touch files/Songate/test-jobs; echo 2.0.0 > files/Songate/test-update", "rm -f files/Songate/test-jobs files/Songate/test-update")}
+NEEDS_SERVER = {"server"}   # run only when named: a server signed in
 
 
 def turn():
@@ -190,6 +229,17 @@ def run(name, steps):
     for st in steps:
         if st.startswith("shot:"):
             shot(f"{name}-{st[5:]}" if not st[5:].startswith(name) else st[5:])
+        elif st.startswith("pages:"):
+            label, before = st[6:], None
+            for k in range(14):   # a shot at each screen of the page, until a swipe no longer moves it
+                now = sorted(t[0] for t in screen().texts)
+                if now == before:
+                    break
+                before = now
+                shot(f"{name}-{label}" + (f"-{k + 1}" if k else ""))
+                swipe("up")
+            for _ in range(3):
+                swipe("down")
         elif st.startswith("wait:"):
             time.sleep(float(st[5:]))
         elif st.startswith("key:"):
@@ -213,6 +263,24 @@ def run(name, steps):
             time.sleep(0.8)
         elif st.startswith("swipe:"):
             swipe(st[6:])
+        elif st.startswith("drag:"):
+            ctl, dx, dy = st[5:].rsplit(":", 2)
+            s = screen()
+            ctl = resolve(ctl)
+            if ctl not in s.items:
+                missing.append(f"{name}: no control {ctl} to drag")
+                continue
+            x, y, w, h = s.items[ctl]
+            finger[:] = [(x + w / 2) * s.scale, (y + h / 2) * s.scale]
+            adb("shell", "input", "motionevent", "DOWN", str(int(finger[0])), str(int(finger[1])))
+            time.sleep(0.25)
+            for k in range(1, 9):
+                adb("shell", "input", "motionevent", "MOVE", str(int(finger[0] + float(dx) * s.scale * k / 8)), str(int(finger[1] + float(dy) * s.scale * k / 8)))
+            finger[:] = [finger[0] + float(dx) * s.scale, finger[1] + float(dy) * s.scale]
+            time.sleep(0.5)
+        elif st == "lift":
+            adb("shell", "input", "motionevent", "UP", str(int(finger[0])), str(int(finger[1])))
+            time.sleep(0.6)
         elif st.startswith("?"):
             tap_item(st[1:])
             time.sleep(0.6)
@@ -253,7 +321,7 @@ adb("shell", "settings", "put", "system", "user_rotation", "0" if TURN == "uprig
 time.sleep(2)
 run_as("touch files/Songate/test-items")
 for name, steps in ROUTES.items():
-    if (name in ONLY) if ONLY else (name.startswith("s-") == (TURN == "sideways")):   # upright's routes, or sideways' (s-…)
+    if (name in ONLY) if ONLY else (name.startswith("s-") == (TURN == "sideways") and name not in NEEDS_SERVER):   # upright's routes, or sideways' (s-…)
         run(name, steps)
         if name in SETUP:   # what the route's setup changed, put back
             adb("shell", "am", "force-stop", PKG)

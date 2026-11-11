@@ -147,6 +147,18 @@ plat::TextResult App::textCard(const char* header, const char* guide, const char
             else if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_CLOSE) { closePending_ = true; open = false; }
             else if (e.type == SDL_TEXTINPUT) { composing.clear(); insert(e.text.text); }
             else if (e.type == SDL_TEXTEDITING) composing = e.edit.text;
+            // A finger (the user, 2026-11-11: "the buttons cancel and ok do not work at all"): Android sends fingers as fingers only
+            // (no made-up mouse, platform_android.cpp), and the card read the mouse alone, so nothing on it could be touched. A
+            // finger's place is a share of the window, whatever its size is now
+            else if (e.type == SDL_FINGERDOWN || (e.type == SDL_FINGERMOTION && dragging)) {
+                const float ax = e.tfinger.x * seenW / fit, ay = e.tfinger.y * seenH / fit;
+                if (e.type == SDL_FINGERMOTION) caret = caretAt(ax);
+                else if (inside(ok, ax, ay)) { answer = plat::TextResult::Done; open = false; }
+                else if (inside(cancel, ax, ay)) open = false;
+                else if (inside(field, ax, ay)) { caret = anchor = caretAt(ax); dragging = true; }
+            } else if (e.type == SDL_FINGERUP) dragging = false;
+            else if ((e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP) && e.button.which == SDL_TOUCH_MOUSEID) {}   // (a touch's made-up mouse: the finger did it)
+            else if (e.type == SDL_MOUSEMOTION && e.motion.which == SDL_TOUCH_MOUSEID) {}
             else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
                 float ax, ay;
                 toApp(e.button.x, e.button.y, ax, ay);

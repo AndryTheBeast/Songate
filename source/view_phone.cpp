@@ -9,6 +9,7 @@
  */
 #ifdef GF_ANDROID
 #include <algorithm>
+#include <random>
 #include <cmath>
 #include <cstdio>
 #include <ctime>
@@ -67,18 +68,22 @@ void App::drawPhone() {
     // The top: back where there is a page to go back to, the wordmark, the clock and the battery (the title bar's, the system's bar hidden)
     auto top = [&] {
         float wx = kPad - 2 + edge_.tbL;   // clear of a camera at its ends (Settings › Appearance › Screen edges)
+#ifndef GF_ANDROID   // (Android has its own back: no arrow here, the user 2026-11-11)
         if (!rootView(v) && !history.empty()) {
             if (iconButton(uid("ph.back"), ICON_BACK, kPad + 12 + edge_.tbL, kTopH / 2, false, 40, 20)) back();
             wx += 36;
         }
+#endif
         g.wordmark(wx, kTopH / 2, mix(pal.accent, pal.text, 0.12f), mix(pal.accent2, pal.text, 0.2f), mix(pal.accent2, pal.text, 0.78f), pal.glow, 0.4f, -1, 1);
+        // a sync or a copy between devices running: the title bar's two arrows, right of the name (as sideways)
+        drawSyncMark(wx + Gfx::wordmarkW() + 12 + 6.8f, kTopH / 2 + 2.8f);
         const std::time_t tt = std::time(nullptr);
         char clock[8];
         std::strftime(clock, sizeof clock, "%H:%M", std::localtime(&tt));
         unsigned pct = 0;
         float rx = W - kPad - edge_.tbR;
         // the battery as the title bar has it: its states' colours and animations, what you put beside it, its card when pressed
-        if (plat::batteryLevel(pct)) rx = drawBatteryCluster(rx, kTopH / 2, pct, wx + Gfx::wordmarkW() + 16);
+        if (plat::batteryLevel(pct)) rx = drawBatteryCluster(rx, kTopH / 2, pct, wx + Gfx::wordmarkW() + 16 + (syncIconA > 0 ? 18 : 0));
         g.textNum(clock, { css::Base, Weight::SemiBold }, rx, kTopH / 2 - g.lineHeight({ css::Base, Weight::SemiBold }) / 2.f, pal.text2, 1, Align::Right);
     };
 
@@ -92,9 +97,9 @@ void App::drawPhone() {
                                        { ICON_HEART, "Playlists", View::Playlists }, { ICON_GEAR, "Settings", View::Settings } };
         const float cw = W / 5;
         int active = -1;
-        if (v == View::Now) active = 0;
+        if (v == View::Now || v == View::Queue) active = 0;   // (the playlist playing: Up next's whole page)
         else if (v == View::Search) active = 2;
-        else if (v == View::Playlists || v == View::List) active = 3;
+        else if (v == View::Playlists || v == View::List || (v == View::Server && route.ref == 5)) active = 3;   // (a server playlist's page too)
         else if (v == View::Settings) active = 4;
         else if (v != View::PickFolder && v != View::PickPlaylist && v != View::PickExport) active = 1;   // the library's pages
         for (int i = 0; i < 5; i++) {
@@ -102,15 +107,42 @@ void App::drawPhone() {
             const Id id = uid("ph.nav", i);
             hint(id, dests[i].hintText);
             if (ui.item(id, { cw * i, y0, cw, kNavH }, 20)) {
-                if (i == 1) navigate(View::Library, kLibraryHome);
-                else if (i == 2) navigate(View::Search, -1, v == View::Search ? route.query : std::string());
-                else if (i == 4) { settingsPhoneOpen_ = settingsPhoneDirect_ = false; settingsQuery.clear(); if (v != View::Settings) navigate(View::Settings); }
+                // the destination already showing, pressed again: its page back at its top
+                if (i == 1) { if (v == View::Library && route.ref == kLibraryHome) area("ph.libhome").target = 0; else navigate(View::Library, kLibraryHome); }
+                else if (i == 2) { if (v != View::Search) navigate(View::Search, -1, std::string()); else area("search", int(View::Search) * 1000 + route.ref).target = 0; }
+                else if (i == 3) { if (v != View::Playlists) navigate(View::Playlists); else area("playlists").target = 0; }
+                else if (i == 4) {
+                    if (v == View::Settings && !settingsPhoneOpen_ && settingsQuery.empty()) area("settings.phone").target = 0;
+                    settingsPhoneOpen_ = settingsPhoneDirect_ = false;
+                    settingsQuery.clear();
+                    if (v != View::Settings) navigate(View::Settings);
+                }
                 else if (dests[i].view != v) navigate(dests[i].view);
+                else if (phoneLyrics_) phoneLyrics_ = false;   // (Now playing on its second page: the first)
             }
             const bool on = i == active;
             if (on) g.roundRect(cx - 34, cy - 20, 68, 40, 20, pal.accent, 0.14f);
             else if (ui.pressed(id)) g.roundRect(cx - 34, cy - 20, 68, 40, 20, pal.text, 0.08f);
             g.icon(dests[i].icon, cx, cy, 24, on ? pal.accent : pal.text2);
+            if (i == 4) {
+                // What the folded sidebar shows above Settings, on Settings' own button here: a newer version's dot, or the
+                // work running in the background as its thin bar (its card is at the head of Settings' list: phoneWorkCard)
+                const JobStack st = jobStack();
+                if (updateOffer() >= 0) {
+                    g.circle(cx + 13, cy - 11, 5.5f, pal.bg);
+                    g.circle(cx + 13, cy - 11, 4, pal.accent);
+                } else if (st.body > 0.01f && st.front >= 0) {
+                    const Job& j = jobCards[st.front].job;
+                    const float bw = 26, bx = cx - bw / 2, by = cy + 17;
+                    g.roundRect(bx, by, bw, 3, 1.5f, pal.text, 0.14f * st.body);
+                    if (j.total > 0) g.roundRect(bx, by, std::max(3.f, bw * std::clamp(float(j.done) / float(j.total), 0.f, 1.f)), 3, 1.5f, pal.accent, st.body);
+                    else {   // busy without a count: a segment sliding along (the card's)
+                        const float t = float(std::fmod(time, 1.6) / 1.6), seg = bw * 0.3f;
+                        const float sx = bx + (bw + seg) * t - seg, l = std::max(bx, sx), r = std::min(bx + bw, sx + seg);
+                        if (r > l) g.roundRect(l, by, r - l, 3, 1.5f, pal.accent, st.body);
+                    }
+                }
+            }
         }
     };
 
@@ -119,7 +151,12 @@ void App::drawPhone() {
         const float x = 10, y = H - kNavH - kMiniH - 8, w = W - 20, h = kMiniH, cy = y + h / 2;
         g.setFade(a);
         const Id card = uid("ph.mini");
-        if (ui.item(card, { x, y, w - 150, h }, 16)) navigate(View::Now);
+        if (ui.item(card, { x, y, w - 150, h }, 16)) {
+            // on Now playing's lyrics page it is the small cover's press: back to the cover (the user, 2026-11-11: "should do the
+            // same as a cover click above"); anywhere else it opens Now playing
+            if (v == View::Now && phoneLyrics_) phoneLyrics_ = false;
+            else navigate(View::Now);
+        }
         g.roundRect(x, y, w, h, 16, pal.surface, 0.94f);
         g.roundStroke(x, y, w, h, 16, 1, pal.text, 0.09f);
         if (ui.pressed(card)) g.roundRect(x, y, w, h, 16, pal.text, 0.05f);
@@ -218,8 +255,12 @@ void App::drawPhone() {
     auto nowPlaying = [&] {
         const float lp = phoneLyricsP_, lpe = inOutCubic(lp);
         const float out = std::clamp(1 - lp / 0.5f, 0.f, 1.f), in2 = std::clamp((lp - 0.4f) / 0.6f, 0.f, 1.f);
-        const float bigS = W - 32, smallS = 72, top0 = kTopH + 8;
-        const float cs = bigS + (smallS - bigS) * lpe, cx0 = 16 + (kPad - 16) * lpe, cy0 = top0 + 6 * lpe, cr = 22 + (10 - 22) * lpe;
+        // The cover: the page's width, less where the screen is short for it (16:9, a fold's cover screen, a wide window): what is
+        // under it (the buttons' row, the seek bar, the transport, the chips) needs kLowerMin, or the chips ran under the bar
+        constexpr float kLowerMin = 236, kLowerEven = 290;   // the least; from kLowerEven up, spread evenly as it always was
+        const float smallS = 72, top0 = kTopH + 8;
+        const float bigS = std::max(240.f, std::min(W - 32, H - kNavH - top0 - 44 - 30 - kLowerMin)), bigX = (W - bigS) / 2;
+        const float cs = bigS + (smallS - bigS) * lpe, cx0 = bigX + (kPad - bigX) * lpe, cy0 = top0 + 6 * lpe, cr = 22 + (10 - 22) * lpe;
         g.setFade(1 - lpe);
         for (float r : { cs * 0.5f, cs * 0.56f }) g.glow(cx0 + cs / 2, cy0 + cs / 2, r, pal.glow, 0.18f);
         g.setFade(1);
@@ -234,15 +275,38 @@ void App::drawPhone() {
             g.setFade(in2);
             const float tx = kPad + smallS + 14, tw2 = W - tx - kPad - 44, dy = 12 * (1 - in2);
             if (ui.item(uid("ph.lcover"), { kPad, top0 + 6, smallS, smallS }, 10)) phoneLyrics_ = false;   // the small cover: back
-            g.text(has ? in.title : "Songate", { css::Lg, Weight::Bold }, tx, top0 + 10 + dy, pal.text, 1, Align::Left, int(tw2));
-            g.text(has ? in.artist : "", { css::Sm, Weight::SemiBold }, tx, top0 + 38 + dy, pal.text2, 1, Align::Left, int(tw2));
+            marqueeLine(has ? in.title : "Songate", { css::Lg, Weight::Bold }, tx, top0 + 10 + dy, tw2, pal.text);   // (long ones move, as on the cover)
+            marqueeLine(has ? in.artist : "", { css::Sm, Weight::SemiBold }, tx, top0 + 38 + dy, tw2, pal.text2);
             g.text(fmtTime(in.duration) + (in.codec.empty() ? "" : "  ·  " + in.codec), { css::Xs }, tx, top0 + 60 + dy, pal.text3, 1, Align::Left, int(tw2));
             if ((now.track >= 0 || srvq_.on) && iconButton(uid("ph.lmore"), ICON_MORE, W - kPad - 18, top0 + 42, false, 40, 20)) {
                 if (srvq_.on && srvq_.pos >= 0 && srvq_.pos < int(srvq_.songs.size())) openServerMenu(srvq_.songs[size_t(srvq_.pos)]);
                 else openTrackMenu(now.track);
             }
-            const float ly0 = top0 + smallS + 26, ly1 = H - kNavH - kMiniH - 16;
-            if (lp >= 0.999f) drawLyricsOf(kPad, ly0, W - kPad * 2, ly1 - ly0, now.lyrics, now.synced, now.lyricsSource, lyricsPos(), area("ph.lyrics"), true);
+            // Now playing's tabs but Up next (a sheet here): Lyrics and Palette, as sideways draws them
+            float ly0 = top0 + smallS + 20;
+            const float ly1 = H - kNavH - kMiniH - 16;
+            {
+                static const char* const tabs[2] = { "Lyrics", "Palette" };
+                const Font tabF{ css::Sm, Weight::SemiBold };
+                float ttx = kPad - 12;
+                for (int i = 0; i < 2; i++) {
+                    const float ttw = g.measure(tabs[i], tabF) + 24;
+                    const Id id = uid("ph.ntab", i);
+                    // (a finger: 44 high, drawn as sideways' 35)
+                    if (lp >= 0.999f && ui.item(id, { ttx, ly0 - 5, ttw, 44 }, 6)) { phoneNowTab_ = i; area("np.panel").target = area("np.panel").y = 0; }
+                    const bool on = phoneNowTab_ == i;
+                    g.textC(tabs[i], tabF, ttx + 12, ly0 + 17, on ? pal.text : pal.text3);
+                    if (on) g.roundRect(ttx + 12, ly0 + 34, ttw - 24, 2, 1, pal.accent);
+                    ttx += ttw + 4;
+                }
+                g.rect(kPad, ly0 + 35, W - kPad * 2, 1, pal.text, 0.09f);
+                ly0 += 35 + 6;
+            }
+            if (phoneNowTab_ == 1) {
+                g.clip(0, ly0, W, ly1 - ly0);
+                drawPaletteOf(kPad, ly0 + 30 * (1 - in2), W - kPad * 2, ly1 - ly0, target, lp >= 0.999f);
+                g.unclip();
+            } else if (lp >= 0.999f) drawLyricsOf(kPad, ly0, W - kPad * 2, ly1 - ly0, now.lyrics, now.synced, now.lyricsSource, lyricsPos(), area("ph.lyrics"), true);
             else {   // coming or going: a picture of it, rising into place (nothing to touch until it is there)
                 g.clip(0, ly0, W, ly1 - ly0);
                 const float was = g.fade();
@@ -280,31 +344,46 @@ void App::drawPhone() {
         if (!artistText.empty()) {
             const float aw = std::min(maxW, float(g.measure(artistText, af))) + 28;
             glass(cx0 + 16, ay, aw, 32);
-            g.textC(artistText, af, cx0 + 30, ay + 16, pal.text2, 1, Align::Left, int(aw - 28));
+            // (too long for its glass: it moves, as Now playing's long lines do sideways; the user, 2026-11-11: "do not show the full
+            // text if it is big")
+            marqueeLine(artistText, af, cx0 + 30, ay + 16 - g.lineHeight(af) / 2.f, aw - 28, pal.text2);
         }
         const std::string titleText = has ? in.title : "Songate";
         const float tw = std::min(maxW, float(g.measure(titleText, tf))) + 36, ty = ay - 8 - 44;
         glass(cx0 + 16, ty, tw, 44);
-        g.textC(titleText, tf, cx0 + 34, ty + 22, pal.text, 1, Align::Left, int(tw - 36));
-        // under the cover: the player bar's smaller buttons (settling down as the lyrics come); no Canvas upright (the user,
-        // 2026-11-04: "Canvas should not exist in portrait"): Sleep on the left, Equalizer and Order on the right
+        marqueeLine(titleText, tf, cx0 + 34, ty + 22 - g.lineHeight(tf) / 2.f, tw - 36, pal.text);
+        // under the cover: the player bar's smaller buttons (settling down as the lyrics come): Sleep on the left, its time left
+        // beside it as the player bar has it; the Canvas, Equalizer and Order on the right. The Canvas is sideways' only (the
+        // user, 2026-11-11: "Portrait can have a button to activate canvas but it switches to landscape"): its button turns the
+        // screen, the Canvas opens there, and closing it gives the screen back (App::openCanvasTurning)
         float y = top0 + bigS + 44 + 40 * lpe;
-        if (gb("ph.sleep", ICON_MOON, kPad + 20, y, 40, sleepLeft() > 0)) openSleep();
+        hint(uid("ph.sleep"), "Sleep timer");
+        hint(uid("ph.canvas"), "Canvas");
+        hint(uid("ph.eq"), "Equalizer (hold for its settings)");
+        const double sl = sleepLeft();
+        if (gb("ph.sleep", ICON_MOON, kPad + 20, y, 40, sl > 0)) openSleep();
+        if (sl > 0) g.textNum(fmtTime(std::ceil(sl)), { css::Xs, Weight::SemiBold }, kPad + 40 + 8, y - g.lineHeight({ css::Xs, Weight::SemiBold }) / 2.f, pal.accentInk);
+        if (gb("ph.canvas", ICON_CANVAS, W - kPad - 20 - 104, y, 40, canvasTurn_ != 0)) openCanvasTurning();
         if (gb("ph.eq", ICON_EQ, W - kPad - 20 - 52, y, 40, store.eq.on != 0, Hold)) toggleEq();
         if (live && ui.longPressed(uid("ph.eq"))) openEqualizer();
         static const char* const orderIcons[4] = { ICON_ORDER, ICON_REPEAT, ICON_REPEAT1, ICON_SHUFFLE };
         const Order order = shownOrder();
+        static const char* const orderHints[4] = { "Default order", "Repeat playlist", "Repeat song", "Shuffle" };   // (the player bar's)
+        hint(uid("ph.order"), orderHints[std::clamp(int(order), 0, 3)]);
         if (gb("ph.order", orderIcons[std::clamp(int(order), 0, 3)], W - kPad - 20, y, 40, order != Order::Default) && !controlsOff()) cycleOrder();
         // the lower half, spread evenly: the seek bar ⇄ visualizer, the transport large, what the file is
-        const float room = (H - kNavH) - (y + 30), gapK = room / 9;
-        y += 30 + gapK * 1.6f;
-        phoneToastBottom_ = y - 12;   // a toast in the gap above the seek bar (App::drawToast)
+        // (a short screen: the three gaps close up towards their least, kLowerMin's, before the cover gives way)
+        const float room = (H - kNavH) - (y + 30), gapK = std::max(room, kLowerEven) / 9;
+        const float tight = 1 - std::clamp((room - 200) / (kLowerEven - 200), 0.f, 1.f);
+        const float gap1 = gapK * 1.6f * (1 - tight), gap2 = gapK * 3.2f + (74 - gapK * 3.2f) * tight, gap3 = gapK * 2.6f + (67 - gapK * 2.6f) * tight;
+        y += 30 + gap1;
+        phoneToastBottom_ = gap1 >= 46 ? y - 12 : 0;   // a toast in the gap above the seek bar, where there is one (App::drawToast)
         if (live) seekBar(kPad, y, W - kPad * 2, 40);
         else if (spec.bands > 0) {
             const double d = now.info.duration;
             drawSpectrum(kPad, y, W - kPad * 2, 40, d > 0 ? float(std::clamp(shownPosition() / d, 0.0, 1.0)) : 0.f);
         }
-        y += 40 + gapK * 3.2f;
+        y += 40 + gap2;
         const float mid = W / 2;
         const bool off = controlsOff();
         if (live && !off && iconButton(uid("ph.sac"), ICON_PAUSE_C, kPad + 20, y, stopAfterCurrent, 44, 20)) {
@@ -318,18 +397,34 @@ void App::drawPhone() {
         g.circle(mid, y, 46 * (ui.pressed(pid) ? 0.95f : 1.f), pal.text, off ? 0.35f : 1.f);
         g.icon(isPlaying() || (extOn && !srvq_.on) ? ICON_PAUSE : ICON_PLAY, mid, y, 38, pal.bg);
         if (live && !off && iconButton(uid("ph.next"), ICON_NEXT, mid + 96, y, false, 60, 30)) next(false);
-        if (live && iconButton(uid("ph.devices"), ICON_LINK, W - kPad - 20, y, tog.stage != Tog::Off, 44, 20)) openDevices();
-        y += gapK * 2.6f;
+        // Devices: lit during a session, and while AirPlay is on either way (upright its card has AirPlay's speakers too, the
+        // title bar's two buttons in one)
+        hint(uid("ph.sac"), stopAfterCurrent ? "Stop after this song: on" : "Stop after this song");
+        hint(uid("ph.devices"), "Devices");
+        if (live && iconButton(uid("ph.devices"), ICON_LINK, W - kPad - 20, y, tog.stage != Tog::Off || airsend.silenceHere() || airplay.view().streaming, 44, 20)) openDevices();
+        y += gap3;
         std::vector<std::string> bs;
         if (!in.codec.empty()) bs.push_back(in.codec);
         char b[48];
         if (in.bitsPerSample && in.codec != "MP3") { snprintf(b, sizeof b, "%d-bit", in.bitsPerSample); bs.push_back(b); }
         if (in.sampleRate) { snprintf(b, sizeof b, "%g kHz", in.sampleRate / 1000.0); bs.push_back(b); }
         if (in.bitrateKbps) bs.push_back(std::to_string(in.bitrateKbps) + " kbps");
-        float total = 0;
-        for (const auto& s : bs) total += g.measure(s, { css::Xs, Weight::SemiBold }) + 20 + 6;
+        // a server's song: where it plays from, as a chip of its own after them (sideways' own: pressed, the library on Server)
+        const bool fromServer = srvq_.on && !extFrom.empty();
+        const Font cf{ css::Xs, Weight::SemiBold };
+        const float srvW = fromServer ? g.measureSpaced(extFrom, cf, 0.02f) + 16 + 18 : 0;
+        float total = fromServer ? srvW + 6 : 0;
+        for (const auto& s : bs) total += g.measureSpaced(s, cf, 0.02f) + 16 + 6;   // (as App::chip measures them)
         float bx = mid - (total - 6) / 2;
         for (size_t i = 0; i < bs.size(); i++) bx += chip(bs[i], bx, y, i == 0) + 6;
+        if (fromServer) {
+            const Id sid = uid("ph.server");
+            if (live && ui.item(sid, { bx, y - 21, srvW, 42 }, 6)) { store.libSource = 1; libSourceChanged(); navigate(View::Library, kLibraryHome); }
+            g.roundRect(bx, y - 11, srvW, 22, 6, pal.text, ui.pressed(sid) ? 0.13f : 0.065f);
+            g.roundStroke(bx, y - 11, srvW, 22, 6, 1, pal.text, 0.09f);
+            g.icon(PLI_CLOUD, bx + 13, y, 13, pal.text2);
+            g.textSpaced(extFrom, cf, bx + 8 + 18, y, 0.02f, pal.text2);
+        }
         g.setFade(1);
     };
 
@@ -338,7 +433,7 @@ void App::drawPhone() {
         const float e = smooth(phoneQueueP_);
         const float sh = H * 0.66f, y0 = H - sh * e;
 #ifdef GF_DEV
-        g.saidLayer = 1;   // (tests: a sheet over the page)
+        g.saidLayer = sheet.page != Sheet::Closed ? 0 : 1;   // (tests: a sheet over the page; under a row's menu, the page itself)
 #endif
         g.rect(0, 0, W, H, { 0, 0, 0 }, 0.55f * e);
         ui.region(Region::Modal);
@@ -349,18 +444,71 @@ void App::drawPhone() {
         kicker("Playlist", kPad, y0 + 38, pal.text3);
         g.text("Up next", { css::Xl, Weight::Bold }, kPad, y0 + 50, pal.text);
         const size_t qn = srvq_.on ? srvq_.songs.size() : q.order.size();
-        g.textNum(std::to_string(qn) + (qn == 1 ? " track" : " tracks"), { css::Sm }, W - kPad - 56, y0 + 66 - g.lineHeight({ css::Sm }) / 2.f, pal.text3, 1, Align::Right);
+        // the count beside the title; right of them the whole playlist's page (sideways: the sidebar's Playlist and the player
+        // bar's button: its order, Current song, Clear, Export) and the close
+        g.textNum(std::to_string(qn) + (qn == 1 ? " track" : " tracks"), { css::Sm }, kPad + g.measure("Up next", { css::Xl, Weight::Bold }) + 12,
+                  y0 + 67 - g.lineHeight({ css::Sm }) / 2.f, pal.text3);
         if (iconButton(uid("ph.qclose"), ICON_X, W - kPad - 16, y0 + 66, false, 40, 18)) phoneQueue_ = false;
+        {
+            const float bw = 16 + 24 + g.measure("Playlist", { css::Sm, Weight::SemiBold }) + 16;
+            bool open = false;
+            button(uid("ph.qpage"), ICON_LIST, "Playlist", W - kPad - 40 - 6 - bw, y0 + 66 - 17, false, &open);
+            if (open && phoneQueue_) { phoneQueue_ = false; navigate(View::Queue); }
+        }
         const float listTop = y0 + 100, listH = H - listTop;
         g.rect(kPad, listTop - 1, W - kPad * 2, 1, pal.text, 0.07f);
         ScrollArea& sa = area("ph.queue");
+        if (extOn && !srvq_.on) {   // (as sideways: what plays next is the other device's)
+            g.textC("What plays next is up to " + extFrom, { css::Base }, W / 2, listTop + 48, pal.text3, 1, Align::Center, int(W - kPad * 2));
+            ui.region(Region::Main);
+            return;
+        }
         const int n = srvq_.on ? std::max(0, int(srvq_.songs.size()) - srvq_.pos) : q.pos >= 0 ? int(q.order.size()) - q.pos : 0;
+        // a row picked up (its menu's Move): the list follows it as the arrows move it
+        if (!srvq_.on && grab.kind == Grab::Queue && grab.pos >= q.pos && grab.pos < q.pos + n) {
+            const float gy = 8 + (grab.pos - q.pos) * 64.f;
+            if (gy < sa.target) sa.target = gy - 8;
+            else if (gy + 64 > sa.target + listH - 80) sa.target = gy + 64 - (listH - 80);
+        }
         sa.view = { 0, listTop, W, listH };
         sa.content = 8 + n * 64.f + 16;
         ui.pushArea(&sa);
         g.clip(0, listTop, W, listH);
+        // In sort mode (by touch: the song menu's Move): the rows that can move (the first 15 after the song playing, sideways'
+        // limit) show the sidebar sorting's handle in the place of their length; each is drawn where sortAt puts it, the one held
+        // last, lifted off the sheet. Items are play positions (queueMove's).
+        const bool sort = !srvq_.on && sorting(Grab::Queue, true);
+        const int qSize = int(q.order.size());
+        const int sortLo = q.pos + 1, sortHi = std::min(qSize - 1, q.pos + 15);
+        auto slot = [&](int pos) -> SDL_FRect { return { kPad - 10, listTop + 8 + (pos - q.pos) * 64.f - sa.y, W - kPad * 2 + 20, 64 }; };
+        if (sort) sortRun(qSize, sortLo, sortHi, sa, slot, false);
+        const int floats = sort ? (tsort_.held >= 0 ? tsort_.held : tsort_.settle) : -1;
+        auto ownRow = [&](int k, float ry, bool fl) {
+            const int pos = q.pos + k, t = q.tracks[q.order[pos]];
+            const Track& tr = lib.tracks[t];
+            meta.wantTags(t);
+            const Id id = uid("ph.qrow", pos);
+            const bool movable = sort && pos >= sortLo && pos <= sortHi;
+            if (fl) sortFloatBox(kPad - 10, ry, W - kPad * 2 + 20, 60, 12);
+            if (ui.item(id, { kPad - 10, ry, W - kPad * 2 + 20, 60 }, 12) && pos != q.pos && !sort) playAt(pos);   // (in sort mode a tap plays nothing)
+            if (ui.focused(id)) { hoverTrack = t; hoverQueue = pos; hoverUpNext = true; }   // (its menu: Up next's, with Move)
+            if (grab.kind == Grab::Queue && grab.pos == pos) {   // picked up with the song menu's Move (as sideways' Up next)
+                if (ui.focusedId() != id) ui.focus(id);   // (the focus with it: Move's own aims at sideways' rows)
+                g.roundRect(kPad - 10, ry, W - kPad * 2 + 20, 60, 12, pal.accent, 0.14f);
+                g.roundStroke(kPad - 10, ry, W - kPad * 2 + 20, 60, 12, 2, pal.accent, 0.95f);
+            } else if (k == 0) g.roundRect(kPad - 10, ry, W - kPad * 2 + 20, 60, 12, pal.accent, 0.09f);
+            else if (ui.pressed(id)) g.roundRect(kPad - 10, ry, W - kPad * 2 + 20, 60, 12, pal.text, 0.065f);
+            coverBox(t, kPad, ry + 6, 48, 8);
+            const float textW = W - kPad * 2 - 62 - 56;
+            g.text(tr.title, { css::Base, Weight::SemiBold }, kPad + 62, ry + 10, k == 0 ? pal.accent : pal.text, 1, Align::Left, int(textW));
+            g.text(trackSub(t), { css::Sm }, kPad + 62, ry + 33, pal.text3, 1, Align::Left, int(textW));
+            if (movable) sortHandle("ph.qsort", pos, W - kPad - 4, ry + 30, { kPad - 10, ry, W - kPad * 2 + 20, 60 });
+            else g.textNumC(tr.duration > 0 ? fmtTime(tr.duration) : "", { css::Sm }, W - kPad, ry + 30, pal.text3, 1, Align::Right);
+        };
         for (int k = 0; k < n; k++) {
-            const float ry = listTop + 8 + k * 64 - sa.y;
+            const bool mine = sort && q.pos + k >= sortLo && q.pos + k <= sortHi;
+            if (mine && q.pos + k == floats) continue;
+            const float ry = mine ? sortAt(q.pos + k, slot(q.pos + k)).y : listTop + 8 + k * 64 - sa.y;
             if (ry + 64 < listTop || ry > H) continue;
             if (srvq_.on) {   // the server's tracks: the same rows, their covers from the server
                 const int pos = srvq_.pos + k;
@@ -378,20 +526,9 @@ void App::drawPhone() {
                 g.textNumC(so.duration > 0 ? fmtTime(so.duration) : "", { css::Sm }, W - kPad, ry + 30, pal.text3, 1, Align::Right);
                 continue;
             }
-            const int pos = q.pos + k, t = q.tracks[q.order[pos]];
-            const Track& tr = lib.tracks[t];
-            meta.wantTags(t);
-            const Id id = uid("ph.qrow", pos);
-            if (ui.item(id, { kPad - 10, ry, W - kPad * 2 + 20, 60 }, 12) && pos != q.pos) playAt(pos);
-            if (ui.focused(id)) { hoverTrack = t; hoverQueue = pos; }
-            if (k == 0) g.roundRect(kPad - 10, ry, W - kPad * 2 + 20, 60, 12, pal.accent, 0.09f);
-            else if (ui.pressed(id)) g.roundRect(kPad - 10, ry, W - kPad * 2 + 20, 60, 12, pal.text, 0.065f);
-            coverBox(t, kPad, ry + 6, 48, 8);
-            const float textW = W - kPad * 2 - 62 - 56;
-            g.text(tr.title, { css::Base, Weight::SemiBold }, kPad + 62, ry + 10, k == 0 ? pal.accent : pal.text, 1, Align::Left, int(textW));
-            g.text(trackSub(t), { css::Sm }, kPad + 62, ry + 33, pal.text3, 1, Align::Left, int(textW));
-            g.textNumC(tr.duration > 0 ? fmtTime(tr.duration) : "", { css::Sm }, W - kPad, ry + 30, pal.text3, 1, Align::Right);
+            ownRow(k, ry, false);
         }
+        if (floats >= sortLo && floats <= sortHi && floats - q.pos < n) ownRow(floats - q.pos, sortAt(floats, slot(floats)).y, true);   // lifted, over the others
         g.unclip();
         ui.popArea();
         ui.region(Region::Main);
@@ -402,34 +539,75 @@ void App::drawPhone() {
         ScrollArea& sa = area("ph.libhome");
         sa.view = { 0, y0, W, bottom - y0 };
         const float cs = (W - kPad * 2 - 2 * 14) / 3;
-        const int albumRows = int(std::min<size_t>(lib.albums.size(), 9) + 2) / 3;
         // the rows shown: Files while the sidebar shows it (Settings › Appearance › Sidebar; the user chose this, 2026-11-04: "A and 2"),
         // the server's while signed in and its music has a tab of its own (Settings › Library › Subsonic server)
         std::vector<int> shown = { 0, 1, 2, 3, 4, 5 };
         if (!(store.hiddenTabs & Store::tabBit(Store::TabFiles))) shown.push_back(6);
         const Subsonic::View sv = subsonic.view();
-        if (sv.state == Subsonic::SignedIn) shown.push_back(7);   // the server's music (Library › Server sideways)
+        // Signed in to a server: Local | Server at the head, the title bar's own switch (the user, 2026-11-06: the whole app's
+        // library; 2026-11-09: separate libraries). On Server the rows, their counts and the albums are the server's, as the
+        // sidebar's tabs are sideways
+        const bool srv = serverSidebar();
+        const std::vector<Subsonic::Album>* salb = srv ? &serverAlbums() : nullptr;
+        const int nAlbums = srv ? int(salb->size()) : int(lib.albums.size());
+        const int albumRows = int(std::min(nAlbums, 9) + 2) / 3;
         sa.content = 110 + float(shown.size()) * 58 + 46 + albumRows * (cs + 52) + 16;
         ui.pushArea(&sa);
         g.clip(0, y0, W, bottom - y0);
         float y = y0 + 16 - sa.y;
         kicker("Library", kPad, y, pal.text3);
-        g.text("Library", { css::Xxl, Weight::Bold }, kPad, y + 10, pal.text);
-        g.text(std::to_string(lib.tracks.size()) + " tracks  ·  " + std::to_string(lib.albums.size()) + " albums", { css::Sm }, kPad, y + 52, pal.text3);
+        const float srcW = librarySource(W - kPad, y + 30, 36);
+        g.text("Library", { css::Xxl, Weight::Bold }, kPad, y + 10, pal.text, 1, Align::Left, int(W - kPad * 2 - (srcW > 0 ? srcW + 12 : 0)));
+        if (srv) {
+            std::string sub = sv.songs >= 0 ? std::to_string(sv.songs) + " tracks" : std::string();
+            if (nAlbums > 0) sub += (sub.empty() ? "" : "  ·  ") + std::to_string(nAlbums) + " albums";
+            g.text(sub.empty() ? "Asking the server…" : sub, { css::Sm }, kPad, y + 52, pal.text3);
+        } else
+            g.text(std::to_string(lib.tracks.size()) + " tracks  ·  " + std::to_string(lib.albums.size()) + " albums", { css::Sm }, kPad, y + 52, pal.text3);
         y += 78;
         float bx = kPad;
         bool c = false;
-        bx += button(uid("ph.lplay"), ICON_PLAY, "Play", bx, y, true, &c) + 8;
-        if (c && !lib.tracks.empty()) { std::vector<int> all(lib.tracks.size()); for (int i = 0; i < int(all.size()); i++) all[i] = i; playTracks(all, 0, "Library", false); }
-        c = false;
-        button(uid("ph.lshuffle"), ICON_SHUFFLE, "Shuffle", bx, y, false, &c);
-        if (c && !lib.tracks.empty()) { std::vector<int> all(lib.tracks.size()); for (int i = 0; i < int(all.size()); i++) all[i] = i; playTracks(all, 0, "Library", true); }
-        y += 58;
+        // Play and Shuffle: your library's, or the server's
+        if (!srv) {
+            bx += button(uid("ph.lplay"), ICON_PLAY, "Play", bx, y, true, &c) + 8;
+            if (c && !lib.tracks.empty()) { std::vector<int> all(lib.tracks.size()); for (int i = 0; i < int(all.size()); i++) all[i] = i; playTracks(all, 0, "Library", false); }
+            c = false;
+            button(uid("ph.lshuffle"), ICON_SHUFFLE, "Shuffle", bx, y, false, &c);
+            if (c && !lib.tracks.empty()) { std::vector<int> all(lib.tracks.size()); for (int i = 0; i < int(all.size()); i++) all[i] = i; playTracks(all, 0, "Library", true); }
+            y += 58;
+        } else {
+            // the server's, as its Songs page has them (the user, 2026-11-11: "the server library does not have play or shuffle like
+            // the local library"): every song the server has told, in its order or shuffled
+            auto serverAll = [&](bool shuffle) {
+                const std::vector<Subsonic::Song>* all = serverSongList();
+                if (!all) { toast("Asking the server: try again in a moment"); return; }
+                if (all->empty()) return;
+                std::vector<Subsonic::Song> v = *all;
+                if (shuffle) { std::mt19937 rng{ std::random_device{}() }; std::shuffle(v.begin(), v.end(), rng); }
+                playServer(v, 0, "Library");
+            };
+            bx += button(uid("ph.splay"), ICON_PLAY, "Play", bx, y, true, &c) + 8;
+            if (c) serverAll(false);
+            c = false;
+            button(uid("ph.sshuffle"), ICON_SHUFFLE, "Shuffle", bx, y, false, &c);
+            if (c) serverAll(true);
+            y += 58;
+        }
         struct Row { const char* icon; const char* name; int count; };
-        const Row rows[8] = { { ICON_LIST, "Songs", int(lib.tracks.size()) }, { ICON_ALBUMS, "Albums", int(lib.albums.size()) },
-                              { ICON_MIC, "Artists", int(artists.size()) },     { ICON_TAG, "Genres", int(genres.size()) },
-                              { ICON_FOLDER, "Folders", int(lib.folders.size()) }, { ICON_HEART, "Liked", int(store.liked.size()) },
-                              { PLI_SDCARD, "Files", -1 }, { PLI_CLOUD, "Server", sv.songs } };
+        Row rows[7] = { { ICON_LIST, "Songs", int(lib.tracks.size()) }, { ICON_ALBUMS, "Albums", int(lib.albums.size()) },
+                        { ICON_MIC, "Artists", int(artists.size()) },     { ICON_TAG, "Genres", int(genres.size()) },
+                        { ICON_FOLDER, "Folders", int(lib.folders.size()) }, { ICON_HEART, "Liked", int(store.liked.size()) },
+                        { PLI_SDCARD, "Files", -1 } };
+        if (srv) {   // the server's counts, as the sidebar's (those it has told so far)
+            rows[0].count = sv.songs;
+            rows[1].count = nAlbums > 0 ? nAlbums : -1;
+            const auto* la = serverArtistList();
+            rows[2].count = la ? int(la->size()) : -1;
+            const auto* lg = serverGenreList();
+            rows[3].count = lg ? int(lg->size()) : -1;
+            rows[4].count = -1;
+            if (const auto* lf = serverFolderList()) { int d = 0; for (const auto& e : *lf) d += e.dir; rows[4].count = d; }
+        }
         const int nRows = int(shown.size());
         g.roundRect(kPad - 8, y, W - kPad * 2 + 16, nRows * 58, 16, pal.text, 0.04f);
         for (int k = 0; k < nRows; k++, y += 58) {
@@ -437,14 +615,14 @@ void App::drawPhone() {
             const float cy = y + 29;
             const Id id = uid("ph.lrow", i);
             if (ui.item(id, { kPad - 8, y, W - kPad * 2 + 16, 58 }, 12)) {
-                switch (i) {
+                if (srv && i <= 4) openServerSection(i == 0 ? 4 : i - 1);   // (its Songs, Albums, Artists, Genres, Folders)
+                else switch (i) {
                 case 0: store.libTab = 1; navigate(View::Library); break;
                 case 1: navigate(View::Albums); break;
                 case 2: navigate(View::Artists); break;
                 case 3: navigate(View::Genres); break;
                 case 4: navigate(View::Folders); break;
                 case 6: openFiles(filesStart()); break;
-                case 7: openServer(0, "", ""); break;
                 default: navigate(View::List, -1); break;
                 }
             }
@@ -455,6 +633,7 @@ void App::drawPhone() {
             if (std::fabs(lum(col) - lum(pal.bg)) < 0.35f && pal.swatchCount > 1) col = mix(pal.swatches[i % pal.swatchCount].c, pal.text, 0.62f);
             g.circle(kPad + 22, cy, 21, col, 0.22f);
             g.icon(rows[i].icon, kPad + 22, cy, 19, col);
+            if (srv && i <= 4) g.iconOnDisc(PLI_CLOUD, kPad + 22 + 15, cy + 14, 7.5f, 10, pal.bg, 0.95f, pal.accentInk, 1);   // the server's mark (the sidebar's)
             g.textC(rows[i].name, { css::Md, Weight::SemiBold }, kPad + 58, cy, pal.text);
             if (rows[i].count >= 0) g.textNum(std::to_string(rows[i].count), { css::Sm }, W - kPad - 28, cy - g.lineHeight({ css::Sm }) / 2.f, pal.text3, 1, Align::Right);
             g.icon(ICON_CHEV, W - kPad - 8, cy, 14, pal.text3);
@@ -463,7 +642,17 @@ void App::drawPhone() {
         y += 28;
         kicker("Albums", kPad, y, pal.text3);
         y += 18;
-        for (int i = 0; i < int(std::min<size_t>(lib.albums.size(), 9)); i++) {
+        for (int i = 0; srv && i < std::min(nAlbums, 9); i++) {   // the server's first albums: their covers from it
+            const Subsonic::Album& al = (*salb)[size_t(i)];
+            const float x = kPad + (i % 3) * (cs + 14), yy = y + (i / 3) * (cs + 52);
+            const Id id = uid("ph.lsalbum", i);
+            if (ui.item(id, { x, yy, cs, cs + 44 }, 12)) openServer(2, al.id, al.name);
+            if (SDL_Texture* tex = serverCover(al.cover)) g.image(tex, x, yy, cs, cs, 12);
+            else { g.roundRect(x, yy, cs, cs, 12, pal.text, 0.06f); g.icon(ICON_DISC, x + cs / 2, yy + cs / 2, cs * 0.28f, pal.text3); }
+            g.text(al.name, { css::Sm, Weight::SemiBold }, x, yy + cs + 8, pal.text, 1, Align::Left, int(cs));
+            g.text(al.artist, { css::Xs }, x, yy + cs + 26, pal.text3, 1, Align::Left, int(cs));
+        }
+        for (int i = 0; !srv && i < int(std::min<size_t>(lib.albums.size(), 9)); i++) {
             const Album& al = lib.albums[size_t(i)];
             const float x = kPad + (i % 3) * (cs + 14), yy = y + (i / 3) * (cs + 52);
             const Id id = uid("ph.lalbum", i);
@@ -476,76 +665,45 @@ void App::drawPhone() {
         ui.popArea();
     };
 
-    // ---- Search: its field on top (Android's keyboard through Songate's text card), what it found under it as Songate lists it
+    // ---- Search: its field on top (Android's keyboard through Songate's text card), Local | Server beside it while signed in to a
+    // server (the title bar's switch: what is searched), then sideways' own filter (the user, 2026-11-09): Songs, Albums, Artists,
+    // Genres, Playlists and Lyrics, the same control, across the page; under it what that one found, as its own page shows it
     auto searchPage = [&](float y0, float bottom) {
         const float fy = y0 + 8;
+        const float srcW = librarySourceW(), fw = W - kPad * 2 - (srcW > 0 ? srcW + 8 : 0);
         const Id fid = uid("ph.sfield");
-        if (ui.item(fid, { kPad, fy, W - kPad * 2, 44 }, 12)) openSearch();
+        if (ui.item(fid, { kPad, fy, fw, 44 }, 12)) openSearch();
         const std::string& qtext = route.query;
-        g.roundRect(kPad, fy, W - kPad * 2, 44, 12, pal.text, ui.pressed(fid) ? 0.1f : 0.065f);
-        g.roundStroke(kPad, fy, W - kPad * 2, 44, 12, 1, qtext.empty() ? pal.text : pal.accent, qtext.empty() ? 0.09f : 0.55f);
+        g.roundRect(kPad, fy, fw, 44, 12, pal.text, ui.pressed(fid) ? 0.1f : 0.065f);
+        g.roundStroke(kPad, fy, fw, 44, 12, 1, qtext.empty() ? pal.text : pal.accent, qtext.empty() ? 0.09f : 0.55f);
         g.icon(ICON_SEARCH, kPad + 24, fy + 22, 18, pal.text3);
-        g.textC(qtext.empty() ? searchHint() : qtext, { css::Base }, kPad + 44, fy + 22, qtext.empty() ? pal.text3 : pal.text, 1, Align::Left, int(W - kPad * 2 - 90));
-        if (!qtext.empty() && iconButton(uid("ph.sclear"), ICON_X, W - kPad - 22, fy + 22, false, 36, 16)) navigate(View::Search, -1, std::string(), false);
+        g.textC(qtext.empty() ? searchHint() : qtext, { css::Base }, kPad + 44, fy + 22, qtext.empty() ? pal.text3 : pal.text, 1, Align::Left, int(fw - 90));
+        if (!qtext.empty() && iconButton(uid("ph.sclear"), ICON_X, kPad + fw - 22, fy + 22, false, 36, 16)) navigate(View::Search, -1, std::string(), false);
+        if (srcW > 0) librarySource(W - kPad, fy + 22, 44);
         if (qtext.empty()) {
-            g.textC("Find a song by its title, its artist or its album", { css::Sm }, W / 2, fy + 110, pal.text3, 1, Align::Center);
+            const bool srv = serverSidebar();
+            const std::vector<std::string> lines = g.wrap(srv ? "Find a song, an album, an artist, a genre or a playlist on the server"
+                                                              : "Find a song by its title, its artist, its album or a line of its lyrics", { css::Sm }, int(W - kPad * 4), 3);
+            float ty = fy + 110 - lines.size() * 9.f;
+            for (const auto& l : lines) { g.textC(l, { css::Sm }, W / 2, ty, pal.text3, 1, Align::Center); ty += 18; }
             return;
         }
-        // its pills: what it found, as tracks (Songate's search list), albums or artists (tiles, as their pages show them)
-        static std::string foundFor;
-        static unsigned foundGen = ~0u;
-        static std::vector<int> albumsFound, artistsFound;
-        if (foundFor != qtext || foundGen != indexGen) {   // once a search, not each frame
-            foundFor = qtext;
-            foundGen = indexGen;
-            albumsFound.clear();
-            artistsFound.clear();
-            for (int i = 0; i < int(lib.albums.size()); i++)
-                if (strcasestr(lib.albums[i].title.c_str(), qtext.c_str()) || strcasestr(lib.albums[i].artist.c_str(), qtext.c_str())) albumsFound.push_back(i);
-            for (int i = 0; i < int(artists.size()); i++)
-                if (strcasestr(artists[i].name.c_str(), qtext.c_str())) artistsFound.push_back(i);
-        }
-        const float py = fy + 56;
-        const std::string labels[3] = { "Songs", "Albums · " + std::to_string(albumsFound.size()), "Artists · " + std::to_string(artistsFound.size()) };
-        float px = kPad;
-        for (int i = 0; i < 3; i++) {
-            const float pw = g.measure(labels[i], { css::Sm, Weight::SemiBold }) + 28;
-            const Id id = uid("ph.pill", i);
-            if (ui.item(id, { px, py, pw, 34 }, 17)) phoneSearchKind_ = i;
-            const bool on = phoneSearchKind_ == i;
-            g.roundRect(px, py, pw, 34, 17, on ? pal.accent : pal.text, on ? 0.16f : ui.pressed(id) ? 0.11f : 0.065f);
-            if (on) g.roundStroke(px, py, pw, 34, 17, 1, pal.accent, 0.45f);
-            g.textC(labels[i], { css::Sm, Weight::SemiBold }, px + pw / 2, py + 17, on ? pal.accentInk : pal.text2, 1, Align::Center);
-            px += pw + 8;
-        }
-        const float ly = py + 34 + 8;
-        if (phoneSearchKind_ == 0) { drawTrackList(0, ly, W, bottom - ly); return; }
-        const std::vector<int>& found = phoneSearchKind_ == 1 ? albumsFound : artistsFound;
-        if (found.empty()) {
-            g.textC(phoneSearchKind_ == 1 ? "No albums match" : "No artists match", { css::Base }, W / 2, ly + 60, pal.text3, 1, Align::Center);
-            return;
-        }
-        ScrollArea& sa = area("ph.found", phoneSearchKind_);
-        const float tw = (W - kPad * 2) / 2, th = 10 + (tw - 20) + 8 + 20 + 2 + 18 + 10;
-        sa.view = { 0, ly, W, bottom - ly };
-        sa.content = ((found.size() + 1) / 2) * th + 16;
-        ui.pushArea(&sa);
-        g.clip(0, ly, W, bottom - ly);
-        for (int k = 0; k < int(found.size()); k++) {
-            const float tx = kPad + (k % 2) * tw, ty = ly + 8 + (k / 2) * th - sa.y;
-            if (ty + th < ly || ty > bottom) continue;
-            if (phoneSearchKind_ == 1) {
-                const Album& al = lib.albums[found[k]];
-                if (tile(uid("ph.salbum", found[k]), al.tracks[0], tx, ty, tw, false, al.title, al.artist)) navigate(View::Album, -1, al.key);
-            } else {
-                const Artist& ar = artists[found[k]];
-                const int cover = ar.albums.empty() ? ar.tracks[0] : lib.albums[ar.albums[0]].tracks[0];
-                const int n = int(ar.tracks.size());
-                if (tile(uid("ph.sartist", found[k]), cover, tx, ty, tw, true, ar.name, std::to_string(n) + (n == 1 ? " track" : " tracks"))) openArtist(ar.name);
+        const float py = fy + 44 + 10;
+        {
+            static const std::vector<std::string> local = { "Songs", "Albums", "Artists", "Genres", "Playlists", "Lyrics" };
+            static const std::vector<std::string> server = { "Songs", "Albums", "Artists", "Genres", "Playlists" };   // (its songs carry no lyrics to read)
+            const bool srv = serverSidebar();
+            const int cur = srv ? std::min(searchTab_, 4) : searchTab_;
+            int picked = -1;
+            segmented(uid("ph.stab"), W - kPad, py + 18, srv ? server : local, cur, &picked, 0, W - kPad * 2, 2, 36);
+            if (picked >= 0 && picked != cur) {
+                searchTab_ = picked;
+                ScrollArea& la = area("search", int(View::Search) * 1000 + route.ref);
+                la.target = la.y = 0;
             }
         }
-        g.unclip();
-        ui.popArea();
+        const float ly = py + 36 + 4;
+        drawTrackList(0, ly, W, bottom - ly);
     };
 
     // ---- the page
@@ -555,6 +713,9 @@ void App::drawPhone() {
     const Focus fc = joining ? automixFocus(0) : Focus{};
     phoneJoinMove_ = joining ? fc.move : -1;
     g.setFadeBase(fc.ui);   // (the page's own fades, the lyrics page's and the mini player's, under it)
+    if (grab.kind == Grab::Queue && grab.upNext && grab.pos >= 0 && !phoneQueue_) grabDrop();   // Up next closed with a row picked up: put down
+    // (long lines start their round again with each song, as the player bar does sideways: it is not drawn here)
+    if (now.track != marqueeTrack || now.info.title != marqueeTitle) { marqueeTrack = now.track; marqueeTitle = now.info.title; marqueeAt = time; }
     top();
     const float pageTop = kTopH, pageBottom = H - kNavH - (v == View::Now ? 0 : kMiniH + 16);
     if (v == View::Now) {
@@ -602,4 +763,52 @@ void App::drawPhone() {
     mini();
     nav();
 }
+
+/**
+ * What the sidebar carries above Settings, at the head of Settings' list on a phone upright (no sidebar there): the work running in
+ * the background as its stack of cards (the same cards: pressed, the list of them, a job's menu with Stop, or its Settings row),
+ * and in their place a newer version's banner while it is offered (pressed: its sheet, App::openUpdateOffer). One fades out, then
+ * the other in, as sideways. Returns the height it takes in the list, its gap included: 0 with nothing to show.
+ */
+float App::phoneWorkCard(float x, float y, float w) {
+    const int offer = updateOffer();
+    const float want = offer >= 0 ? 1.f : 0.f;
+    updBanner_ = store.motion ? updBanner_ + (want - updBanner_) * (1 - std::exp(-dt / 0.12f)) : want;
+    if (std::fabs(updBanner_ - want) < 0.004f) updBanner_ = want;
+    const float need = jobsHeight(false);   // (the front card and a peek for each behind it; the banner: one card's)
+    if (need < 0.5f) return 0;
+    const JobStack st = jobStack();
+    const float ub = updBanner_, fadeWas = g.fade();
+    const float bottom = y + need - 8, frontH = 44, peek = 7;
+    if (ub < 0.5f) {
+        g.setFade(fadeWas * (1 - ub * 2));
+        // only the strip above the front card (it is see-through), inside the page's own clip, which is put back after
+        SDL_Renderer* rr = g.renderer();
+        const bool hadClip = SDL_RenderIsClipEnabled(rr);
+        SDL_Rect was{};
+        SDL_RenderGetClipRect(rr, &was);
+        const SDL_Rect strip{ int(std::floor(x)), int(std::floor(y - 4)), int(std::ceil(w)), int(std::ceil(std::max(0.f, bottom - frontH - (y - 4)))) };
+        SDL_Rect cut = strip;
+        if (hadClip && !SDL_IntersectRect(&strip, &was, &cut)) cut = { 0, 0, 0, 0 };
+        SDL_RenderSetClipRect(rr, &cut);
+        for (int k = int(std::ceil(st.behind - 0.01f)); k >= 1; k--) {
+            const float part = std::min(1.f, st.behind - (k - 1));
+            const float inset = 8.f * k, top = bottom - frontH - peek * std::min(float(k), st.behind);
+            g.roundRect(x + inset, top, w - inset * 2, frontH, 10, pal.text, (0.07f - 0.015f * k) * part);
+            g.roundStroke(x + inset, top, w - inset * 2, frontH, 10, 1, pal.text, (0.12f - 0.03f * k) * part);
+        }
+        SDL_RenderSetClipRect(rr, hadClip ? &was : nullptr);
+        if (st.body > 0.01f) drawJobCard(st, x, bottom, w, false);
+    }
+    g.setFade(fadeWas);
+    if (ub >= 0.5f && offer >= 0) {
+        g.setFade(fadeWas * (ub * 2 - 1));
+        drawUpdateBanner(x, bottom, w, false, offer);
+        g.setFade(fadeWas);
+    }
+    return need + 8;
+}
+
+/** Upright: where a page ends over the bar of five (and the mini player, off Now playing): what floats over the foot sits there (Done, while a list is in sort mode). */
+float App::phoneFoot() const { return route.view == View::Now ? css::H - 18.f : css::H - kNavH - kMiniH - 8 - 10; }
 #endif

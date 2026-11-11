@@ -21,6 +21,9 @@
 #include <random>
 #include <strings.h>
 #include <sys/stat.h>
+#ifdef GF_ANDROID
+#include <unistd.h>   // _exit (main)
+#endif
 
 namespace {
 
@@ -50,6 +53,16 @@ std::mt19937 rng{ 0x6a7e };   // seeded again in App::init: a fixed seed shuffle
 }  // namespace
 
 // ============================================================ lifecycle
+
+#if defined(GF_WINDOWED) && !defined(GF_ANDROID)
+namespace {
+// A PC's scale rule (App::fitWindow has the words): the least layout, the screen that is all room, how far a larger one magnifies,
+// and the window's least size, all in the screen's own units (pixels at 100 %)
+constexpr float kRoomW = 1600, kRoomH = 900, kGrow = 1.5f, kLeastW = 800, kLeastH = 480;
+/** App pixels to a unit that a screen of sw × sh real pixels at d real pixels to a unit asks for. */
+float pcWant(float sw, float sh, float d) { return std::clamp(std::min(sw / d / kRoomW, sh / d / kRoomH), 1.f, kGrow); }
+}  // namespace
+#endif
 
 bool App::init() {
     launchAt_ = profAt_ = SDL_GetPerformanceCounter();
@@ -92,7 +105,15 @@ bool App::init() {
         SDL_GetDisplayUsableBounds(0, &room);
         float dpi = 96;
         SDL_GetDisplayDPI(0, &dpi, nullptr, nullptr);
+#ifdef GF_ANDROID
         const float k = std::min({ dpi / 96.f, room.w * 0.92f / 1280, room.h * 0.92f / 720 });
+#else
+        // (at the size this screen's scale rule draws at, fitWindow: the first window shows the console's whole 1280×720)
+        SDL_Rect whole = room;
+        SDL_GetDisplayBounds(0, &whole);
+        if (dpi < 48) dpi = 96;
+        const float k = std::min({ pcWant(float(whole.w), float(whole.h), dpi / 96.f) * dpi / 96.f, room.w * 0.92f / 1280, room.h * 0.92f / 720 });
+#endif
         // Where it was left, if a screen is still there
         bool kept = store.winW >= 640 && store.winH >= 360;
         if (kept) {
@@ -104,7 +125,9 @@ bool App::init() {
             }
         }
 #ifdef GF_ANDROID
-        const Uint32 flags = SDL_WINDOW_FULLSCREEN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;   // the whole screen, turning with the phone
+        // the whole screen, turning with the phone: the screen's own mode (FULLSCREEN_DESKTOP), never one of the window's (FULLSCREEN
+        // alone keeps a width and height the next turn makes wrong)
+        const Uint32 flags = SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
         kept = false;
 #else
         const Uint32 flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_BORDERLESS | SDL_WINDOW_ALLOW_HIGHDPI | (store.winMax ? SDL_WINDOW_MAXIMIZED : 0);
@@ -268,6 +291,37 @@ bool App::init() {
     updater.start(Store::Dir, selfPath);
     loadModelFiles();   // Automix's downloaded models (a few small files)
     if (store.updates && store.updateAtStart) checkUpdates(true);
+#if defined(GF_PREVIEW) || (defined(GF_WINDOWED) && defined(GF_DEV))   // (Android's dev build: test-update / test-jobs in its settings folder, platform_android.cpp; the PC's dev build: the same names in its environment)
+    // The PC preview: GF_FAKEUPDATE=<version> lists a release that is not out, so the banner above Settings, its card and its row
+    // in Settings › Updates can be looked at (as GF_JOBS does for the work's cards). Nothing goes online for it
+    if (const char* fake = getenv("GF_FAKEUPDATE")) {
+        UpdRelease r;
+        r.version = r.tag = fake;
+        r.name = std::string("Songate ") + fake;
+        r.date = "2026-11-20";
+        r.zipSize = 30 * 1024 * 1024;
+        r.manifest = true;
+        r.beta = Updater::isBeta(fake);
+        r.log = { { "sparkle", "New", { { "", "Your own music server: Navidrome, Airsonic, Gonic and any other Subsonic server, beside your local library" },
+                                        { "", "Lyrics found online when a song has none, and search by lyrics" } } },
+                  { "palette", "Look and feel", { { "", "The battery on the Canvas, with its own choice of what shows beside it" },
+                                                  { "", "The search bar stays in the middle of the window" } } },
+                  { "game", "Overlay", { { "", "Two volumes only: Music and Game" } } },
+                  { "fix", "Fixed", { { "", "A black bar after turning the phone and coming back to Songate" },
+                                      { "", "Safer saves when the console loses power" }, { "", "Tags written into files keep their covers" } } } };
+        // GF_FAKEUPDATE_LONG: a long changelog, to look at the sheet scrolling under Install
+        if (getenv("GF_FAKEUPDATE_LONG")) {
+            static const char* const parts[4] = { "Playback", "Library", "Server", "Settings" };
+            for (int s = 0; s < 4; s++) {
+                UpdLog l{ s % 2 ? "fix" : "sparkle", parts[s], {} };
+                for (int k = 1; k <= 9; k++)
+                    l.items.push_back({ "", std::string(parts[s]) + ", line " + std::to_string(k) + (k % 3 == 0 ? ": a longer line of this made-up changelog, long enough to wrap onto a second line in the sheet" : ": a made-up change") });
+                r.log.push_back(l);
+            }
+        }
+        updater.releases.insert(updater.releases.begin(), r);
+    }
+#endif
 
     // Closing from the HOME menu ends the process without running shutdown(): hold the exit until the
     // settings and the session are written, and save whenever the app loses focus anyway.
@@ -502,6 +556,7 @@ void App::rescan(const std::vector<std::string>* given, Library* built) {
 }
 
 void App::shutdown() {
+    sortEnd();   // (a list in sort mode: its order saved with the rest)
 #ifdef GF_DEV
     // Dev builds: how long closing takes, step by step, in shutdown-trace.txt (the user, 2026-11-05: HOME crashed closing the
     // forwarder, 1 time in 20; Songate holds the exit until this ends)
@@ -837,36 +892,107 @@ void App::fitWindow() {
     int pw = 1280, ph = 720;
     SDL_GetRendererOutputSize(renderer_, &pw, &ph);
     if (pw <= 0 || ph <= 0) return;
-    // As big as on the whole screen (the console's 1280×720 filling it the short way), however small the window: it shows less, like
-    // any desktop app, and only under kMinW × kMinH does everything shrink with it. In twentieths, so that dragging an edge does
-    // not make all the text again for each pixel of a change
+#if defined(GF_DEV) && !defined(GF_ANDROID)
+    if (devPw_ > 0 && devPh_ > 0) { pw = devPw_; ph = devPh_; }   // (a test's made-up window: devctl.cpp)
+#endif
+    // The same size however small the window: it shows less, like any desktop app, and only under kMinW × kMinH does everything
+    // shrink with it
     SDL_Rect screen{ 0, 0, 1280, 720 };
     const int on = SDL_GetWindowDisplayIndex(window_);
     if (on >= 0) SDL_GetDisplayBounds(on, &screen);
+#if defined(GF_DEV) && !defined(GF_ANDROID)
+    if (devScreenW_ > 0 && devScreenH_ > 0) { screen.w = devScreenW_; screen.h = devScreenH_; }
+#endif
     constexpr float kMinW = 1000, kMinH = 600;
 #ifdef GF_ANDROID
-    // Settings › Appearance › Layout › Size: a phone is held close, its screen small; the short side holds 720, 660 or 600 app
-    // pixels (600: the least the layout is made for, kMinH)
+    // Android: the scale comes from the window's size in dp (Android's own unit, a 160th of an inch as the maker and the user's
+    // Display size have it), so the same words are the same size in the hand on every screen, and no shape cuts anything.
+    //   u: dp to an app pixel. The phone this was drawn on is 411 dp across (1080 pixels at 2.625).
+    const float d = density_ = plat::screenDensity();
+    const float dw = pw / d, dh = ph / d;
+    // Settings › Appearance › Layout › Size: a phone is held close, its screen small; that phone's short side holds 720, 660 or 600
+    // app pixels (600: the least the layout is made for, kMinH)
     static const float kTall[3] = { 720, 660, 600 };
     const float tall = kTall[std::clamp(store.uiSize, 0, 2)];
-    const float full = std::min(screen.w / (1280.f * tall / 720), screen.h / tall);
+    // The console's layout in a window w × h dp:
+    //   full: its whole shape (1280 × 720 at Standard) filling the window, the longer way given to the page (a 20:9 phone: 1600 wide)
+    //   fit:  the least it is made for (kMinW × kMinH; under kNarrowW wide the sidebar folds by itself)
+    //   want: no smaller in the hand than on that 411 dp phone at this Size, when a smaller screen can only fit the whole shape by
+    //         shrinking it; it then shows less instead, down to `fit`
+    auto console = [&](float w, float h, float want) {
+        const float full = std::min(w / (1280.f * tall / 720), h / tall), fit = std::min(w / kMinW, h / kMinH);
+        return std::max(full, std::min(want, fit));
+    };
+    float u;
+    css::Phone = pw < ph && dw < kPhoneDp;
+    if (css::Phone) {
+        // The phone's own layout, a phone held upright (the user, 2026-11-04: "everything is so tiny... It's a phone"): 440 app
+        // pixels across on that 411 dp phone, and the same size in the hand on any other, so a narrower phone shows a little less
+        // across and a wider one more; never under 400 across (narrower still: it shrinks to keep 400) nor over 560 (it grows).
+        // Always Standard: Size is sideways' only (the user, 2026-11-04)
+        u = dw / std::clamp(dw / (411.f / 440), kPhoneMinW, kPhoneMaxW);
+    } else if (pw >= ph) {
+        u = console(dw, dh, 411.f / tall);
+    } else {
+        // A tablet or an open foldable held upright: the console's layout at the size it has sideways, while that fits
+        u = console(dw, dh, console(dh, dw, 411.f / tall));
+    }
+    float s = std::max(0.25f, std::floor(u * d * 20) / 20);
 #else
-    const float full = std::min(screen.w / 1280.f, screen.h / 720.f);
+    // A PC: in the screen's own units (Windows' scale: at 150 % a unit is 1.5 real pixels), so words are the size the user set
+    // their screen to, on any screen.
+    //   want: an app pixel to a unit on a screen up to kRoomW × kRoomH units (a laptop's; a 1920×1080 one at 150 %); a larger
+    //         screen gives its room to the page first (more columns, more rows) and only then makes everything larger, up to
+    //         kGrow (a 1920×1080 screen at 100 %: 1.2, the page 1600×900; 2560×1440: 1.5, the page 1707×960). From the
+    //         screen, not the window: dragging an edge never changes the size of anything while the window is over the least
+    //   fit:  the least the layout is made for (kMinW × kMinH; under kNarrowW wide the sidebar folds by itself): a smaller window
+    //         shrinks everything with it, down to the window's least size (kLeastW × kLeastH units: 0.8)
+    float dpi = 96;
+    if (on < 0 || SDL_GetDisplayDPI(on, &dpi, nullptr, nullptr) != 0 || dpi < 48) dpi = 96;
+#ifdef GF_DEV
+    if (devDpi_ > 0) dpi = devDpi_;
 #endif
-    float s = std::max(0.25f, std::floor(std::min({ full, pw / kMinW, ph / kMinH }) * 20) / 20);
-#ifdef GF_ANDROID
-    // portrait: a phone held upright, about 400 across as its own apps are (the user, 2026-11-04: "everything is so tiny... It's a
-    // phone"); always 440, Standard: Size is sideways' only (the user, 2026-11-04)
-    if (pw < ph) s = std::max(0.25f, std::floor(pw / 440.f * 20) / 20);
+    const float d = dpi / 96;
+    const float want = pcWant(float(screen.w), float(screen.h), d);
+    const float fit = std::min(pw / d / kMinW, ph / d / kMinH);
+    // (to a thousandth, no coarser: the page's size follows the edge pixel by pixel. What is made for a scale, the words and the
+    // icons, waits for the edge to rest: below)
+    float s = std::max(0.25f, std::round(std::min(want, fit) * d * 1000) / 1000);
+    if (std::fabs(d - minFor_) > 0.001f) {   // (the least size is in real pixels: it follows the screen's scale)
+        minFor_ = d;
+        SDL_SetWindowMinimumSize(window_, int(std::lround(kLeastW * d)), int(std::lround(kLeastH * d)));
+    }
 #endif
     css::W = int(std::ceil(pw / s - 0.01f));
     css::H = int(std::ceil(ph / s - 0.01f));
+    // narrow: the sidebar folds by itself, and comes back kNarrowBack later than it went
+    {
+        const bool was = narrow_;
+        narrow_ = css::W < kNarrowW || (narrow_ && css::W < kNarrowW + kNarrowBack);
+        if (was && !narrow_) sidePeek_ = false;
+    }
     SDL_RenderSetScale(renderer_, s, s);
     SDL_DisplayMode m{};
     const int display = SDL_GetWindowDisplayIndex(window_);
     hz_ = display >= 0 && SDL_GetDesktopDisplayMode(display, &m) == 0 && m.refresh_rate > 0 ? m.refresh_rate : 60;
     const bool sameSize = frameTex_[0] && s == scale_ && pw == framePw_ && ph == framePh_;
-    g.setDisplay(s, hz_);
+#ifdef GF_ANDROID
+    rasterScale_ = s;
+#else
+    // The words and the icons are made for one scale, and making them all again takes a frame or two: while an edge is dragged
+    // under the least size the scale changes with every pixel. So a change in one step (a maximise, a snap, another screen: over a
+    // fiftieth, and none just before it) makes them at once, and while small changes keep coming (within a quarter of a second of
+    // the last) what there is is drawn a little larger or smaller; App::frame makes them again once the edge has rested, or here
+    // when they are more than an eighth off (a long drag: never blurred for long)
+    if (rasterScale_ <= 0) rasterScale_ = s;
+    else if (s != scale_) {
+        const bool stream = time - scaleMovedAt_ < 0.25;
+        const float off = std::fabs(s / rasterScale_ - 1);
+        scaleMovedAt_ = time;
+        if (off > 0.125f || (!stream && off > 0.02f)) rasterScale_ = s;
+    }
+#endif
+    g.setDisplay(rasterScale_, hz_);
     scale_ = s;
     framePw_ = pw;
     framePh_ = ph;
@@ -884,13 +1010,28 @@ void App::fitWindow() {
 
 /** Windows holds a window's owner while its edge is dragged: its messages come from inside SDL's pump, which does not
  *  return until the mouse is let go. So the frames go on from here, between frames by construction (App::frame). */
+#if defined(_WIN32) && !defined(GF_PREVIEW_BUILD)
+extern "C" __declspec(dllimport) long __stdcall DwmFlush();
+#endif
+
 int App::resizeWatch(void* self, SDL_Event* e) {
     auto* app = static_cast<App*>(self);
     if (e->type != SDL_WINDOWEVENT || !app->pumping_ || app->resizing_) return 0;
     if (e->window.event != SDL_WINDOWEVENT_SIZE_CHANGED && e->window.event != SDL_WINDOWEVENT_EXPOSED && e->window.event != SDL_WINDOWEVENT_MOVED) return 0;
     app->resizing_ = true;
+#if defined(_WIN32) && !defined(GF_PREVIEW_BUILD)
+    // (held by an edge: frames go to the screen at once, not queued behind its refresh, where they sat a few refreshes behind the
+    // window's own size; App::input puts the wait back once the app's own loop runs again)
+    if (!app->dragNoVsync_) { app->dragNoVsync_ = true; SDL_RenderSetVSync(app->renderer_, 0); }
+#endif
     app->fitWindow();
     app->frame();
+#if defined(_WIN32) && !defined(GF_PREVIEW_BUILD)
+    // An edge dragged: the window's new size and the frame drawn for it must reach the screen together, or the old picture shows
+    // cut off (or short) in the new window for a moment, all the way along a drag (the user's recording, 2026-11-11). Waiting
+    // here for the compositor's next pass starts each step of the drag with a whole pass ahead of it to draw in
+    if (e->window.event == SDL_WINDOWEVENT_SIZE_CHANGED) DwmFlush();
+#endif
     app->resizing_ = false;
     return 0;
 }
@@ -919,7 +1060,8 @@ SDL_HitTestResult App::hitTest(SDL_Window* w, const SDL_Point* p, void* self) {
     int ww = 0, wh = 0;
     SDL_GetWindowSize(w, &ww, &wh);
     if (!(SDL_GetWindowFlags(w) & SDL_WINDOW_MAXIMIZED)) {
-        constexpr int m = 7, c = 16;
+        // (the edge that takes hold: 7 real pixels on a screen at 100 %, wider on one at a larger scale, where 7 is a hair)
+        const int m = std::max(7, int(std::lround(5 * app->minFor_))), c = std::max(16, int(std::lround(12 * app->minFor_)));
         const bool l = p->x < m, r = p->x >= ww - m, t = p->y < m, b = p->y >= wh - m;
         const bool lc = p->x < c, rc = p->x >= ww - c, tc = p->y < c, bc = p->y >= wh - c;
         if ((t && lc) || (l && tc)) return SDL_HITTEST_RESIZE_TOPLEFT;
@@ -1045,12 +1187,28 @@ void App::frame() {
     {   // a turn: SDL's resize event can come before the surface has its new size; the size itself, each frame, is what counts
         int pw = 0, ph = 0;
         SDL_GetRendererOutputSize(renderer_, &pw, &ph);
-        if (pw > 0 && ph > 0 && (pw != framePw_ || ph != framePh_)) {
-            if (framePw_ > 0 && (pw > ph) != (framePw_ > framePh_)) {   // upright ⇄ sideways: the new layout fades in
+        // (Android's Display size changed while the app is open: the same window, another density, four looks a second)
+        bool resized = pw != framePw_ || ph != framePh_;
+        if (!resized && time - densityAt_ > 0.25) {
+            densityAt_ = time;
+            resized = std::fabs(plat::screenDensity() - density_) > 0.001f;
+        }
+        if (pw > 0 && ph > 0 && resized) {
+            const bool turned = framePw_ > 0 && (pw > ph) != (framePw_ > framePh_);
+            if (turned) {   // upright ⇄ sideways: the new layout fades in
                 turnAt_ = time;
                 if (canvas && pw < ph) openCanvas(false);   // turned upright: the Canvas closes (it is sideways' only)
             }
             fitWindow();
+            if (pw > ph && canvasTurn_ == 1) {   // sideways now, for the Canvas asked for upright: it opens
+                canvasTurn_ = 2;
+                openCanvas(true);
+            }
+        }
+        // the turn never came (a window Android will not turn: split screen): the hold given back, and said
+        if (canvasTurn_ == 1 && time - canvasTurnAt_ > 3) {
+            endCanvasTurn();
+            toast("The Canvas is for a screen held sideways");
         }
     }
 #endif
@@ -1061,6 +1219,13 @@ void App::frame() {
         SDL_PumpEvents();
         pumping_ = false;
     }
+#ifndef GF_ANDROID
+    // the edge has rested: the words and icons made for the scale it stopped at (App::fitWindow)
+    if (rasterScale_ != scale_ && time - scaleMovedAt_ > 0.15) {
+        rasterScale_ = scale_;
+        g.setDisplay(rasterScale_, hz_);
+    }
+#endif
 #endif
     const double freq = double(SDL_GetPerformanceFrequency());
     {
@@ -1173,6 +1338,13 @@ void App::frame() {
 #endif
         frameAt_ = (frameAt_ + 1) % 120;
         profAt_ = SDL_GetPerformanceCounter();
+#if defined(GF_WINDOWED) && defined(GF_DEV) && !defined(GF_ANDROID)
+        devShot();
+        devN_++;
+        devSum_ += interval;
+        devWorst_ = std::max(devWorst_, interval);
+        devWork_ = std::max(devWork_, double(workMs_[(frameAt_ + 119) % 120]));
+#endif
 #ifdef GF_WINDOWED
         SDL_SetRenderTarget(renderer_, nullptr);
         const SDL_Rect whole{ 0, 0, framePw_, framePh_ };
@@ -1231,14 +1403,34 @@ void App::plusMenu(bool held) {
     }
 }
 
+bool App::sortTapAt(float x, float y) const {
+    return tsort_.on && !ui.dragId() && std::hypot(x - fingerDownX_, y - fingerDownY_) <= 14;
+}
+
 void App::input() {
     SDL_Event e;
+#if defined(_WIN32) && defined(GF_WINDOWED) && !defined(GF_ANDROID)
+    if (dragNoVsync_ && !resizing_) { dragNoVsync_ = false; SDL_RenderSetVSync(renderer_, 1); }
+#endif
     bool touched = false;
+    bool sortTap = false;     // a list in sort mode: a finger tapped somewhere that is not a handle
+    // A list in sort mode whose page was left (it was not drawn last frame), or tapped elsewhere a frame ago: the mode ends
+    if (tsort_.on && (!tsort_.ran || (tsort_.endIn > 0 && --tsort_.endIn == 0))) sortEnd();
+    tsort_.ran = false;
     bool mouseMoved = false, mouseClicked = false;
 #ifdef GF_WINDOWED
     bool rightClick = false;
 #endif
     float wheel = 0;
+#if defined(GF_WINDOWED) && defined(GF_DEV) && !defined(GF_ANDROID)
+    devControl();   // (a test's clicks and sizes: devctl.cpp)
+    if (devMoved_) { devMoved_ = false; mouseMoved = true; }
+    if (devTapUp_ == 4 || devClicked_) mouseClicked = true;
+    devClicked_ = false;
+    if (devSortTap_) { devSortTap_ = false; sortTap = true; }
+    wheel += devWheel_;
+    devWheel_ = 0;
+#endif
 #ifdef GF_WINDOWED
     while (SDL_PeepEvents(&e, 1, SDL_GETEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT) > 0) {   // pumped at the top of the frame
 #else
@@ -1280,8 +1472,14 @@ void App::input() {
             }
             if (lightDown_ >= 0) continue;
 #endif
-            if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) { ui.touchDown(pointer.x, pointer.y); mouseHeld_ = true; mouseClicked = true; }
-            if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT && mouseHeld_) { ui.touchUp(pointer.x, pointer.y); mouseHeld_ = false; }
+            if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
+                ui.touchDown(pointer.x, pointer.y); mouseHeld_ = true; mouseClicked = true;
+                fingerDownX_ = pointer.x; fingerDownY_ = pointer.y;
+            }
+            if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT && mouseHeld_) {
+                if (sortTapAt(pointer.x, pointer.y)) sortTap = true;   // (as a finger's tap, below)
+                ui.touchUp(pointer.x, pointer.y); mouseHeld_ = false;
+            }
         }
         if (e.type == SDL_MOUSEWHEEL && e.wheel.which != SDL_TOUCH_MOUSEID) {
 #if SDL_VERSION_ATLEAST(2, 0, 18)
@@ -1305,15 +1503,23 @@ void App::input() {
         }
 #endif
         if (pocketLocked_) { if (e.type == SDL_FINGERDOWN) touched = true; continue; }   // (locked: no touch reaches anything)
-        if (e.type == SDL_FINGERDOWN) ui.touchDown(x, y, true);
+        if (e.type == SDL_FINGERDOWN) { ui.touchDown(x, y, true); fingerDownX_ = x; fingerDownY_ = y; }
         else if (e.type == SDL_FINGERMOTION) ui.touchMove(x, y);
-        else if (e.type == SDL_FINGERUP) ui.touchUp(x, y);
+        else if (e.type == SDL_FINGERUP) {
+            // (a list in sort mode: a tap that was not on a handle ends it; a drag of the page only scrolls)
+            if (sortTapAt(x, y)) sortTap = true;
+            ui.touchUp(x, y);
+        }
     }
 
     plat::padRead();
     if (pocketLocked_) { pocketTick(plat::padDown() != 0 || touched); return; }   // locked: only the unlock (pocketTick)
     if (pocketGuard_) pocketGuardTick();
     uint64_t down = plat::padDown();
+#if defined(GF_WINDOWED) && defined(GF_DEV) && !defined(GF_ANDROID)
+    down |= devPad_;
+    devPad_ = 0;
+#endif
     if (down) openingSkip_ = true;
 #ifdef GF_WINDOWED
     if (down && plat::padWasLast()) typingByTouch_ = true;
@@ -1352,7 +1558,11 @@ void App::input() {
     if (ui.touchHeld()) plusAfterHold = 2;
     else if (plusAfterHold > 0 && --plusAfterHold == 0 && sheet.page == Sheet::Closed && !notice) plusMenu(true);
     const bool modal = sheet.page != Sheet::Closed || notice || je.open || ap.open;
+#ifdef GF_ANDROID
+    if (!modal && (down & plat::BtnMinus)) { if (canvas) openCanvas(false); else openCanvasTurning(); }   // (upright: it turns the screen first)
+#else
     if (!modal && (down & plat::BtnMinus)) openCanvas(!canvas);
+#endif
     // Left stick: a pointer for what the D-pad reaches badly (the player bar's right end, small
     // buttons). Slow near the centre, fast at the edge; A taps and drags under it like a finger.
     const plat::Stick ls = plat::stick(0);
@@ -1400,8 +1610,17 @@ void App::input() {
     }
     // What moves things by touch (the sidebar's handles) shows once a finger is on the screen; a button, a key, the stick or a click
     // bring Move back (the user, 2026-11-04: "only change to the sort mode by touch when touch is detected")
-    if (touched) byTouch_ = true;
-    if (down || stickMoved || mouseClicked) byTouch_ = false;
+    // A mouse's click drags the handles too (the user, 2026-11-11); only a button, a key or the stick bring Move back. A right
+    // click (it is + here) is the mouse still
+    {
+        bool pad = down != 0 || stickMoved;
+#ifdef GF_WINDOWED
+        if (rightClick && down == plat::BtnPlus && !stickMoved) pad = false;
+#endif
+        if (touched) { byTouch_ = true; byMouse_ = false; }
+        if (mouseClicked) { byMouse_ = true; byTouch_ = false; }
+        if (pad) byTouch_ = byMouse_ = false;
+    }
     if (touched) touchUi_ = true;   // (the back button: the stick alone does not take it away; a stick at rest still reports a little)
     if (down || mouseClicked) touchUi_ = false;
     // A picked-up queue row (the track menu's Move): A or B puts it down, as with a slider; a
@@ -1423,6 +1642,15 @@ void App::input() {
             while (notches <= -1) { grabStep(grab.cols); notches += 1; }
             wheel = 0;
         }
+    }
+    // A list in sort mode (by touch): a button, a key, the stick or a click end it, as they bring Move back in Settings; A and B do
+    // nothing else then (back only leaves the mode). A tap elsewhere ends it once its frame has swallowed the tap (the row under
+    // it does not play). A sheet or the Canvas over the page end it too.
+    if (tsort_.on) {
+        if (!sortByDrag() || modal || canvas) {
+            sortEnd();
+            down &= ~uint64_t(plat::BtnA | plat::BtnB);
+        } else if (sortTap && tsort_.endIn == 0) tsort_.endIn = 2;
     }
     if (pointing && (down & plat::BtnA)) {
         ui.touchDown(pointer.x, pointer.y);
@@ -1465,7 +1693,7 @@ void App::input() {
     auto intoSettingsPane = [&] {
         if (route.view != View::Settings || modal) return false;
         const SDL_FRect f = ui.rectOf(ui.focusedId());
-        if (f.w <= 0 || f.x < sideW + edge_.side || f.x >= settingsPaneX || f.y < css::TbH || f.y + f.h > css::H - css::BarH) return false;
+        if (f.w <= 0 || f.x < pageSideW() + edge_.side || f.x >= settingsPaneX || f.y < css::TbH || f.y + f.h > css::H - css::BarH) return false;
         const Id first = ui.firstIn(&area("settings.pane"));
         if (!first) return false;
         ui.focus(first);
@@ -1482,6 +1710,11 @@ void App::input() {
     if (std::abs(rs.y) > 6000) {
         const float dy = -rs.y / 32767.f * 1400 * dt;
         if (pointer.idle <= Pointer::Hide && ui.scrollAreaAt(pointer.x, pointer.y, dy)) rehover_ = 0.5f;
+        else if (pinnedScroll_ && time - pinnedScrollAt_ < 0.25) {   // a release's sheet: its changelog, under the rows that stay
+            pinnedScroll_->target += dy;
+            pinnedScroll_->clamp();
+            pinnedScroll_->manual = ui.now();
+        }
         else ui.scrollFocusedArea(dy);
         ui.setPadMode(true);
         canvasIdle = 0;   // reading the Canvas lyrics is not idle
@@ -1657,11 +1890,23 @@ void App::update() {
         now.fade = std::min(1.f, now.fade + dt / 0.5f);
     }
     {
+#ifdef GF_WINDOWED
+        // opened over a narrow window's page: closed again by going anywhere (a tab chosen in it, back, Search)
+        if (sidePeek_ && (route.view != peekRoute_.view || route.ref != peekRoute_.ref || route.query != peekRoute_.query || canvas)) sidePeek_ = false;
+        peekRoute_ = route;
+#endif
         const float to = sidebarFolded() ? 0.f : 1.f;
         if (to == 1 && sideP_ == 0) sideOpenedAt_ = time;
         sideP_ = !store.motion ? to : to > sideP_ ? std::min(to, sideP_ + dt / 0.38f) : std::max(to, sideP_ - dt / 0.38f);
         const float e = sideP_ < 0.5f ? 4 * sideP_ * sideP_ * sideP_ : 1 - std::pow(-2 * sideP_ + 2, 3.f) / 2;   // cubic, in and out
         sideW = css::SideWCollapsed + (css::SideW - css::SideWCollapsed) * e;
+#ifdef GF_WINDOWED
+        // how much of it lies over the page (pageSideW): all of it while it is open over a narrow window's page, and as it closes
+        // there; none once closed; the window given its room back with it open, the page slides out from under it
+        if (narrow_ && sidePeek_) peekK_ = 1;
+        else if (sideW <= css::SideWCollapsed + 0.5f) peekK_ = 0;
+        else if (!narrow_) peekK_ = store.motion ? std::max(0.f, peekK_ - dt / 0.3f) : 0.f;
+#endif
     }
     toastT = std::max(0.f, toastT - dt);
 
@@ -1686,7 +1931,7 @@ void App::update() {
     }
     UPD_MARK("palette+spectrum");
     // (the session was saved every 20 s while playing, for its position; close-only now: the user, 2026-11-09, the card over a position)
-    if (persistAt > 0 && time >= persistAt) persistNow();
+    if (persistAt > 0 && time >= persistAt && !(tsort_.on && tsort_.held >= 0)) persistNow();   // (not while a finger holds a row: when it lifts)
     UPD_MARK("persist");
 
     // The overlay's covers: when many are missing, say so once (drawCoverNotice). Looked at once the
@@ -2573,6 +2818,11 @@ void App::sampleBattery() {
     if (!plat::batteryRaw(pct, plugged)) return;
     battery.infoOk = plat::batteryInfo(battery.info);
     {   // the power service's words after the battery's age, once a run, while charging (the charger's layout: platform_switch.cpp)
+        static bool cyclesLogged = false;   // (the fuel gauge's cycle counter as read, once a run: charger or not)
+        if (!cyclesLogged && battery.infoOk) {
+            const size_t at = battery.info.raw.find("cycles=");
+            if (at != std::string::npos) { cyclesLogged = true; logLine("Battery gauge " + battery.info.raw.substr(at) + " (hundredths of a cycle: the chip's, and the system's own count)"); }
+        }
         static bool logged = false;
         if (!logged && battery.infoOk && battery.info.charger && !battery.info.raw.empty()) {
             logged = true;
@@ -2594,7 +2844,7 @@ void App::sampleBattery() {
     sm.push_back({ time, pct });
     while (sm.size() > 2 && time - sm.front().first > 10 * 60) sm.erase(sm.begin());
     battery.est.clear();
-    if (charging && pct >= 99.5) { battery.est = "charged"; return; }
+    if (charging && pct >= 99.5) { battery.est = "Charged"; return; }   // (a capital: the user, 2026-11-11)
     auto timeText = [](int mins) {
         char b[32];
         if (mins >= 60) snprintf(b, sizeof b, "%d h %02d", mins / 60, mins % 60);
@@ -2823,13 +3073,13 @@ void App::grabStep(int d) {
     }
     if (grab.kind == Grab::Playlists) {   // the Playlists page: the playlist itself moves (its rows keep their ids)
         const int to = std::clamp(grab.pos + d, 0, int(store.playlists.size()) - 1);
-        if (to != grab.pos) { movePlaylist(grab.pos, to); grab.pos = to; }
+        if (to != grab.pos) { movePlaylist(grab.pos, to, false); grab.pos = to; grabSave_ = true; }   // (saved when put down: grabDrop)
         ui.setPadMode(true);
         return;
     }
     if (grab.kind == Grab::SrvPlaylists) {   // … the server's: Songate's own order of them (moveServerPlaylist)
         const int to = std::clamp(grab.pos + d, 0, int(srvPlaylists_.size()) - 1);
-        if (to != grab.pos) { moveServerPlaylist(grab.pos, to); grab.pos = to; }
+        if (to != grab.pos) { moveServerPlaylist(grab.pos, to, false); grab.pos = to; grabSave_ = true; }
         ui.setPadMode(true);
         return;
     }
@@ -2895,6 +3145,11 @@ void App::grabDrop() {
         srvGrabPl_.clear();
     }
     if (grabMoved_) { grabMoved_ = false; persistSoon(0.3f); }   // a playlist's song put down in its new place
+    if (grabSave_) {   // a playlist put down in its new place on the Playlists page: written once, not at each step
+        grabSave_ = false;
+        if (grab.kind == Grab::SrvPlaylists) saveServerPlaylistOrder();
+        else store.save();
+    }
     grab = Grab{};
 }
 
@@ -3580,6 +3835,9 @@ void App::seekLyric(int line) {
 ScrollArea& App::area(const char* key, int ref) { return areas[uid(key, ref)]; }
 
 void App::navigate(View v, int ref, const std::string& query, bool push) {
+#ifdef GF_ANDROID
+    if (canvasTurn_ == 2) endCanvasTurn();   // the Canvas left for a page: the screen is the phone's own to turn again
+#endif
     canvas = false;
     // A picker opened from elsewhere lists afresh: the card may have changed meanwhile (an export, Files)
     auto picker = [](View x) { return x == View::PickFolder || x == View::PickPlaylist || x == View::PickExport; };
@@ -3718,7 +3976,12 @@ unsigned App::canvasLayoutsOff() const {
 
 void App::openCanvas(bool on) {
 #ifdef GF_ANDROID
-    if (on && css::H > css::W) return;   // no Canvas upright (the user, 2026-11-04): its key, the tour's step, nothing opens it there
+    if (on && css::Phone) return;   // no Canvas upright (the user, 2026-11-04): its key, the tour's step, nothing opens it there
+    // a tablet held upright (the console's layout, its Canvas button in the player bar): turned sideways for it, as the phone's button does
+    if (on && css::H > css::W) { openCanvasTurning(); return; }
+#endif
+#ifdef GF_ANDROID
+    if (!on) endCanvasTurn();   // opened from upright: the screen is the phone's own to turn again
 #endif
     canvas = on;
     // Opening shows the right layout at once; only changes while it is open are animated.
@@ -3732,8 +3995,31 @@ void App::openCanvas(bool on) {
     else ui.focusDefault();
 }
 
+#ifdef GF_ANDROID
+/** The Canvas from a phone held upright: the screen turns sideways first (Android's own turn, asked of its window: nothing drawn
+ *  turned by hand), and the Canvas opens when it has (App::frame). Sideways already: the Canvas at once. Closing it gives the
+ *  screen back (endCanvasTurn): upright again if that is how the phone is held, left sideways if it was turned meanwhile. */
+void App::openCanvasTurning() {
+    if (css::W >= css::H) { openCanvas(true); return; }
+    if (canvasTurn_) return;
+    canvasTurn_ = 1;
+    canvasTurnAt_ = time;
+    phoneQueue_ = false;
+    plat::holdLandscape(true);
+}
+
+void App::endCanvasTurn() {
+    if (!canvasTurn_) return;
+    canvasTurn_ = 0;
+    plat::holdLandscape(false);
+}
+#endif
+
 void App::back() {
     if (canvas) { openCanvas(false); return; }
+#ifdef GF_WINDOWED
+    if (sidePeek_) { sidePeek_ = false; return; }   // the sidebar open over a narrow window's page: closed first
+#endif
 #ifdef GF_ANDROID
     // a phone upright: back closes its Up next, then its lyrics page, before it leaves the page (view_phone.cpp)
     if (phonePortrait() && phoneQueue_) { phoneQueue_ = false; return; }
@@ -3930,8 +4216,13 @@ int main(int argc, char** argv) {
     app.shutdown();
 #ifdef GF_ANDROID
     // Android keeps the process after main returns and SDL would run main in it again, every static as this run left it: the next
-    // start gets a process of its own (shutdown has ended every thread and written everything)
-    exit(0);
+    // start gets a process of its own (shutdown has ended every thread and written everything).
+    // _exit, not exit: exit runs every library's static destructors, Android's own among them, while Android's threads (its
+    // renderer's, hwuiTask) are still at work in this process; one then locked a mutex already destroyed and the process ended
+    // with an abort and a tombstone instead ("pthread_mutex_lock called on a destroyed mutex", each time Songate closed: since
+    // the first Android build, found 2026-11-11). Nothing of Songate's is left for a destructor to do
+    fflush(nullptr);
+    _exit(0);
 #endif
     return 0;
 }

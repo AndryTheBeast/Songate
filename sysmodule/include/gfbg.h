@@ -16,8 +16,9 @@
 
 #define GFBG_SERVICE    "gatefold"           // sm name, 8 characters at most
 #define GFBG_PROGRAM_ID 0x4200000047464E58ULL // "GFNX" in the homebrew range
-#define GFBG_PROTOCOL   6   // 5: the equalizer (GetEq/SetEq, GfbgState.eqGen), crossfade and playlist actions (GfbgConfig grew);
+#define GFBG_PROTOCOL   7   // 5: the equalizer (GetEq/SetEq, GfbgState.eqGen), crossfade and playlist actions (GfbgConfig grew);
                             // 6: Automix (GfbgQueue_Automix, GfbgConfig.automixModel, GfbgState's join), the playlists' kinds
+                            // 7: one volume for every game (SetGameVolume sets GfbgConfig.gameVolume; no struct changed)
 #define GFBG_PCM        4096                  // mono samples GetPcm returns, at 48 kHz (Spectrum::N)
 #define GFBG_RATE       48000
 
@@ -41,7 +42,7 @@ typedef enum {
     GfbgCmd_SetConfig    = 12,  // in GfbgConfig
     GfbgCmd_GetTrackInfo = 13,  // out buffer GfbgTrackInfo
     GfbgCmd_GetGameVolume = 14, // → GfbgGameVolume
-    GfbgCmd_SetGameVolume = 15, // in float: the game in front's volume, remembered for that game
+    GfbgCmd_SetGameVolume = 15, // in float: every game's volume (GfbgConfig.gameVolume), with a game in front or not (protocol 7)
     GfbgCmd_SetSleep     = 16,  // in float seconds until the music fades out and pauses; 0 turns the timer off
     GfbgCmd_GetEq        = 17,  // → GfbgEq (gfeqcfg.h)
     GfbgCmd_SetEq        = 18,  // in GfbgEq: the player keeps it (bg-config.txt) and bumps GfbgState.eqGen
@@ -120,7 +121,7 @@ typedef struct {
     u8 onReturn;       // ... when it comes back from the HOME menu, never having closed (protocol 3; was padding)
     float fadeOut;     // seconds
     float fadeIn;      // seconds
-    float gameVolume;  // the volume of games that have none of their own (SetGameVolume)
+    float gameVolume;  // every game's volume (SetGameVolume)
     u32 reserved[4];   // [0] volume levelling's mode (GfbgLevel)
     // protocol 5
     float crossfade;   // seconds, 0 off
@@ -158,8 +159,8 @@ typedef enum { GfbgListStart_Continue = 0, GfbgListStart_Shuffle = 1 } GfbgListS
 
 typedef struct {
     u64 programId;     // the game in front, 0 on the HOME menu (or when it is Gatefold)
-    float volume;      // its volume now
-    u32 own;           // it has a volume of its own, not the default
+    float volume;      // the one volume every game has (GfbgConfig.gameVolume), a game in front or not
+    u32 own;           // always 0 since protocol 7 (was: the game has a volume of its own)
 } GfbgGameVolume;
 
 typedef struct {

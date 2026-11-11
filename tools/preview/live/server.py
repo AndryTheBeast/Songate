@@ -114,6 +114,14 @@ class App:
             env.pop(k, None)
         env.update(GF_ROOT=str(CARD), GF_ROMFS=str(PROJECT / 'romfs'), GF_STREAM=f'127.0.0.1:{APP_PORT}',
                    GF_PROTECT='sdmc:/Music')
+        # out-live/env.txt, when it is there: the preview's own switches for this environment, KEY=VALUE a line (GF_FAKEUPDATE=2.0.0
+        # lists a release that is not out, GF_JOBS=1 the work's cards): launch.json cannot pass them. Delete the file to end it
+        extra = LIVE / 'env.txt'
+        if extra.exists():
+            for line in extra.read_text(encoding='utf-8').splitlines():
+                k, eq, v = line.strip().partition('=')
+                if eq and k.startswith('GF_') and k not in ('GF_ROOT', 'GF_ROMFS', 'GF_STREAM', 'GF_PROTECT'):
+                    env[k] = v
         out = open(LIVE / 'app-log.txt', 'ab')
         out.write(f'\n==== {time.ctime()} build {self.build}\n'.encode())
         out.flush()

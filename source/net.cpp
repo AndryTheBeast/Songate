@@ -130,6 +130,12 @@ bool run(const std::string& url, Sink& sink, std::string& err, const std::string
     }
     curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 2L);
+#ifdef GF_ANDROID
+    // Android's own certificates, said here: the path built into this curl was rewritten by the shell that built it
+    // (tools/android/build-deps.sh under MSYS: "C:/devkitPro/msys2/system/etc/security/cacerts"), so every https request ended
+    // in "Problem with the SSL CA cert": updates, lyrics online, Last.fm (found 2026-11-11, on the emulator)
+    curl_easy_setopt(c, CURLOPT_CAPATH, "/system/etc/security/cacerts");
+#endif
     curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 20L);
     curl_easy_setopt(c, CURLOPT_LOW_SPEED_LIMIT, 64L);   // under 64 bytes a second for 30 s: give up
     curl_easy_setopt(c, CURLOPT_LOW_SPEED_TIME, 30L);

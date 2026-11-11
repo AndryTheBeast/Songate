@@ -26,7 +26,10 @@ Grid gridOf(float x, float w) {   // (as the library's grids: view_grid.cpp)
 }
 
 // the list views' sizes (view_tracks.cpp's)
-constexpr float RowH = 40, CovRowH = 60, GroupH = 76, ColHeadH = 38;
+constexpr float CovRowH = 60, GroupH = 76, ColHeadH = 38;
+// (a phone upright: the plain row holds two lines, the title over the artist, and at 40 they ran into each other; the user,
+// 2026-11-11: "super close one song to another compared to landscape". 52 there, as before everywhere else)
+#define RowH (css::W < 600 ? 52.f : 40.f)
 struct Tiles { int cols; float w, cover, h; };
 Tiles tilesFor(float w) {
     const float inner = w - 32;
@@ -525,15 +528,20 @@ void App::applyServerPlaylistOrder() {
 
 /** Move on the server's Playlists page: the playlist goes from one place to another, and the whole order is written (once a move,
  *  through the writer thread) so the page and the sidebar keep it. */
-void App::moveServerPlaylist(int from, int to) {
+void App::moveServerPlaylist(int from, int to, bool save) {
     const int n = int(srvPlaylists_.size());
     if (from < 0 || from >= n || to < 0 || to >= n || from == to) return;
     const Subsonic::Playlist moved = srvPlaylists_[size_t(from)];
     srvPlaylists_.erase(srvPlaylists_.begin() + from);
     srvPlaylists_.insert(srvPlaylists_.begin() + to, moved);
     srvPlOrder_.clear();
+    for (const auto& p : srvPlaylists_) srvPlOrder_.push_back(p.id);
+    if (save) saveServerPlaylistOrder();   // (not at each step of a row held: when it is put down, or the finger lifts)
+}
+
+void App::saveServerPlaylistOrder() {
     std::string out;
-    for (const auto& p : srvPlaylists_) { srvPlOrder_.push_back(p.id); out += p.id + "\n"; }
+    for (const auto& id : srvPlOrder_) out += id + "\n";
     store.writeFile("server-playlist-order.tsv", std::move(out));
 }
 
@@ -597,18 +605,31 @@ void App::drawServerPlaylists(float x, float y, float w, float h, float cy, floa
     auto info = [](const Subsonic::Playlist& p) { return std::to_string(p.songs) + (p.songs == 1 ? " track" : " tracks"); };
     // picked up with its menu's Move (the server's own list, not search's): lifted, the accent around it, as yours
     const int held = !list && grab.kind == Grab::SrvPlaylists ? grab.pos : -1;
+    // In sort mode (by touch), as your own Playlists page: a tile dragged whole, a row by its handle in the chevron's place
+    const bool sort = !list && sorting(Grab::SrvPlaylists);
+    const int floats = sort ? (tsort_.held >= 0 ? tsort_.held : tsort_.settle) : -1;
+    ScrollArea& psa = area("playlists");
     if (mode == ListMode::Grid || mode == ListMode::Albums) {
         const float inner = w - 32;
         const int cols = std::max(2, int(inner / 200));
         const float tw = inner / cols, th = 10 + (tw - 20) + 8 + 20 + 2 + 18 + 10;
         if (held >= 0) grab.cols = cols;   // the D-pad moves a held tile along the grid
-        for (int k = 0; k < n; k++) {
-            const float tx = x + 16 + (k % cols) * tw, ty = cy + (k / cols) * th;
+        auto slot = [&](int k) -> SDL_FRect { return { x + 16 + (k % cols) * tw, cy + (k / cols) * th, tw, th }; };
+        if (sort) sortRun(n, 0, n - 1, psa, slot, true);
+        for (int kk = 0; kk <= n; kk++) {
+            const bool fl = kk == n;   // (after the others: the tile held, or settling)
+            if (fl && (floats < 0 || floats >= n)) break;
+            const int k = fl ? floats : kk;
+            if (!fl && k == floats) continue;
+            const SDL_FPoint at = sort ? sortAt(k, slot(k)) : SDL_FPoint{ x + 16 + (k % cols) * tw, cy + (k / cols) * th };
+            const float tx = at.x, ty = at.y;
             const Subsonic::Playlist& p = (*pls)[size_t(k)];
             if (ty + th < y - th || ty > y + h + th) continue;   // (a row past each edge stays an item: the D-pad's next stop)
             const Id tid = uid("pls.srv", int(uid(p.id) & 0x7fffffff));
+            if (fl) sortFloatBox(tx, ty, tw, th, 14);
             if (k == held) g.roundRect(tx, ty, tw, th, 14, pal.accent, 0.14f);
-            if (serverTile(tid, p.cover, tx, ty, tw, false, p.name, info(p), k == 0 ? DefaultFocus : 0, ICON_LIST)) openServer(5, p.id, p.name);
+            if (serverTile(tid, p.cover, tx, ty, tw, false, p.name, info(p), k == 0 ? DefaultFocus : 0, ICON_LIST) && !sort) openServer(5, p.id, p.name);
+            if (sort) sortGrip("pls.srvsort", k, { tx, ty, tw, th }, { tx, ty, tw, th });   // (over the tile: the whole of it drags)
             if (k == held) g.roundStroke(tx, ty, tw, th, 14, 2, pal.accent, 0.95f);
             if (ui.focused(tid)) hov(k);
             g.roundRect(tx + 18, ty + 18, 30, 30, 9, pal.bg, 0.72f);   // its icon, small, over the cover's corner: what the sidebar shows (as yours)
@@ -619,11 +640,18 @@ void App::drawServerPlaylists(float x, float y, float w, float h, float cy, floa
     }
     const float rowH = mode == ListMode::List ? 52 : 64, cov = rowH - 4 - 16;
     if (held >= 0) grab.cols = 1;
-    for (int k = 0; k < n; k++) {
+    auto slot = [&](int k) -> SDL_FRect { return { x + 14, cy + k * rowH, w - 28, rowH }; };
+    if (sort) sortRun(n, 0, n - 1, psa, slot, false);
+    for (int kk = 0; kk <= n; kk++) {
+        const bool fl = kk == n;   // (after the others: the row held, or settling)
+        if (fl && (floats < 0 || floats >= n)) break;
+        const int k = fl ? floats : kk;
+        if (!fl && k == floats) continue;
         const Subsonic::Playlist& p = (*pls)[size_t(k)];
-        const float ry = cy + k * rowH, rx = x + 14, rw = w - 28;
+        const float ry = sort ? sortAt(k, slot(k)).y : cy + k * rowH, rx = x + 14, rw = w - 28;
         const Id id = uid("pls.srv", int(uid(p.id) & 0x7fffffff));
-        if (ui.item(id, { rx, ry, rw, rowH - 4 }, 10, k == 0 ? DefaultFocus : 0)) openServer(5, p.id, p.name);
+        if (fl) sortFloatBox(rx, ry, rw, rowH - 4, 10);
+        if (ui.item(id, { rx, ry, rw, rowH - 4 }, 10, k == 0 ? DefaultFocus : 0) && !sort) openServer(5, p.id, p.name);
         if (ui.focused(id)) hov(k);
         if (ry + rowH < y - rowH || ry > y + h + rowH) continue;
         if (k == held) {
@@ -641,7 +669,8 @@ void App::drawServerPlaylists(float x, float y, float w, float h, float cy, floa
             g.text(p.name, { css::Base, Weight::SemiBold }, tx, mid - 19, pal.text, 1, Align::Left, int(rw - 160));
             g.text(info(p), { css::Sm }, tx, mid + 1, pal.text3, 1, Align::Left, int(rw - 160));
         }
-        g.icon(ICON_CHEV, rx + rw - 24, mid, 18, pal.text3);
+        if (sort) sortHandle("pls.srvsort", k, rx + rw - 14, mid, { rx, ry, rw, rowH - 4 });   // (in the chevron's place)
+        else g.icon(ICON_CHEV, rx + rw - 24, mid, 18, pal.text3);
     }
     area("playlists").content = cy - oy + n * rowH + 24;
 }
@@ -879,15 +908,30 @@ void App::drawServerQueue(float x, float y, float w, float h) {
         std::shuffle(v.begin(), v.end(), rng);
         playServer(v, 0, srvq_.name);
     }
-    clicked = false;
-    bx += button(uid("srv.qcur"), ICON_DISC, "Current song", bx, by, false, &clicked) + 8;
+    // narrow (a phone upright): Current song and Clear round, with their icons only and their names as hints, as the local
+    // Playlist page has them there (labelled, Clear ran off the side)
+    auto act = [&](const char* key, const char* icon, const char* label) {
+        if (!narrow) { bool c = false; bx += button(uid(key), icon, label, bx, by, false, &c) + 8; return c; }
+        const Id aid = uid(key);
+        hint(aid, label);
+#ifdef GF_ANDROID
+        const bool c = ui.item(aid, { bx - 4, by - 4, 42, 42 }, 21);   // a finger: 42 (drawn the same)
+#else
+        const bool c = ui.item(aid, { bx, by, 34, 34 }, 17);
+#endif
+        g.roundRect(bx, by, 34, 34, 17, pal.text, ui.pressed(aid) || (ui.focused(aid) && ui.showFocusRing()) ? 0.11f : 0.065f);
+        g.roundStroke(bx, by, 34, 34, 17, 1, pal.text, 0.15f);
+        g.icon(icon, bx + 17, by + 17, 16, pal.text);
+        bx += 34 + 8;
+        return c;
+    };
+    clicked = act("srv.qcur", ICON_DISC, "Current song");
     if (clicked && srvq_.pos >= 0) {   // glides to the one playing
         const std::vector<ListEntry> layout = serverLayout(srvq_.songs, order, w, ListMode(mode));
         sa.target = headH + listRowY(layout, srvq_.pos) - (h - 40) / 2;
         sa.clamp();
     }
-    clicked = false;
-    bx += button(uid("srv.qclear"), ICON_X, "Clear", bx, by, false, &clicked) + 8;
+    clicked = act("srv.qclear", ICON_X, "Clear");
     viewSwitch("srv.qview", x + w - 28, narrow ? by + 34 + 10 + 18 : by + 17, mode);
     store.viewPlaylist = mode;
     // (no letter rail: the queue keeps its play order, as the library's Playlist tab)
@@ -1229,7 +1273,7 @@ bool App::serverRow(Id id, const Subsonic::Song& t, int number, float x, float y
         const float tw = w - (tx - x) - 64;
         g.text(t.title, { css::Base, playing ? Weight::SemiBold : Weight::Regular }, tx, cy - 20, playing ? pal.accentInk : pal.text, 1, Align::Left, int(tw));
         g.text(t.artist + (t.album.empty() ? "" : " · " + t.album), { css::Sm }, tx, cy + 2, pal.text3, 1, Align::Left, int(tw));
-        g.textNumC(dur, { css::Sm }, x + w - 16, cy, pal.text3, 1, Align::Right);
+        if (!rowBare_) g.textNumC(dur, { css::Sm }, x + w - 16, cy, pal.text3, 1, Align::Right);
         return hit;
     }
     const float pad = 16, gap = 14, inner = w - pad * 2;
@@ -1254,7 +1298,7 @@ bool App::serverRow(Id id, const Subsonic::Song& t, int number, float x, float y
             cx += 64 + gap;
             g.textC(t.genre, { css::Base }, cx, cy, pal.text2, 1, Align::Left, int(fr));
         }
-        g.textNumC(dur, { css::Sm }, x + w - pad, cy, pal.text3, 1, Align::Right);
+        if (!rowBare_) g.textNumC(dur, { css::Sm }, x + w - pad, cy, pal.text3, 1, Align::Right);
         return hit;
     }
     const float fixed = 44 + 64 + gap * 4, fr = (inner - fixed) / 3.6f;
@@ -1264,7 +1308,7 @@ bool App::serverRow(Id id, const Subsonic::Song& t, int number, float x, float y
     cx += fr + gap;
     g.textC(t.album, { css::Base }, cx, cy, pal.text2, 1, Align::Left, int(fr));
     cx += fr + gap;
-    g.textNumC(dur, { css::Sm }, cx + 64, cy, pal.text3, 1, Align::Right);
+    if (!rowBare_) g.textNumC(dur, { css::Sm }, cx + 64, cy, pal.text3, 1, Align::Right);
     return hit;
 }
 
@@ -1319,6 +1363,46 @@ float App::drawServerBody(const char* key, const std::vector<Subsonic::Song>& al
                           float clipH, ListMode mode, bool extended, const std::function<void(int)>& play) {
     const std::vector<ListEntry> layout = serverLayout(all, order, w, mode);
     const Tiles tl = tilesFor(w);
+    bodyCols = mode == ListMode::Grid ? tl.cols : 1;
+    // In sort mode (by touch), as drawTrackBody: handles in the place of the rows' lengths, tiles dragged whole (bodySortArea)
+    ScrollArea* const sortArea = bodySortArea;
+    const bool sort = sortArea != nullptr;
+    const std::string rk = std::string(key) + ".r", sk = std::string(key) + ".sort";
+    const int n = int(order.size());
+    const bool covers = mode == ListMode::Covers, grid = mode == ListMode::Grid;
+    const float tileH = 8 + tl.cover + 10 + 20 + 18 + 6, rowPitch = covers ? CovRowH : RowH;
+    auto slot = [&](int i) -> SDL_FRect {
+        if (grid) return { x + 16 + (i % tl.cols) * tl.w, top + (i / tl.cols) * tl.h, tl.w, tl.h };
+        return { x + 14, top + ColHeadH + i * rowPitch, w - 28, rowPitch };
+    };
+    if (sort) sortRun(n, 0, n - 1, *sortArea, slot, grid);
+    const int floats = sort ? (tsort_.held >= 0 ? tsort_.held : tsort_.settle) : -1;
+    auto item = [&](int i, float px, float py, bool fl) {
+        const Id id = uid(rk, i);
+        const Subsonic::Song& so = all[size_t(order[size_t(i)])];
+        if (grid) {
+            if (fl) sortFloatBox(px, py, tl.w, tileH, 14);
+            if (i == bodyGrab) {   // picked up (Move): lifted, the accent around it
+                g.roundRect(px, py, tl.w, tileH, 14, pal.accent, 0.14f);
+                g.roundStroke(px, py, tl.w, tileH, 14, 2, pal.accent, 0.95f);
+            }
+            const bool hit = serverTrackTile(id, so, px, py, tl.w, tl.cover);
+            if (sort) sortGrip(sk.c_str(), i, { px, py, tl.w, tileH }, { px, py, tl.w, tileH });   // (over the tile: the whole of it drags)
+            else if (hit) play(i);
+        } else {
+            const float rh = covers ? rowPitch - 4 : rowPitch, rad = covers ? 10.f : 8.f;
+            if (fl) sortFloatBox(px, py, w - 28, rh, rad);
+            if (i == bodyGrab) {   // picked up (Move): lifted, the accent around it
+                g.roundRect(px, py, w - 28, rh, rad, pal.accent, 0.14f);
+                g.roundStroke(px, py, w - 28, rh, rad, 2, pal.accent, 0.95f);
+            }
+            rowBare_ = sort;
+            const bool hit = serverRow(id, so, i + 1, px, py, w - 28, rowPitch, covers, extended);
+            rowBare_ = false;
+            if (sort) sortHandle(sk.c_str(), i, px + w - 28 - 16, py + rh / 2, { px, py, w - 28, rh });   // (a tap on the row plays nothing meanwhile)
+            else if (hit) play(i);
+        }
+    };
     float height = 0;
     for (const auto& e : layout) {
         height = std::max(height, e.y + e.h);
@@ -1327,23 +1411,27 @@ float App::drawServerBody(const char* key, const std::vector<Subsonic::Song>& al
         switch (e.kind) {
         case ListEntry::ColumnHead: listColumns(x, ey, w, mode, extended); break;
         case ListEntry::GroupHead: serverGroupHead(key, e.index, all, order, x + 14, ey, w - 28); break;
-        case ListEntry::Row:
-            if (e.index == bodyGrab) {   // picked up (Move): lifted, the accent around it
-                const float rh = mode == ListMode::Covers ? e.h - 4 : e.h;
-                g.roundRect(x + 14, ey, w - 28, rh, mode == ListMode::Covers ? 10.f : 8.f, pal.accent, 0.14f);
-                g.roundStroke(x + 14, ey, w - 28, rh, mode == ListMode::Covers ? 10.f : 8.f, 2, pal.accent, 0.95f);
-            }
-            if (serverRow(uid(std::string(key) + ".r", e.index), all[size_t(order[size_t(e.index)])], e.index + 1, x + 14, ey, w - 28, e.h,
-                          mode == ListMode::Covers, extended))
-                play(e.index);
+        case ListEntry::Row: {
+            if (e.index == floats) break;
+            const SDL_FPoint at = sort ? sortAt(e.index, slot(e.index)) : SDL_FPoint{ x + 14, ey };
+            item(e.index, at.x, at.y, false);
             break;
+        }
         case ListEntry::TileRow:
-            for (int c2 = 0; c2 < tl.cols && e.index + c2 < int(order.size()); c2++) {
+            for (int c2 = 0; c2 < tl.cols && e.index + c2 < n; c2++) {
                 const int i = e.index + c2;
-                if (serverTrackTile(uid(std::string(key) + ".r", i), all[size_t(order[size_t(i)])], x + 16 + c2 * tl.w, ey, tl.w, tl.cover)) play(i);
+                if (i == floats) continue;
+                const SDL_FPoint at = sort ? sortAt(i, slot(i)) : SDL_FPoint{ x + 16 + c2 * tl.w, ey };
+                item(i, at.x, at.y, false);
             }
             break;
         }
+    }
+    if (floats >= 0 && floats < n) {   // lifted off the page, over the others (its shadow not cut at the list's sides)
+        const SDL_FPoint at = sortAt(floats, slot(floats));
+        g.clip(x - 8, clipY, w + 16, clipH);
+        item(floats, at.x, at.y, true);
+        g.clip(x, clipY, w, clipH);
     }
     return height + 24;
 }
@@ -1817,7 +1905,8 @@ void App::drawServer(float x, float y, float w, float h, bool inLibrary) {
             g.text(title, { css::Lg, Weight::Bold }, x + 28 + cs + 16, cyTop + 32, pal.text, 1, Align::Left, int(w - cs - 72));
             g.text(meta, { css::Sm }, x + 28 + cs + 16, cyTop + 62, pal.text3, 1, Align::Left, int(w - cs - 72));
         }
-        const float by = narrow ? cyTop + cs + 14 : cyTop + 120 - 34;
+        float by = narrow ? cyTop + cs + 14 : cyTop + 120 - 34;
+        const float by1 = by;   // Play and Shuffle's line
         float bx = tx;
         bool clicked = false;
         bx += button(uid("srv.plplay"), ICON_PLAY, "Play", bx, by, true, &clicked, false, false, DefaultFocus) + 8;
@@ -1825,12 +1914,28 @@ void App::drawServer(float x, float y, float w, float h, bool inLibrary) {
         clicked = false;
         bx += button(uid("srv.plshuffle"), ICON_SHUFFLE, "Shuffle", bx, by, false, &clicked) + 8;
         if (clicked && !pg.songs.empty()) playServer(shuffled(pg.songs), 0, title);
-        clicked = false;
-        bx += button(uid("srv.plrename"), ICON_TAG, "Rename", bx, by, false, &clicked) + 8;
-        if (clicked) serverRenamePlaylist(id, title);
-        clicked = false;
-        bx += button(uid("srv.plsave"), ICON_PLUS, "Save to " GF_THIS_CARD, bx, by, false, &clicked) + 8;
-        if (clicked && pg.have) savePlaylistHere(title, pg.songs);
+        // a phone upright: the four round actions on the line under Play and Shuffle, at its left, the views at its right, as
+        // your own playlists' page (the user, 2026-11-11); where they would not fit beside the views they stay beside Shuffle
+        if (narrow && tx + 4 * 42.f + 4 + (6 + 38.f * 4) <= x + w - 28) { bx = tx; by = by1 + 34 + 10 + 1; }
+        // narrow (a phone upright): the actions after Play and Shuffle round, with their icons only and their names as hints, as
+        // your own playlists' page has them there (labelled, Save ran off the side and Delete could not be reached)
+        auto act = [&](const char* key, const char* icon, const char* label, bool danger = false) {
+            if (!narrow) { bool c = false; bx += button(uid(key), icon, label, bx, by, false, &c, false, danger) + 8; return c; }
+            const Id aid = uid(key);
+            hint(aid, label);
+#ifdef GF_ANDROID
+            const bool c = ui.item(aid, { bx - 4, by - 4, 42, 42 }, 21);   // a finger: 42 (drawn the same)
+#else
+            const bool c = ui.item(aid, { bx, by, 34, 34 }, 17);
+#endif
+            g.roundRect(bx, by, 34, 34, 17, pal.text, ui.pressed(aid) || (ui.focused(aid) && ui.showFocusRing()) ? 0.11f : 0.065f);
+            g.roundStroke(bx, by, 34, 34, 17, 1, pal.text, 0.15f);
+            g.icon(icon, bx + 17, by + 17, 16, danger ? dangerInk() : pal.text);
+            bx += 34 + 8;
+            return c;
+        };
+        if (act("srv.plrename", ICON_TAG, "Rename")) serverRenamePlaylist(id, title);
+        if (act("srv.plsave", ICON_PLUS, "Save to " GF_THIS_CARD) && pg.have) savePlaylistHere(title, pg.songs);
         {   // its sidebar icon, as a round button wearing it: the icon grid opens at once (as yours)
             const Id iid = uid("srv.plicon");
             hint(iid, "The playlist's icon");
@@ -1847,17 +1952,21 @@ void App::drawServer(float x, float y, float w, float h, bool inLibrary) {
             g.icon(serverPlaylistIcon(id), bx + 17, by + 17, 18, pal.accentInk);   // (18: an even size lands on whole pixels; at 17 a round mark sat half a pixel off)
             bx += 34 + 8;
         }
-        clicked = false;
-        bx += button(uid("srv.pldel"), ICON_X, "Delete", bx, by, false, &clicked, false, true) + 8;   // (always the last, as on yours)
-        if (clicked) serverDeletePlaylist(id, title, int(pg.songs.size()));
+        if (act("srv.pldel", ICON_X, "Delete", true)) serverDeletePlaylist(id, title, int(pg.songs.size()));   // (always the last, as on yours)
         int mode = store.viewPlaylist;
-        viewSwitch("srv.plview", x + w - 28, narrow ? by + 34 + 10 + 18 : by + 17, mode);
+        viewSwitch("srv.plview", x + w - 28, narrow ? by1 + 34 + 10 + 18 : by1 + 17, mode);
         store.viewPlaylist = mode;
         std::vector<int> order(pg.songs.size());
         for (size_t i = 0; i < order.size(); i++) order[i] = int(i);
         bodyGrab = grab.kind == Grab::SrvList && srvGrabPl_ == id ? grab.pos : -1;
+        // in sort mode (by touch): handles on its rows, tiles dragged whole; By album shows With covers meanwhile (as yours)
+        const bool sortHere = sorting(Grab::SrvList) && tsort_.srvPl == id;
+        const ListMode bodyMode = sortHere && ListMode(mode) == ListMode::Albums ? ListMode::Covers : ListMode(mode);
+        bodySortArea = sortHere ? &sa : nullptr;
         // (no letter rail: a playlist has its own order; the user, 2026-11-10)
-        const float bodyH = drawServerBody("srv.plt", pg.songs, order, x, oy + headH, w, y, h, ListMode(mode), false, [&](int i) { playServer(pg.songs, i, title); });
+        const float bodyH = drawServerBody("srv.plt", pg.songs, order, x, oy + headH, w, y, h, bodyMode, false, [&](int i) { playServer(pg.songs, i, title); });
+        bodySortArea = nullptr;
+        if (bodyGrab >= 0) grab.cols = bodyCols;   // (tiles: the D-pad moves a held one along the grid)
         bodyGrab = -1;
         if (pg.have && pg.songs.empty())
             g.textC("This playlist has no songs: add them from a song's menu (" GF_MENU_KEY ")", { css::Base }, x + w / 2, oy + headH + 70, pal.text3, 1, Align::Center);
@@ -2287,7 +2396,7 @@ void App::drawServerSearch(float x, float y, float w, float h) {
         if (pls) for (const Subsonic::Playlist& p : *pls) if (wordsIn(words, p.name)) fPls.push_back(p);
     }
     // (no Lyrics: the server's songs carry none to read; upright there is no tab bar, so a tab chosen on a wide screen is not kept: Songs)
-    const int tab = w < kNarrowList ? 0 : std::min(searchTab_, 4);
+    const int tab = w < kNarrowList && !phoneSearchTabs() ? 0 : std::min(searchTab_, 4);   // (a phone upright has the tabs over this page: view_phone.cpp)
     static const std::vector<std::string> names = { "Songs", "Albums", "Artists", "Genres", "Playlists" };
     const bool loading = tab == 0 ? !songs : tab == 1 ? serverAlbumsGen_ == ~0u : tab == 2 ? !arts : tab == 3 ? !gens : !pls;
     auto cnt = [](size_t n, const char* one, const char* many) { return std::to_string(n) + " " + (n == 1 ? one : many); };
@@ -2304,10 +2413,12 @@ void App::drawServerSearch(float x, float y, float w, float h) {
     // the head, the local search page's (view_lists.cpp drawTrackList): the quad, Search, the words, the count; Play, Shuffle, New search
     const bool narrow = w < kNarrowList;
     const float cs = narrow ? 96.f : 120.f;
-    const float headH = narrow ? 18 + cs + 14 + 34 + 16 : 18 + 120 + 14;
+    const bool tabsLine = searchTabsOwnLine(w, names);
+    const float headH = narrow ? 18 + cs + 14 + 34 + 16 : 18 + 120 + 14 + (tabsLine ? kSearchTabsLineH : 0.f);
     ScrollArea& sa = area("srv.search");
     sa.view = { x, y, w, h };
     ui.pushArea(&sa);
+    if (narrow) g.clip(x, y, w, h);   // (a phone upright: the field and the tabs are over this list, as the local search page)
     const float oy = y - sa.y, cx = x + 28, cyTop = oy + 18;
     {
         std::vector<std::string> cv;
@@ -2348,12 +2459,12 @@ void App::drawServerSearch(float x, float y, float w, float h) {
             playServer(v, 0, playName);
         }
     }
-    clicked = false;
-    bx += button(uid("pl.search"), ICON_SEARCH, "New search", bx, by, false, &clicked) + 8;
-    if (clicked) openSearch();
+    clicked = false;   // (no New search, as the local page: the field is always there)
     // the views at the right (the tab's page's), the filter tabs left of them, as the local page
     float segRight = x + w - 28;
-    if (tab == 0) {
+    if (narrow && tab == 0 && phoneSearchTabs()) {
+        // (upright: no views beside Play, Shuffle and New search, as the local search page there)
+    } else if (tab == 0) {
         int m = store.viewPlaylist;
         segRight -= viewSwitch("pl.view", x + w - 28, by + 17, m) + 12;
         if (m != store.viewPlaylist) { store.viewPlaylist = m; persistSoon(0.3f); }
@@ -2369,7 +2480,12 @@ void App::drawServerSearch(float x, float y, float w, float h) {
     if (!narrow) {
         segRight = x + w - 28 - (6 + 38.f * 4) - 12;   // (in one place whatever the tab's views)
         int picked = -1;
-        segmented(uid("pl.stab"), segRight, by + 17, names, tab, &picked, 0, 0, 0, 34);
+        if (tabsLine) {   // (searchTabsOwnLine)
+            float sw = 6;
+            for (const auto& t : names) sw += g.measure(t, { css::Sm, Weight::SemiBold }) + 26;
+            segmented(uid("pl.stab"), cx + sw, cyTop + 120 + 12 + 17, names, tab, &picked, 0, 0, 0, 36);
+        } else
+        segmented(uid("pl.stab"), segRight, by + 17, names, tab, &picked, 0, 0, 0, 36);
         if (picked >= 0 && picked != tab) { searchTab_ = picked; sa.target = sa.y = 0; }
     }
 

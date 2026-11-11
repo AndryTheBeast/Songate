@@ -14,6 +14,11 @@
 #include <shlobj.h>
 #include <shellapi.h>
 #include <shobjidl.h>
+#include <winioctl.h>
+#include <setupapi.h>
+#include <devguid.h>
+#include <batclass.h>
+#pragma comment(lib, "setupapi.lib")
 
 #include <SDL2/SDL.h>
 
@@ -23,6 +28,10 @@
 #include <ctime>
 #include <string>
 #include <vector>
+#include <atomic>
+#include <cmath>
+#include <mutex>
+#include <thread>
 
 #include "platform.hpp"
 #include "winpath.hpp"
@@ -307,7 +316,104 @@ bool batteryRaw(double& percent, bool& charging) {
     return true;
 }
 
-bool batteryInfo(BatteryInfo&) { return false; }   // (the Switch's for now: BETA 3)
+// The battery beyond its charge, from its driver (the battery class's IOCTLs: what Windows' own battery report reads). Every
+// battery present is asked; a laptop with two has their energy and power added. What a battery does not answer is marked missing
+// and left out (platform.hpp). The driver can take a while (it asks the embedded controller), so a thread of its own reads it and
+// the frame only ever takes the last answer.
+namespace {
+bool readBatteries(BatteryInfo& o) {
+    o = BatteryInfo{};
+    o.chargerKnown = false;
+    o.wattHours = true;
+    const HDEVINFO set = SetupDiGetClassDevsW(&GUID_DEVCLASS_BATTERY, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+    if (set == INVALID_HANDLE_VALUE) return false;
+    int found = 0;
+    double designed = 0, full = 0, left = 0, rateMw = 0, tempK = 0;
+    bool rateKnown = true, relative = false;
+    for (DWORD i = 0; i < 8; i++) {
+        SP_DEVICE_INTERFACE_DATA did{};
+        did.cbSize = sizeof did;
+        if (!SetupDiEnumDeviceInterfaces(set, nullptr, &GUID_DEVCLASS_BATTERY, i, &did)) break;
+        DWORD need = 0;
+        SetupDiGetDeviceInterfaceDetailW(set, &did, nullptr, 0, &need, nullptr);
+        if (!need) continue;
+        std::vector<BYTE> buf(need);
+        auto* det = reinterpret_cast<SP_DEVICE_INTERFACE_DETAIL_DATA_W*>(buf.data());
+        det->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
+        if (!SetupDiGetDeviceInterfaceDetailW(set, &did, det, need, nullptr, nullptr)) continue;
+        const HANDLE h = CreateFileW(det->DevicePath, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        DWORD wait = 0, got = 0;
+        BATTERY_QUERY_INFORMATION q{};
+        if (DeviceIoControl(h, IOCTL_BATTERY_QUERY_TAG, &wait, sizeof wait, &q.BatteryTag, sizeof q.BatteryTag, &got, nullptr) && q.BatteryTag) {
+            BATTERY_INFORMATION bi{};
+            q.InformationLevel = BatteryInformation;
+            if (DeviceIoControl(h, IOCTL_BATTERY_QUERY_INFORMATION, &q, sizeof q, &bi, sizeof bi, &got, nullptr) &&
+                (bi.Capabilities & BATTERY_SYSTEM_BATTERY)) {   // (not a UPS, nor a mouse's)
+                BATTERY_WAIT_STATUS ws{};
+                ws.BatteryTag = q.BatteryTag;
+                BATTERY_STATUS st{};
+                if (DeviceIoControl(h, IOCTL_BATTERY_QUERY_STATUS, &ws, sizeof ws, &st, sizeof st, &got, nullptr)) {
+                    found++;
+                    if (bi.Capabilities & BATTERY_CAPACITY_RELATIVE) relative = true;   // its numbers have no unit
+                    designed += bi.DesignedCapacity;
+                    full += bi.FullChargedCapacity;
+                    if (st.Capacity != BATTERY_UNKNOWN_CAPACITY) left += st.Capacity;
+                    if (st.Voltage != BATTERY_UNKNOWN_VOLTAGE) o.volts = std::max(o.volts, st.Voltage / 1000.0);
+                    if (DWORD(st.Rate) == BATTERY_UNKNOWN_RATE) rateKnown = false; else rateMw += st.Rate;
+                    if (bi.CycleCount > 0) o.cycles = std::max(o.cycles, int(bi.CycleCount));
+                    if (st.PowerState & BATTERY_POWER_ON_LINE) o.charger = 1;
+                    ULONG t10 = 0;   // tenths of a kelvin
+                    q.InformationLevel = BatteryTemperature;
+                    if (DeviceIoControl(h, IOCTL_BATTERY_QUERY_INFORMATION, &q, sizeof q, &t10, sizeof t10, &got, nullptr) && t10 > 2000 && t10 < 4000)
+                        tempK = std::max(tempK, t10 / 10.0);
+                }
+            }
+        }
+        CloseHandle(h);
+    }
+    SetupDiDestroyDeviceInfoList(set);
+    if (!found) return false;
+    if (tempK > 0) o.tempC = tempK - 273.15; else o.missing |= 1u << 3;
+    o.missing |= 1u << 2;   // the charger's watts: Windows does not say
+    if (o.volts <= 0) o.missing |= 1u << 4;
+    if (!relative && designed > 0 && full > 0) o.healthPct = std::min(100.0, full / designed * 100); else o.missing |= 1u << 5;
+    if (!relative && rateKnown && o.volts > 0) {
+        o.gauge = true;
+        o.gaugeVolts = o.volts;
+        o.gaugeAmps = rateMw / 1000.0 / o.volts;   // (+ into the battery, − out of it)
+        if (full > 0) { o.capMah = left; o.fullMah = full; }
+        if (rateMw < -50 && left > 0) o.tteMin = int(left / -rateMw * 60);
+        else if (rateMw > 50 && full > left) o.ttfMin = int((full - left) / rateMw * 60);
+    } else o.missing |= 1u << 6;
+    if (getenv("GF_BATTERY_LOG"))   // (dev: what the driver answered)
+        fprintf(stderr, "battery: n %d designed %.0f full %.0f left %.0f mWh rate %.0f mW volts %.3f temp %.1f C cycles %d missing %X\n", found,
+                designed, full, left, rateKnown ? rateMw : -1.0, o.volts, o.tempC, o.cycles, o.missing);
+    return true;
+}
+std::mutex batLock;
+BatteryInfo batLast;
+bool batOk = false;
+std::atomic<bool> batReading{ false };
+}  // namespace
+
+bool batteryInfo(BatteryInfo& out) {
+    if (!batReading.exchange(true)) {
+        std::thread([] {
+            BatteryInfo b;
+            const bool ok = readBatteries(b);
+            {
+                std::lock_guard<std::mutex> g(batLock);
+                batLast = b;
+                batOk = ok;
+            }
+            batReading = false;
+        }).detach();
+    }
+    std::lock_guard<std::mutex> g(batLock);
+    if (batOk) out = batLast;
+    return batOk;
+}
 
 bool batteryLevel(unsigned& percent) {
     double p = 0;

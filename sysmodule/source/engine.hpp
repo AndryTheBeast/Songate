@@ -109,13 +109,10 @@ private:
     // ---- pause-for-apps
     // First-run defaults, as Gatefold's BgConfig (the user, 2026-10-28): nothing on game events, a 2 s fade out
     GfbgConfig cfg_{ GfbgAct_Nothing, GfbgAct_Nothing, GfbgAct_Nothing, GfbgAct_Nothing, 2.f, 2.f, 1.f, {}, 0.f, GfbgXfade_NotInAlbum, GfbgListStart_Continue, 0, {} };
-    // Game volume (aud:a): per program id, applied when a game comes up.
-    std::vector<std::pair<u64, float>> gameVolumes_;
+    // Game volume (aud:a): cfg_.gameVolume for every game, applied when one comes up and when it changes.
     u64 appPid_ = 0, appProgram_ = 0;   // the application now, when it is not Gatefold
-    float gameVolumeFor(u64 program) const;
     void applyGameVolume();             // m_ held
     bool volumePending_ = false;        // no connection to aud:a was free: the watcher tries again
-    void saveGameVolumes();
     u64 gatefoldPid_ = 0;
     u32 appState_ = GfbgApp_None;
 

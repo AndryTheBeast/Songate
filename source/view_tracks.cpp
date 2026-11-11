@@ -17,7 +17,10 @@
 
 namespace {
 
-constexpr float RowH = 40;        // .vrow, a little taller than the PC's 36 for fingers
+// .vrow, a little taller than the PC's 36 for fingers
+// (a phone upright: the plain row holds two lines, the title over the artist, and at 40 they ran into each other; the user,
+// 2026-11-11: "super close one song to another compared to landscape". 52 there, as before everywhere else)
+#define RowH (css::W < 600 ? 52.f : 40.f)
 constexpr float CovRowH = 60;     // .vrow.wc: --rowc 56, + 4
 constexpr float GroupH = 76;      // .vhead: --head 72, + 4
 constexpr float ColHeadH = 38;    // .list-head 30 + 8 below
@@ -91,7 +94,13 @@ float App::viewSwitch(const char* key, float rx, float cy, int& mode, unsigned h
         if (hidden & (1u << i)) continue;   // a view that means nothing here (Playlists and Folders have no "by album")
         const float bx = x0 + 3 + slot++ * bw;
         const Id id = uid(key, i);
-        if (ui.item(id, { bx, cy - h / 2 + 3, bw, h - 6 }, 9)) { mode = i; persistSoon(0.5f); }
+#ifdef GF_ANDROID
+        // a finger: the whole height of the bar and 4 more above and below, 44, as the segmented choices (drawn the same)
+        const SDL_FRect hitR{ bx, cy - h / 2 - 4, bw, h + 8 };
+#else
+        const SDL_FRect hitR{ bx, cy - h / 2 + 3, bw, h - 6 };
+#endif
+        if (ui.item(id, hitR, 9)) { mode = i; persistSoon(0.5f); }
         const bool on = mode == i, hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
         if (on) g.roundRect(bx, cy - h / 2 + 3, bw, h - 6, 9, pal.text, 0.13f);
         else if (hot) g.roundRect(bx, cy - h / 2 + 3, bw, h - 6, 9, pal.text, 0.065f);
@@ -189,7 +198,7 @@ bool App::coverRow(Id id, int track, int number, float x, float y, float w, floa
         if (playing) { g.roundRect(x + 12, cy - cov / 2, cov, cov, 7, { 0, 0, 0 }, 0.38f); eqGlyph(x + 12 + cov / 2 - 9, cy, { 1, 1, 1 }); }
         g.text(t.title, { css::Base, playing ? Weight::SemiBold : Weight::Regular }, tx, cy - 20, playing ? pal.accentInk : pal.text, 1, Align::Left, int(tw));
         g.text(t.artist + (t.album.empty() ? "" : " · " + t.album), { css::Sm }, tx, cy + 2, pal.text3, 1, Align::Left, int(tw));
-        g.textNumC(t.duration > 0 ? fmtTime(t.duration) : "", { css::Sm }, x + w - 16, cy, pal.text3, 1, Align::Right);
+        if (!rowBare_) g.textNumC(t.duration > 0 ? fmtTime(t.duration) : "", { css::Sm }, x + w - 16, cy, pal.text3, 1, Align::Right);
         return hit;
     }
     const float pad = 16, gap = 14, inner = w - pad * 2;
@@ -213,7 +222,7 @@ bool App::coverRow(Id id, int track, int number, float x, float y, float w, floa
         cx += 64 + gap;
         g.textC(t.genre, { css::Base }, cx, cy, pal.text2, 1, Align::Left, int(fr));
     }
-    g.textNumC(t.duration > 0 ? fmtTime(t.duration) : "", { css::Sm }, x + w - pad, cy, pal.text3, 1, Align::Right);
+    if (!rowBare_) g.textNumC(t.duration > 0 ? fmtTime(t.duration) : "", { css::Sm }, x + w - pad, cy, pal.text3, 1, Align::Right);
     return hit;
 }
 
@@ -281,6 +290,42 @@ float App::drawTrackBody(const char* key, const std::vector<int>& tracks, float 
         g.roundRect(rx, ry, rw, rh, rad, pal.accent, 0.14f);
         g.roundStroke(rx, ry, rw, rh, rad, 2, pal.accent, 0.95f);
     };
+    // In sort mode (by touch: App::TouchSort; the caller gives the list's scroll area in bodySortArea): each row has the sidebar
+    // sorting's handle in the place of its length, a tile is dragged whole; each is drawn where sortAt puts it (its place, sliding
+    // to it, or under the finger) and the one held last, lifted off the page. No album heads then (the caller shows With covers).
+    ScrollArea* const sortArea = bodySortArea;
+    const bool sort = sortArea != nullptr;
+    const std::string rk = std::string(key) + ".r", sk = std::string(key) + ".sort";
+    const int n = int(tracks.size());
+    const bool covers = mode == ListMode::Covers, grid = mode == ListMode::Grid;
+    const float tileH = 8 + tl.cover + 10 + 20 + 18 + 6, rowPitch = (covers ? CovRowH : RowH) + joinGap;
+    // where item i belongs (its whole place: a row with the gap under it, a tile's cell)
+    auto slot = [&](int i) -> SDL_FRect {
+        if (grid) return { x + 16 + (i % tl.cols) * tl.w, top + (i / tl.cols) * tl.h, tl.w, tl.h };
+        return { x + 14, top + ColHeadH + i * rowPitch, w - 28, rowPitch };
+    };
+    if (sort) sortRun(n, 0, n - 1, *sortArea, slot, grid);
+    const int floats = sort ? (tsort_.held >= 0 ? tsort_.held : tsort_.settle) : -1;
+    auto item = [&](int i, float px, float py, bool fl) {
+        const Id id = uid(rk, i);
+        if (grid) {
+            if (fl) sortFloatBox(px, py, tl.w, tileH, 14);
+            lifted(i, px, py, tl.w, tileH, 14);
+            const bool hit = trackTile(id, tracks[i], px, py, tl.w, tl.cover);
+            if (sort) sortGrip(sk.c_str(), i, { px, py, tl.w, tileH }, { px, py, tl.w, tileH });   // (over the tile: the whole of it drags)
+            else if (hit) play(i);
+        } else {
+            const float eh = covers ? CovRowH : RowH, rh = covers ? eh - 4 : eh, rad = covers ? 10.f : 8.f;
+            if (fl) sortFloatBox(px, py, w - 28, rh, rad);
+            lifted(i, px, py, w - 28, rh, rad);
+            rowBare_ = sort;
+            const bool hit = covers ? coverRow(id, tracks[i], i + 1, px, py, w - 28, eh, extended) : trackRow(id, tracks[i], i + 1, px, py, w - 28, eh, true);
+            rowBare_ = false;
+            if (sort) sortHandle(sk.c_str(), i, px + w - 28 - 16, py + rh / 2, { px, py, w - 28, rh });   // (a tap on the row plays nothing meanwhile)
+            else if (hit) play(i);
+        }
+        if (ui.focused(id)) bodyFocus = i;
+    };
     float height = 0;
     for (const auto& e : layout) {
         height = std::max(height, e.y + e.h);
@@ -290,24 +335,26 @@ float App::drawTrackBody(const char* key, const std::vector<int>& tracks, float 
         case ListEntry::ColumnHead: listColumns(x, ey, w, mode, extended); break;
         case ListEntry::GroupHead: groupHead(key, e.index, tracks[e.index], x + 14, ey, w - 28); break;
         case ListEntry::Row: {
-            const Id id = uid(std::string(key) + ".r", e.index);
-            lifted(e.index, x + 14, ey, w - 28, mode == ListMode::Covers ? e.h - 4 : e.h, mode == ListMode::Covers ? 10 : 8);
-            const bool hit = mode == ListMode::Covers ? coverRow(id, tracks[e.index], e.index + 1, x + 14, ey, w - 28, e.h, extended)
-                                                      : trackRow(id, tracks[e.index], e.index + 1, x + 14, ey, w - 28, e.h, true);
-            if (ui.focused(id)) bodyFocus = e.index;
-            if (hit) play(e.index);
+            if (e.index == floats) break;
+            const SDL_FPoint at = sort ? sortAt(e.index, slot(e.index)) : SDL_FPoint{ x + 14, ey };
+            item(e.index, at.x, at.y, false);
             break;
         }
         case ListEntry::TileRow:
-            for (int c = 0; c < tl.cols && e.index + c < int(tracks.size()); c++) {
+            for (int c = 0; c < tl.cols && e.index + c < n; c++) {
                 const int i = e.index + c;
-                const Id id = uid(std::string(key) + ".r", i);
-                lifted(i, x + 16 + c * tl.w, ey, tl.w, 8 + tl.cover + 10 + 20 + 18 + 6, 14);
-                if (trackTile(id, tracks[i], x + 16 + c * tl.w, ey, tl.w, tl.cover)) play(i);
-                if (ui.focused(id)) bodyFocus = i;
+                if (i == floats) continue;
+                const SDL_FPoint at = sort ? sortAt(i, slot(i)) : SDL_FPoint{ x + 16 + c * tl.w, ey };
+                item(i, at.x, at.y, false);
             }
             break;
         }
+    }
+    if (floats >= 0 && floats < n) {   // lifted off the page, over the others (its shadow not cut at the list's sides)
+        const SDL_FPoint at = sortAt(floats, slot(floats));
+        g.clip(x - 8, clipY, w + 16, clipH);
+        item(floats, at.x, at.y, true);
+        g.clip(x, clipY, w, clipH);
     }
     return height + 24;
 }

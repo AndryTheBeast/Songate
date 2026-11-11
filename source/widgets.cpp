@@ -489,7 +489,7 @@ bool App::trackRow(Id id, int track, int number, float x, float y, float w, floa
         else g.textNumC(std::to_string(number), { css::Sm }, x + 12 + 28, cy, pal.text3, 1, Align::Right);
         g.text(t.title, { css::Base, playing ? Weight::SemiBold : Weight::Regular }, tx, cy - 20, playing ? pal.accentInk : pal.text, 1, Align::Left, int(tw));
         g.text(t.artist + (showAlbum && !t.album.empty() ? " · " + t.album : ""), { css::Sm }, tx, cy + 2, pal.text3, 1, Align::Left, int(tw));
-        g.textNumC(t.duration > 0 ? fmtTime(t.duration) : "", { css::Sm }, x + w - 16, cy, pal.text3, 1, Align::Right);
+        if (!rowBare_) g.textNumC(t.duration > 0 ? fmtTime(t.duration) : "", { css::Sm }, x + w - 16, cy, pal.text3, 1, Align::Right);
         return hit;
     }
 
@@ -508,7 +508,7 @@ bool App::trackRow(Id id, int track, int number, float x, float y, float w, floa
     g.textC(t.artist, { css::Base }, cx, cy, pal.text2, 1, Align::Left, int(fr));
     cx += fr + gap;
     if (showAlbum) { g.textC(t.album, { css::Base }, cx, cy, pal.text2, 1, Align::Left, int(fr)); cx += fr + gap; }
-    g.textNumC(t.duration > 0 ? fmtTime(t.duration) : "", { css::Sm }, cx + 64, cy, pal.text3, 1, Align::Right);
+    if (!rowBare_) g.textNumC(t.duration > 0 ? fmtTime(t.duration) : "", { css::Sm }, cx + 64, cy, pal.text3, 1, Align::Right);
     return hit;
 }
 
