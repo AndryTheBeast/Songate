@@ -71,7 +71,7 @@ protected:
         for (;;) {
             if (len_ - at_ < 4096 && filePos_ < dataEnd_) refill();
             if (at_ >= len_) return 0;
-            mp3dec_frame_info_t info;
+            mp3dec_frame_info_t info = {};   // (minimp3 sets only frame_bytes when it finds no frame)
             const int n = mp3dec_decode_frame(&dec_, buf_ + at_, int(len_ - at_), pcm_, &info);
             if (info.frame_bytes == 0) {
                 if (filePos_ >= dataEnd_) return 0;
@@ -180,7 +180,9 @@ private:
     /** Finds the first frame, reads Xing/Info and LAME from it, and works out the duration. */
     bool firstFrame() {
         fill(dataStart_);
-        mp3dec_frame_info_t info;
+        // (zeroed: with 16 KB or more of padding after the tag minimp3 finds no frame and sets only frame_bytes; what was on
+        // the stack then passed for the first frame's rate and channels, and the file opened as noise or at the wrong speed)
+        mp3dec_frame_info_t info = {};
         int samples = 0;
         for (int tries = 0; tries < 64; tries++) {
             if (len_ - at_ < 4096 && filePos_ < dataEnd_) refill();

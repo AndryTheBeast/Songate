@@ -605,6 +605,7 @@ bool buildM4a(FILE* in, FILE* out, const Changes& ch, Before* before, std::strin
     // what changes out, what it held noted
     std::vector<Atom> kept;
     bool coverTaken = false;
+    uint8_t trknOf[2] = { 0, 0 };   // the track number's "of N", carried into the new number (it was written as 0: lost, for Undo too)
     for (auto& k : ilst->kids) {
         std::string field;
         for (const auto& [f, v] : ch.text) { (void)v; if (m4aItem(f) == k.type || (f == "genre" && k.type == "gnre")) field = f; }
@@ -614,7 +615,10 @@ bool buildM4a(FILE* in, FILE* out, const Changes& ch, Before* before, std::strin
         Bytes p;
         if (dataOf(k, kind, p)) {
             if (coverOut) { coverTaken = true; if (before) before->coverBytes = p; }
-            else if (k.type == "trkn") { if (p.size() >= 4) noteBefore(before, field, std::to_string(uint32_t(p[2]) << 8 | p[3])); }
+            else if (k.type == "trkn") {
+                if (p.size() >= 4) noteBefore(before, field, std::to_string(uint32_t(p[2]) << 8 | p[3]));
+                if (p.size() >= 6) { trknOf[0] = p[4]; trknOf[1] = p[5]; }
+            }
             else if (k.type == "gnre") { if (p.size() >= 2) noteBefore(before, field, cleanGenre(std::to_string(int(uint32_t(p[0]) << 8 | p[1]) - 1))); }
             else noteBefore(before, field, std::string(p.begin(), p.end()));
         }
@@ -635,7 +639,7 @@ bool buildM4a(FILE* in, FILE* out, const Changes& ch, Before* before, std::strin
         if (c == ch.text.end() || c->second.empty()) continue;
         if (f == "trackNo") {
             const int n = std::clamp(atoi(c->second.c_str()), 0, 65535);
-            const Bytes p = { 0, 0, uint8_t(n >> 8), uint8_t(n), 0, 0, 0, 0 };
+            const Bytes p = { 0, 0, uint8_t(n >> 8), uint8_t(n), trknOf[0], trknOf[1], 0, 0 };
             item("trkn", 0, p);
         } else {
             Bytes p;

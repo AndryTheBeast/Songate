@@ -1306,6 +1306,8 @@ bool Engine::playRandomFolder() {
         blob_.push_back(char(0));
     }
     name_ = dir.substr(dir.rfind('/') + 1);
+    automix_ = false;   // (the queue it replaces may have been an Automix playlist: this folder was then joined by Automix,
+    mj_ = MixJoin{};    //  and the overlay refused to shuffle it; setQueue and playPlaylist set both, this did not)
     mode_ = GfbgMode_Shuffle;
     identityOrder();
     shuffle();

@@ -235,10 +235,42 @@ public class SongateActivity extends SDLActivity {
         i.setDataAndType(new Uri.Builder().scheme("content").authority(ApkProvider.AUTHORITY).appendPath(f.getName()).build(), ApkProvider.MIME);
         i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
         if (i.resolveActivity(a.getPackageManager()) == null) return false;
+        // Not yet allowed to install (the first update): Android's own "Allow from this source" page is opened for Songate, and
+        // the installer right after it, once allowed (onActivityResult). Left to the installer, it sent the user to that page
+        // and then dropped back to Songate, where Restart now had to be pressed a second time.
+        if (Build.VERSION.SDK_INT >= 26 && !a.getPackageManager().canRequestPackageInstalls()) {
+            final Intent allow = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + a.getPackageName()));
+            if (allow.resolveActivity(a.getPackageManager()) != null) {
+                pendingInstall = i;
+                a.runOnUiThread(() -> {
+                    try { a.startActivityForResult(allow, REQUEST_ALLOW_INSTALL); }
+                    catch (Exception e) {   // (no such page on this phone: the installer asks by itself, as before)
+                        pendingInstall = null;
+                        try { a.startActivity(i); } catch (Exception e2) { Log.w("Songate", "installApk: " + e2); }
+                    }
+                });
+                return true;
+            }
+        }
         a.runOnUiThread(() -> {
             try { a.startActivity(i); } catch (Exception e) { Log.w("Songate", "installApk: " + e); }
         });
         return true;
+    }
+
+    private static final int REQUEST_ALLOW_INSTALL = 4711;
+    private static Intent pendingInstall = null;   // the installer's intent, waiting for "Allow from this source"
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQUEST_ALLOW_INSTALL) return;
+        final Intent i = pendingInstall;
+        pendingInstall = null;
+        // allowed: the installer, at once. Not allowed (the user came back without it): nothing; Restart now asks again
+        if (i != null && Build.VERSION.SDK_INT >= 26 && getPackageManager().canRequestPackageInstalls()) {
+            try { startActivity(i); } catch (Exception e) { Log.w("Songate", "installApk: " + e); }
+        }
     }
 
     /** The battery beyond its charge (plat::batteryInfo), a "name=value" a line; what the phone does not say has no line:
