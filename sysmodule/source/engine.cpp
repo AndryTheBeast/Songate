@@ -106,7 +106,20 @@ void Engine::start() {
 
 void Engine::hello(u32 kind, u64 pid) {
     Lock l(&m_);
-    if (kind == GfbgClient_Gatefold) gatefoldPid_ = pid;
+    if (kind != GfbgClient_Gatefold) return;
+    gatefoldPid_ = pid;
+    // Songate itself was taken for a game until it said so (the watch thread saw its pid first) and given the game volume:
+    // its own volume back, or all it plays itself (the opening, a queue too big for this player) stays at the Game slider
+    if (pid && pid == appPid_) {
+        const bool aud = hosversionAtLeast(11, 0, 0);
+        if (R_SUCCEEDED(aud ? audaInitialize() : audoutaInitialize())) {
+            if (aud) { audaSetAudioOutputProcessMasterVolume(pid, 0, 1.0f); audaExit(); }
+            else { audoutaSetProcessMasterVolume(pid, 0, 1.0f); audoutaExit(); }
+        }
+        appPid_ = 0;
+        appProgram_ = 0;
+        volumePending_ = false;
+    }
 }
 
 GfbgState Engine::state() {

@@ -131,6 +131,8 @@ public:
     static std::string finishPending(const std::string& configDir, const std::string& self);
 #ifdef GF_WINDOWED
     std::string installerFile() const;   // the update waiting to run
+    void installerStarted();   // the installer was started now: the next Songate knows it ran (this version installed again)
+    bool installerStartedHere_ = false;
 #endif
     /** The first launch after the rebranding (1.x was Gatefold NX): its .nro, and its overlay once Songate's is in, removed
      *  (the HOME menu's homebrew and Ultrahand would list both); the settings folder stayed config/gatefold-nx then (songate-nx from BETA 2: cfgmove). Not while an

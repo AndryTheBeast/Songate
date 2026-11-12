@@ -26,6 +26,7 @@ for _ in range(20):   # the turn done before the first start (left sideways by a
 # a new user: the settings there moved aside (put back at the end), no access to the music
 run_as(f"mkdir -p files/aside; [ -d files/Songate ] && mv files/Songate files/aside/before-devtest-{stamp}; mkdir -p files/Songate; touch files/Songate/test-items")
 adb("shell", "appops", "set", "--uid", PKG, "MANAGE_EXTERNAL_STORAGE", "default")
+adb("shell", "appops", "set", PKG, "MANAGE_EXTERNAL_STORAGE", "default")   # (the package's own mode too: Android's page sets that one)
 adb("shell", "am", "start", "-W", "-n", f"{PKG}/.SongateActivity")
 for _ in range(20):   # upright again with Songate in front (Android may put a turn back while its home screen shows)
     adb("shell", "settings", "put", "system", "user_rotation", "0")

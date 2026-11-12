@@ -135,6 +135,8 @@ std::unique_ptr<Decoder> openDecoder(const char* path) {
     if (!memcmp(head + 4, "ftyp", 4)) return openMp4(path);
     if (!memcmp(head, "fLaC", 4)) return openFlac(path);
     if (!memcmp(head, "RIFF", 4) && !memcmp(head + 8, "WAVE", 4)) return openWav(path);
+    // (an ID3 tag in front of a FLAC, as some rippers write it: the FLAC reader passes over the tag itself)
+    if (!memcmp(head, "ID3", 3) && extension(path) == "flac") return openFlac(path);
     if (!memcmp(head, "ID3", 3) || (head[0] == 0xFF && (head[1] & 0xE0) == 0xE0)) return openMp3(path);
     // Odd files (an ID3 tag in front of a FLAC, MP4 without ftyp first): trust the extension.
     const std::string e = extension(path);

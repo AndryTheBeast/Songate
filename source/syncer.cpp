@@ -377,11 +377,14 @@ void Syncer::work(Job job) {
     // book, so what is missing here may be its reset, not your choice: this sync takes nothing away, and the file goes once it is in
     const bool addOnly = !readAll(dir_ + "/sync-addonly.txt").empty();
     syncdata::scan(book_, job.now, ids_, seen_, job.kinds, addOnly);
-    if (job.deleteFrom == ~uint64_t(0)) job.deleteFrom = book_.clock();
-    job.now.deleteFrom = job.deleteFrom;
+    // The switch just turned on ("Songs deleted before now stay"): "now" is known only once the other device's records are in.
+    // This device's own clock, taken here, can be behind the other's, and a song deleted there long ago then counted as
+    // deleted after the switch and was deleted here. So: this sync obeys no deletion, and the line is drawn after the merge.
+    const bool deletesFromNow = job.deleteFrom == ~uint64_t(0);
+    job.now.deleteFrom = job.deleteFrom;   // (~0 until then: no clock is above it)
     saveBook();   // true whatever happens next, and the numbers must never be used twice
     remove((dir_ + "/sync-gone.txt").c_str());
-    {
+    if (!deletesFromNow) {
         std::lock_guard<std::mutex> g(m_);
         view_.deleteFrom = job.deleteFrom;
     }
@@ -407,6 +410,11 @@ void Syncer::work(Job job) {
     syncdata::ListIds ids = ids_;
     syncdata::Seen seen = seen_;
     syncdata::Changes changes = syncdata::plan(merged, job.now, ids, seen, job.kinds);
+    if (deletesFromNow) {   // from here on: everything either device had deleted up to this sync stays
+        job.deleteFrom = merged.clock();
+        std::lock_guard<std::mutex> g(m_);
+        view_.deleteFrom = job.deleteFrom;
+    }
 
     const bool first = std::find(met_.begin(), met_.end(), job.peerId) == met_.end();
     if (first) {

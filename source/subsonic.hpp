@@ -108,6 +108,7 @@ public:
     bool starred(std::vector<Song>& out, unsigned& gen);          // a copy, and its generation (moves when stars change)
     bool isStarred(const std::string& songId);
     void star(const std::string& songId, bool on);                // here at once, on the server soon after
+    bool starPending(const std::string& songId);   // its star or unstar has not reached the server yet
     std::unordered_set<std::string> likeLedger();                 // "artist\x1ftitle" liked on both at the last sync (server-likes.tsv)
     void setLikeLedger(std::unordered_set<std::string> keys);     // kept, and written on the worker
     struct Playlist { std::string id, name, cover; int songs = 0; double duration = 0; };
@@ -183,6 +184,10 @@ private:
     std::vector<std::pair<std::string, FileInfo>> fileInfos_;
     std::vector<Song> starred_;
     std::unordered_set<std::string> starredIds_, ledger_;
+    // under m_: a star or an unstar asked for and not yet answered ok by the server (song id → starred). While one waits, the
+    // Liked ↔ starred comparison leaves that song alone: a star that never reached the server is not "liked on both"
+    std::unordered_map<std::string, bool> starPending_;
+    std::string ledgerFor_;      // under m_: the server and user the ledger was kept for ("server\tuser"); another one's is dropped
     bool haveStarred_ = false;
     unsigned starGen_ = 0;
     void loadDownloads();

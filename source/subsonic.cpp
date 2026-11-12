@@ -112,6 +112,24 @@ bool answer(const std::string& body, json::Json& out, std::string& err) {
     return false;
 }
 
+/** A stream that was saved: the song, or the server's refusal? A Subsonic server answers an error with HTTP 200 and a JSON
+ *  (or XML) body, which the download keeps like any other: that file is no song. It is removed and err says what the server said. */
+bool songArrived(const std::string& path, std::string& err) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::string head(64 * 1024, char(0));
+    head.resize(fread(head.data(), 1, head.size(), f));
+    fclose(f);
+    size_t at = 0;
+    if (head.size() >= 3 && uint8_t(head[0]) == 0xEF && uint8_t(head[1]) == 0xBB && uint8_t(head[2]) == 0xBF) at = 3;
+    while (at < head.size() && (head[at] == ' ' || head[at] == 9 || head[at] == 13 || head[at] == 10)) at++;
+    if (at < head.size() && head[at] != '{' && head[at] != '<') return true;
+    json::Json r;
+    if (at >= head.size() || head[at] != '{' || answer(head.substr(at), r, err)) err = "The server's answer could not be read";
+    remove(path.c_str());
+    return false;
+}
+
 }  // namespace
 
 // ------------------------------------------------------------------ the account
@@ -237,6 +255,7 @@ void Subsonic::signOut() {
 
 void Subsonic::clearSession() {
     later_.clear();
+    starPending_.clear();
     starred_.clear();
     starredIds_.clear();
     haveStarred_ = false;
@@ -540,9 +559,11 @@ void Subsonic::star(const std::string& songId, bool on) {
     }
     starGen_++;
     view_.gen++;
+    starPending_[songId] = on;
     tasks_.push_back({ Task::Star, songId, on ? 1 : 0 });
     wake_.notify_all();
 }
+bool Subsonic::starPending(const std::string& songId) { std::lock_guard<std::mutex> g(m_); return starPending_.count(songId) > 0; }
 std::unordered_set<std::string> Subsonic::likeLedger() { std::lock_guard<std::mutex> g(m_); return ledger_; }
 void Subsonic::setLikeLedger(std::unordered_set<std::string> keys) {
     std::lock_guard<std::mutex> g(m_);
@@ -631,7 +652,8 @@ void Subsonic::loadDownloads() {
         while (fgets(k, sizeof k, lf)) {
             std::string key = k;
             while (!key.empty() && (key.back() == '\n' || key.back() == '\r')) key.pop_back();
-            if (!key.empty()) ledger_.insert(key);
+            if (!key.empty() && key[0] == '#') ledgerFor_ = key.substr(1);   // (whose it is: the server and the user)
+            else if (!key.empty()) ledger_.insert(key);
         }
         fclose(lf);
     }
@@ -742,6 +764,11 @@ void Subsonic::run() {
                 std::lock_guard<std::mutex> v(m_);
                 if (sess != sess_) ok = false;   // signed out, or into another server, meanwhile: that one's own answer counts
                 else if (ok) {
+                    // The "liked on both" ledger is this server's and this user's: kept for another one (a new server with the
+                    // same music and no stars), every song in it read as "unstarred there" and lost its like here
+                    const std::string who = view_.server + "\t" + view_.user;
+                    if (!ledgerFor_.empty() && ledgerFor_ != who && !ledger_.empty()) { ledger_.clear(); tasks_.push_back({ Task::SaveLedger }); }
+                    ledgerFor_ = who;
                     view_.state = SignedIn;
                     view_.kind = r.s("type");
                     view_.version = r.s("serverVersion");
@@ -915,7 +942,23 @@ void Subsonic::run() {
         } else if (t.kind == Task::Scrobble) {   // a play (or now playing) on the server; lost when it cannot be sent
             call("scrobble", "&id=" + urlEncode(t.id) + (t.size ? "&submission=true&time=" + t.suffix : std::string("&submission=false")), body, err);
         } else if (t.kind == Task::Star) {
-            call(t.size ? "star" : "unstar", "&id=" + urlEncode(t.id), body, err);
+            // Answered ok: it is on the server. Not answered: asked again a few times (the network away for a moment); while it
+            // waits the song stays out of the Liked comparison (starPending_), and after a restart it is simply asked again
+            const bool ok = call(t.size ? "star" : "unstar", "&id=" + urlEncode(t.id), body, err) && answer(body, r, err);
+            std::lock_guard<std::mutex> v(m_);
+            if (sess == sess_) {
+                auto it = starPending_.find(t.id);
+                if (ok) {
+                    if (it != starPending_.end() && it->second == (t.size != 0)) starPending_.erase(it);
+                    starGen_++;   // (the app compares Liked with the stars again, now that this one is the server's too)
+                    view_.gen++;
+                }
+                else if (!token_.empty() && t.tries < 8) {
+                    Task n = t;
+                    n.tries++;
+                    later_.push_back({ n, std::chrono::steady_clock::now() + std::chrono::seconds(std::min(30, 1 << std::min(n.tries, 5))) });
+                }
+            }
         } else if (t.kind == Task::Starred) {
             if (call("getStarred2", "", body, err) && answer(body, r, err)) {
                 std::vector<Song> list;
@@ -1042,6 +1085,7 @@ void Subsonic::run() {
             std::string out;
             {
                 std::lock_guard<std::mutex> v(m_);
+                if (!ledger_.empty()) out = "#" + ledgerFor_ + "\n";
                 for (const auto& k : ledger_) out += k + "\n";
             }
             const std::string p = dir_ + "/server-likes.tsv";
@@ -1056,13 +1100,16 @@ void Subsonic::run() {
             if (call("getAlbum", "&id=" + urlEncode(t.id), body, err) && answer(body, r, err)) {
                 const json::Json& al = r["album"];
                 std::lock_guard<std::mutex> v(m_);
-                DlAlbumRec& a = dlAlbums_[t.id];
+                const bool wanted = dlAlbums_.count(t.id) > 0;   // (not cancelled while the server was asked: then nothing is queued)
+                DlAlbumRec none;
+                DlAlbumRec& a = wanted ? dlAlbums_[t.id] : none;
                 if (a.root.empty()) a.root = t.path;
                 a.name = al.s("name");
                 a.artist = al.s("artist");
                 a.total = int(al["song"].arr.size());
                 int queued = 0;
                 for (const json::Json& so : al["song"].arr) {
+                    if (!wanted) break;
                     const Song x = songOf(so);
                     if (dlSongs_.count(x.id)) continue;
                     if (std::any_of(tasks_.begin(), tasks_.end(), [&](const Task& k) { return k.kind == Task::DlSong && k.id == x.id; })) continue;
@@ -1094,6 +1141,7 @@ void Subsonic::run() {
                 std::string url = base("stream", "&id=" + urlEncode(t.id) + (raw ? "&format=raw" : "&format=mp3&maxBitRate=320"));
                 ok = net::download(url, t.path, err, nullptr);
                 wipe(url);
+                if (ok) ok = songArrived(t.path, err);
                 if (!ok) remove(t.path.c_str());
                 else if (stat(t.path.c_str(), &st) != 0) st.st_size = 0;
             }
@@ -1123,9 +1171,11 @@ void Subsonic::run() {
                     if (it->second.album == t.id) { paths.push_back(it->second.path); it = dlSongs_.erase(it); }
                     else ++it;
                 }
-                const size_t before = tasks_.size();
-                tasks_.erase(std::remove_if(tasks_.begin(), tasks_.end(), [&](const Task& k) { return k.kind == Task::DlSong && k.album == t.id; }), tasks_.end());
-                dlTotal_ -= int(before - tasks_.size());
+                // (its songs still waiting, and the album itself where it was not asked about yet: downloads stopped, or one
+                // left unfinished and queued again at sign-in; that task brought the whole album back on Resume)
+                const int songsLeft = int(std::count_if(tasks_.begin(), tasks_.end(), [&](const Task& k) { return k.kind == Task::DlSong && k.album == t.id; }));
+                tasks_.erase(std::remove_if(tasks_.begin(), tasks_.end(), [&](const Task& k) { return (k.kind == Task::DlSong && k.album == t.id) || (k.kind == Task::DlAlbum && k.id == t.id); }), tasks_.end());
+                dlTotal_ -= songsLeft;
                 if (dlTotal_ <= dlDone_) dlDone_ = dlTotal_ = 0;
                 dlGen_++;
                 view_.gen++;
@@ -1187,6 +1237,7 @@ void Subsonic::run() {
                 std::string url = base("stream", "&id=" + urlEncode(t.id) + (raw ? "&format=raw" : "&format=mp3&maxBitRate=320"));
                 ok = net::download(url, path, err, nullptr);
                 wipe(url);
+                if (ok) ok = songArrived(path, err);
                 if (ok && stat(path.c_str(), &st) != 0) st.st_size = 0;
             }
             if (ok) {   // the index: this song now; the oldest beyond 512 MB removed

@@ -315,6 +315,11 @@ void App::updateSheetRows(std::vector<SheetRow>& rows) {
     if (updater.busy()) {
         rows.push_back({ Row::Action, ICON_HOURGLASS, updater.working() == r.version ? updateStatus() : "Busy with " + updater.working(),
                          "Settings › Updates shows how far", "", nullptr });
+#ifdef GF_ANDROID
+    } else if (cmp < 0) {
+        // Android installs no older version over a newer one (its installer refuses it), so an older release has no action
+        // here, only its changes to read: Go back downloaded it for nothing, and Start fresh then cleared the settings
+#endif
     } else {
         const std::string label = cmp > 0 ? "Install " + r.version : cmp < 0 ? "Go back to " + r.version : "Install " + r.version + " again";
         const std::string sub = cmp > 0   ? GF_UPDATE_WHAT
@@ -323,7 +328,7 @@ void App::updateSheetRows(std::vector<SheetRow>& rows) {
         rows.push_back({ Row::Action, cmp > 0 ? ICON_DOWNLOAD : cmp < 0 ? ICON_HISTORY : ICON_REFRESH, label, sub, megabytes(r.zipSize),
                          [this, i] { installRelease(i); } });
     }
-    rows.back().h = 62;
+    if (!rows.empty()) rows.back().h = 62;
     if (r.beta)
         text(ICON_BOLT, "A beta: it can be unstable and have bugs. Please report what you find: " ISSUES_URL, true);
     if (!r.manifest)
@@ -456,6 +461,9 @@ void App::installRelease(int i) {
     const UpdRelease& r = updater.releases[size_t(i)];
     const std::string me = Updater::thisVersion();
     const int cmp = Updater::compare(r.version, me);
+#ifdef GF_ANDROID
+    if (cmp < 0) return;   // (no going back on Android: updateSheetRows)
+#endif
     std::string text = "Your settings are backed up first. Then " GF_UPDATE_PARTS "; "
                        "Restart now finishes it (the music stops for a moment).";
     if (cmp < 0) {
@@ -652,6 +660,7 @@ void App::finishUpdate() {
 #ifdef GF_ANDROID
     // Android replaces an app itself: its installer opens on the download, and Songate stays open until the user agrees there
     if (const std::string setup = updater.installerFile(); !setup.empty()) {
+        updater.installerStarted();   // (the next Songate: it ran; this one goes on reading the download as waiting)
         if (!plat::relaunch(setup)) toast("Could not open Android's installer");
         return;
     }

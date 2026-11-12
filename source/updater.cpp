@@ -816,9 +816,15 @@ void Updater::readInstalled() {
     installed.overlayPending = exists(sdPath(kOverlay, self_) + ".gfnew");
 #ifdef GF_WINDOWED
     if (std::string setup; readAll(dir_ + "/updates/installer.txt", setup)) {
-        if (installed.version == thisVersion()) {   // it ran: this is the new one
+        // It ran: this is the new one. This version installed again says so by its mark (installer-started.txt, written as the
+        // installer is started, read by the next Songate): by the version alone the download was removed the moment it ended
+        const bool again = installed.version == thisVersion() && installed.from == thisVersion();
+        const std::string mark = dir_ + "/updates/installer-started.txt";
+        if (again ? (exists(mark) && !installerStartedHere_) : installed.version == thisVersion()) {
             remove(setup.c_str());
             remove((dir_ + "/updates/installer.txt").c_str());
+            remove(mark.c_str());
+            if (again) installed = UpdInstalled{};
         } else installed.appPending = exists(setup);
     }
 #endif
@@ -1104,6 +1110,10 @@ std::string Updater::installerFile() const {
     std::string setup;
     return readAll(dir_ + "/updates/installer.txt", setup) && exists(setup) ? setup : std::string();
 }
+void Updater::installerStarted() {
+    installerStartedHere_ = true;
+    writeAll(dir_ + "/updates/installer-started.txt", "1\n");
+}
 #endif
 
 void Updater::markBgRestarted() {
@@ -1123,7 +1133,10 @@ std::string Updater::backupNow(const std::string& root, const std::string& note)
     // (art/ is the covers cache: thousands of small files, and copying them took the console a minute and a half)
     // and the Last.fm account: a key to it never sits in a backup, a restore asks you to sign in again
     // (and the Subsonic account the same way: subsonic.hpp)
-    if (!copyTree(dir_, backup, { "updates", "thumbs", "art", "tags.tsv", "lastfm-session.txt", "subsonic-account.txt", "connect-key.txt", "connect-peers.tsv" }, bytes, files)) {
+    // and a server's songs kept here (its play cache, to 512 MB, and albums downloaded into Songate's folder, with their lists):
+    // music, not settings; every backup copied them, and a restore or a fresh start took the albums downloaded since away
+    if (!copyTree(dir_, backup, { "updates", "thumbs", "art", "tags.tsv", "lastfm-session.txt", "subsonic-account.txt", "connect-key.txt", "connect-peers.tsv",
+                                  "server-cache", "server-cache.tsv", "server-downloads", "server-downloads.tsv" }, bytes, files)) {
         removeTree(backup);
         return {};
     }
@@ -1197,11 +1210,14 @@ std::string Updater::finishPending(const std::string& configDir, const std::stri
             // The caches stay (thousands of covers: removing them held Songate's exit for minutes; they are made from the
             // music files, not the settings, and backups leave them out)
             for (const auto& n : names(configDir))
-                if (n != "updates" && n != "art" && n != "thumbs" && n != "tags.tsv") removeTree(join(configDir, n));
+                if (n != "updates" && n != "art" && n != "thumbs" && n != "tags.tsv" && n != "server-cache" && n != "server-cache.tsv" &&
+                    n != "server-downloads" && n != "server-downloads.tsv")   // (a server's songs kept here: as backupNow says)
+                    removeTree(join(configDir, n));
             int64_t bytes = 0;
             int files = 0;
             if (doRestore) {
-                copyTree(restore, configDir, { "gatefold-backup.txt" }, bytes, files);
+                // (a backup from before 2.0.1 holds the server's songs and their lists as they were then: today's stay)
+                copyTree(restore, configDir, { "gatefold-backup.txt", "server-cache", "server-cache.tsv", "server-downloads", "server-downloads.tsv" }, bytes, files);
                 // the restored settings are the ones a later install is compared with: no fresh start waits any more
             }
         }

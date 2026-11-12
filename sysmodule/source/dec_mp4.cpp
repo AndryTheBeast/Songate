@@ -9,10 +9,21 @@
 #include <cstdlib>
 #include <vector>
 
+#include <malloc.h>
+
 #include "aacdec.h"
 #include "dec_common.hpp"
 
+extern "C" size_t gfHeapSize;   // main.cpp
+
 namespace {
+
+/** Room on the heap for a table of this size, 96 KB left for the decoder itself and what else runs. */
+bool heapRoom(size_t bytes) {
+    const struct mallinfo mi = mallinfo();
+    const size_t used = size_t(mi.uordblks) + 96 * 1024;
+    return gfHeapSize > used && gfHeapSize - used >= bytes;
+}
 
 constexpr uint32_t fourcc(const char* s) { return uint32_t(uint8_t(s[0])) << 24 | uint32_t(uint8_t(s[1])) << 16 | uint32_t(uint8_t(s[2])) << 8 | uint8_t(s[3]); }
 
@@ -204,6 +215,39 @@ private:
         }
     }
 
+    /** The sample sizes, read in blocks straight into the u16 table (u32 only once a size needs it). In a function of its own:
+     *  box() calls itself for every container, and this block on each of its frames left the watch thread's stack no room.
+     *  A table the heap cannot hold is not read: the file is then not played (open() fails), where it ended the whole
+     *  player before (an hour of AAC is about 150,000 sizes; nothing here can catch a failed allocation). */
+    __attribute__((noinline)) void stsz(uint64_t start) {
+        r_.seek(start + 4);
+        constSize_ = r_.u32();
+        sampleCount_ = r_.u32();
+        if (constSize_ || sampleCount_ > 1u << 24) return;
+        if (!heapRoom(size_t(sampleCount_) * 2)) { sampleCount_ = 0; return; }
+        sizes16_.resize(sampleCount_);
+        bool wide = false;
+        uint8_t blk[4096];
+        for (uint32_t i = 0; i < sampleCount_;) {
+            const uint32_t k = std::min<uint32_t>(sampleCount_ - i, sizeof blk / 4);
+            if (r_.read(blk, k * 4) != k * 4) { sampleCount_ = i; break; }
+            for (uint32_t j = 0; j < k; j++, i++) {
+                const uint32_t v = uint32_t(blk[j * 4]) << 24 | uint32_t(blk[j * 4 + 1]) << 16 | uint32_t(blk[j * 4 + 2]) << 8 | blk[j * 4 + 3];
+                if (!wide && v >= 65536) {   // the first size over 16 bits: all of them as u32 from here
+                    if (!heapRoom(size_t(sampleCount_) * 4)) { std::vector<uint16_t>().swap(sizes16_); sampleCount_ = 0; return; }
+                    sizes32_.resize(sampleCount_);
+                    for (uint32_t q = 0; q < i; q++) sizes32_[q] = sizes16_[q];
+                    std::vector<uint16_t>().swap(sizes16_);
+                    wide = true;
+                }
+                if (wide) sizes32_[i] = v;
+                else sizes16_[i] = uint16_t(v);
+            }
+        }
+        if (wide) sizes32_.resize(sampleCount_);
+        else sizes16_.resize(sampleCount_);
+    }
+
     void box(uint32_t type, uint64_t start, uint64_t end, int depth) {
         switch (type) {
         case fourcc("moov"): case fourcc("mdia"): case fourcc("minf"): case fourcc("stbl"): case fourcc("udta"):
@@ -250,7 +294,7 @@ private:
         case fourcc("stts"): {
             r_.seek(start + 4);
             const uint32_t n = r_.u32();
-            if (n > 1u << 22) break;
+            if (n > 1u << 22 || !heapRoom(size_t(n) * sizeof stts_[0])) break;
             stts_.resize(n);
             for (auto& e : stts_) { e.count = r_.u32(); e.delta = r_.u32(); }
             break;
@@ -258,37 +302,16 @@ private:
         case fourcc("stsc"): {
             r_.seek(start + 4);
             const uint32_t n = r_.u32();
-            if (n > 1u << 22) break;
+            if (n > 1u << 22 || !heapRoom(size_t(n) * sizeof stsc_[0])) break;
             stsc_.resize(n);
             for (auto& e : stsc_) { e.first = r_.u32(); e.perChunk = r_.u32(); r_.u32(); }
             break;
         }
-        case fourcc("stsz"): {
-            r_.seek(start + 4);
-            constSize_ = r_.u32();
-            sampleCount_ = r_.u32();
-            if (constSize_ || sampleCount_ > 1u << 24) break;
-            // Read in blocks: one u32() call per sample would be slow on long files.
-            std::vector<uint32_t> all(sampleCount_);
-            uint32_t big = 0;
-            uint8_t blk[4096];
-            for (uint32_t i = 0; i < sampleCount_;) {
-                const uint32_t k = std::min<uint32_t>(sampleCount_ - i, sizeof blk / 4);
-                if (r_.read(blk, k * 4) != k * 4) { sampleCount_ = i; break; }
-                for (uint32_t j = 0; j < k; j++, i++) {
-                    all[i] = uint32_t(blk[j * 4]) << 24 | uint32_t(blk[j * 4 + 1]) << 16 | uint32_t(blk[j * 4 + 2]) << 8 | blk[j * 4 + 3];
-                    big = std::max(big, all[i]);
-                }
-            }
-            all.resize(sampleCount_);
-            if (big < 65536) sizes16_.assign(all.begin(), all.end());
-            else sizes32_ = std::move(all);
-            break;
-        }
+        case fourcc("stsz"): stsz(start); break;
         case fourcc("stco"): case fourcc("co64"): {
             r_.seek(start + 4);
             const uint32_t n = r_.u32();
-            if (n > 1u << 22) break;
+            if (n > 1u << 22 || !heapRoom(size_t(n) * sizeof chunks_[0])) break;
             chunks_.resize(n);
             for (auto& c : chunks_) c = type == fourcc("co64") ? r_.u64() : r_.u32();
             break;

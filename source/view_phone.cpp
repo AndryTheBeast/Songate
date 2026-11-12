@@ -677,7 +677,9 @@ void App::drawPhone() {
         g.roundRect(kPad, fy, fw, 44, 12, pal.text, ui.pressed(fid) ? 0.1f : 0.065f);
         g.roundStroke(kPad, fy, fw, 44, 12, 1, qtext.empty() ? pal.text : pal.accent, qtext.empty() ? 0.09f : 0.55f);
         g.icon(ICON_SEARCH, kPad + 24, fy + 22, 18, pal.text3);
-        g.textC(qtext.empty() ? searchHint() : qtext, { css::Base }, kPad + 44, fy + 22, qtext.empty() ? pal.text3 : pal.text, 1, Align::Left, int(fw - 90));
+        // (beside the Local | Server switch the field is too short for the tabs' names: the server's own short line, never a cut one)
+        const char* hint = srcW > 0 && store.libSource == 1 ? "Search the server" : searchHint();
+        g.textC(qtext.empty() ? hint : qtext, { css::Base }, kPad + 44, fy + 22, qtext.empty() ? pal.text3 : pal.text, 1, Align::Left, int(fw - 90));
         if (!qtext.empty() && iconButton(uid("ph.sclear"), ICON_X, kPad + fw - 22, fy + 22, false, 36, 16)) navigate(View::Search, -1, std::string(), false);
         if (srcW > 0) librarySource(W - kPad, fy + 22, 44);
         if (qtext.empty()) {

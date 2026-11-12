@@ -325,7 +325,7 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
 #endif
         // ---- Files
         { 1, 4, PLI_SDCARD, "Files",
-          "Files browses the whole " GF_CARD_NAME ". It is hidden at first: turn it on in Settings › Appearance › Sidebar. "
+          "Files browses everything " GF_ON_CARD ". It is hidden at first: turn it on in Settings › Appearance › Sidebar. "
           GF_FILE_MENU ": an image can become a cover, an .lrc file a song's lyrics, an .m3u8 a "
           "playlist. You can also rename, copy, move and delete, one file or several.",
           nullptr, { { "nav.files" } } },

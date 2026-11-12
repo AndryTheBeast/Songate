@@ -495,7 +495,7 @@ void App::connectTick() {
         if (store.syncDeleteFrom == ~uint64_t(0) && sv.deleteFrom != ~uint64_t(0)) { store.syncDeleteFrom = sv.deleteFrom; persistSoon(0.3f); }
         const bool nothing = sv.summary == "Nothing changes here" && !sv.measures && !sv.covers;
         std::string said = sv.summary;
-        if (sv.measures) said = (sv.summary == "Nothing changes here" ? std::string() : said + ", ") + std::to_string(sv.measures) + (sv.measures == 1 ? " track's measurements" : " tracks' measurements");
+        if (sv.measures) said = (sv.summary == "Nothing changes here" ? std::string() : said + ", ") + std::to_string(sv.measures) + (sv.measures == 1 ? " song's measurements" : " songs' measurements");
         if (sv.covers) said = (said == "Nothing changes here" ? std::string() : said + ", ") + std::to_string(sv.covers) + (sv.covers == 1 ? " cover" : " covers");
         if (!nothing || !store.syncAuto) toast(nothing ? "Up to date with " + sv.peer : "Synced with " + sv.peer + ": " + said);
         char worst[160];

@@ -10,3 +10,5 @@ FILE* gfFopen(const char* p, const char* m) { return (fopen)(p, m); }
 int gfRemove(const char* p) { return (remove)(p); }
 int gfRename(const char* a, const char* b) { return (rename)(a, b); }
 namespace plat { void placeThread(int, int) {} }
+// (the same for stat: winshim.h names it gf_stat)
+int gf_stat(const char* p, struct gf_stat* st) { return ::_stat64(p, st); }

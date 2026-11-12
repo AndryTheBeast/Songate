@@ -400,7 +400,7 @@ void App::useMusicFolder(const std::string& path) {
     store.save();
     rescan();
     navigate(View::Library, -1, {}, false);
-    toast(std::to_string(lib.tracks.size()) + " tracks found in " + path);
+    toast(std::to_string(lib.tracks.size()) + (lib.tracks.size() == 1 ? " song found in " : " songs found in ") + path);
     if (tourAsk) {   // a first launch whose folder was chosen in the picker: the tour, offered now
         tourAsk = false;
         offerTour();
@@ -682,6 +682,9 @@ void App::shutdown() {
         if (FILE* f = fopen((std::string(Store::Dir) + "/shutdown-trace.txt").c_str(), "ab")) { fprintf(f, "%s%s\n", sdLog.c_str(), total); fclose(f); }
     }
 #endif
+#ifdef GF_WINDOWED
+    if (relaunch && !setup.empty()) updater.installerStarted();   // (the next Songate: it ran)
+#endif
     if (relaunch) plat::relaunch(again);
     plat::releaseExit();
 }
@@ -889,6 +892,17 @@ void App::run() {
 }
 
 #ifdef GF_WINDOWED
+/** The two textures the frames are drawn into, made again at the size they had (the renderer lost them, or refuses them). */
+void App::remakeFrameTextures() {
+    if (!frameTex_[0] || frameTexW_ <= 0 || frameTexH_ <= 0) return;
+    logLine("The frame's textures made again (the renderer lost its targets)");
+    SDL_SetRenderTarget(renderer_, nullptr);
+    for (SDL_Texture*& t : frameTex_) {
+        if (t) SDL_DestroyTexture(t);
+        t = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, frameTexW_, frameTexH_);
+    }
+}
+
 /** The window, in app pixels and real ones: the shorter way it is 1280×720's scale, the other way there is more room. */
 void App::fitWindow() {
     int pw = 1280, ph = 720;
@@ -1273,7 +1287,13 @@ void App::frame() {
 #endif
             return;
         }
-        SDL_SetRenderTarget(renderer_, frameTex_[frameCur_]);
+        // The renderer may lose its targets (SDL says so: App::input) or refuse one: Android took what the frames are drawn into
+        // when Songate came back from the home screen held sideways, and every frame after went nowhere: the screen stayed
+        // black, the app in front and running, until a turn made new ones (2026-11-12, tools/android/devblack.py)
+        if (SDL_SetRenderTarget(renderer_, frameTex_[frameCur_]) != 0) {
+            remakeFrameTextures();
+            SDL_SetRenderTarget(renderer_, frameTex_[frameCur_]);
+        }
         SDL_RenderSetScale(renderer_, scale_, scale_);
 #endif
         draw();
@@ -1447,6 +1467,7 @@ void App::input() {
             (e.key.keysym.sym == SDLK_F11 || (e.key.keysym.sym == SDLK_RETURN && (e.key.keysym.mod & KMOD_ALT)))) fullApp_ = !fullApp_;
         if (e.type == SDL_QUIT) running = false;
         if (e.type == SDL_WINDOWEVENT && (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED || e.window.event == SDL_WINDOWEVENT_DISPLAY_CHANGED)) fitWindow();
+        if (e.type == SDL_RENDER_TARGETS_RESET || e.type == SDL_RENDER_DEVICE_RESET) remakeFrameTextures();   // (what they held is gone)
 #endif
         // A mouse (a USB one on the console; the PC's in the preview and the live page): it moves the pointer, its wheel
         // scrolls the list under it, its left button presses there (the user, 2026-10-30: "the UI should scroll where the

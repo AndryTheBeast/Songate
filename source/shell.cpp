@@ -1778,7 +1778,7 @@ void App::drawCoverNotice() {
     const float w = cardW(520), pad = 24, x = (css::W - w) / 2;
     char sub[240];
     if (lyr)
-        snprintf(sub, sizeof sub, "%d of %d tracks' lyrics are not read yet, so search by lyrics cannot find those songs. Read now, "
+        snprintf(sub, sizeof sub, "The lyrics of %d of %d songs are not read yet, so search by lyrics cannot find those songs. Read now, "
                  "in the background (a few minutes for a large library).", lyrMissing, int(lib.tracks.size()));
     else if (app)
         snprintf(sub, sizeof sub, "%d of %d tracks have no small cover yet, so lists make each one as you scroll to it. Made now, "

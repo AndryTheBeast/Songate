@@ -311,6 +311,7 @@ void App::serverTick() {
         srvStarred_.clear();
         srvStarredGen_ = ~0u;
         srvLikeSig_ = 0;
+        srvStarSent_.clear();
     }
     if (firstServer_) {   // signed in from the first card: its music In the library, on Albums; or why not, and the way back
         const Subsonic::View fv = subsonic.view();
@@ -573,7 +574,7 @@ void App::sendPlaylistToServer(const std::string& name, const std::vector<int>& 
     subsonic.sendPlaylist(name, existing, ids);
     srvPlaylistsGen_ = ~0u;   // (asked again: the new one shows)
     serverAsked_.erase("PL");
-    toast("Sent “" + name + "” to " + kind + ": " + std::to_string(ids.size()) + " of " + std::to_string(tracks.size()) + " tracks are there");
+    toast("Sent “" + name + "” to " + kind + ": " + std::to_string(ids.size()) + " of " + std::to_string(tracks.size()) + " songs are there");
 }
 
 /** A server playlist saved as one of yours: its tracks you have here (by artist and title), in its order. */
@@ -587,7 +588,7 @@ void App::savePlaylistHere(const std::string& name, const std::vector<Subsonic::
     const std::string as = store.freePlaylistName(name);
     store.playlists.push_back({ as, std::string(), paths });
     store.save();
-    toast("Saved “" + as + "”: " + std::to_string(paths.size()) + " of " + std::to_string(songs.size()) + " tracks are on " GF_THIS_CARD);
+    toast("Saved “" + as + "”: " + std::to_string(paths.size()) + " of " + std::to_string(songs.size()) + " songs are on " GF_THIS_CARD);
 }
 
 /** The Playlists page with Server chosen: the server's playlists, in the page's views (tiles, with covers, the list); a press opens one. */
@@ -737,7 +738,7 @@ void App::serverSignOutCard() {
     auto mb = [](long long b) { return std::to_string(int((b + 512 * 1024) / (1024 * 1024))) + " MB"; };
     std::string kind = sv.kind.empty() ? std::string("the server") : sv.kind;
     if (!sv.kind.empty()) kind[0] = char(toupper(uint8_t(kind[0])));
-    std::string what = songs ? "Downloaded: " + std::to_string(songs) + (songs == 1 ? " track" : " tracks") + ", " + mb(bytes) + ". " : std::string("Nothing downloaded. ");
+    std::string what = songs ? "Downloaded: " + std::to_string(songs) + (songs == 1 ? " song" : " songs") + ", " + mb(bytes) + ". " : std::string("Nothing downloaded. ");
     what += "Kept to play again: " + mb(cache) + ". Remove everything takes all of it away, with the server's settings: Songate is as it was before the "
             "server. Keep downloads leaves the downloaded songs here (in your music folder they stay in your library).";
     confirm(PLI_CLOUD, "Subsonic server", "Sign out of " + kind + "?", sv.server, "What should stay on this device?", what, "Remove everything",
@@ -837,13 +838,20 @@ void App::serverLikesSync() {
     int toServer = 0, fromServer = 0;
     for (const auto& k : keys) {
         if (!pathByKey.count(k)) continue;
-        const bool L = mine.count(k) > 0, S = theirs.count(k) > 0, known = ledger.count(k) > 0;
+        const bool L = mine.count(k) > 0, S = theirs.count(k) > 0;
+        bool known = ledger.count(k) > 0;
+        // its star or unstar is still on its way to the server: nothing is concluded from it, and the ledger keeps what it said
+        // (a star that failed was written down as "on both" at once, and the next start then took the like away here)
+        if (subsonic.starPending(srvByKey[k])) { if (known) both.insert(k); continue; }
+        // what this device sent has arrived: a star made it "on both" at that moment (so a like taken back here meanwhile is an
+        // unlike to send, not a star to take), an unstar made it "on neither"
+        if (auto sent = srvStarSent_.find(k); sent != srvStarSent_.end()) { known = sent->second; srvStarSent_.erase(sent); }
         if (L && S) { both.insert(k); continue; }
         if (L && !S) {
             if (known) { store.toggleLiked(pathByKey[k]); likedChanged = true; fromServer++; }   // unstarred there: unliked here
-            else { subsonic.star(srvByKey[k], true); both.insert(k); toServer++; }                // liked here: starred there
+            else { subsonic.star(srvByKey[k], true); srvStarSent_[k] = true; toServer++; }        // liked here: starred there (in the ledger once the server has it)
         } else if (!L && S) {
-            if (known) { subsonic.star(srvByKey[k], false); toServer++; }                         // unliked here: unstarred there
+            if (known) { subsonic.star(srvByKey[k], false); srvStarSent_[k] = false; toServer++; }   // unliked here: unstarred there
             else { store.toggleLiked(pathByKey[k]); likedChanged = true; both.insert(k); fromServer++; }   // starred there: liked here
         }
     }

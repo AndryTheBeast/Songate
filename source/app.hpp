@@ -685,8 +685,10 @@ private:
     // Search by lyrics (BETA 3, lyricindex.hpp): the songs whose lyrics have the words, their line; asked when a search opens
     LyricIndex lyrIndex;
     /** The search field's words: lyrics too once every song's lyrics are read (the user, 2026-11-07); before, as they were. */
-    const char* searchHint() const {
+    const char* searchHint() {
         // the tabs' own names, in their order (the user, 2026-11-11: "Songs, Albums, Artists or Genres", and Lyrics once all are read)
+        // (the server chosen: its search has no Lyrics and has Playlists; the user, 2026-11-12)
+        if (store.libSource == 1 && subsonic.view().state == Subsonic::SignedIn) return "Songs, Albums, Artists, Genres or Playlists";
         const LyricIndex::Progress p = lyrIndex.progress();
         return !p.checking && p.total > 0 && p.read >= p.total ? "Songs, Albums, Artists, Genres or Lyrics" : "Songs, Albums, Artists or Genres";
     }
@@ -1427,6 +1429,7 @@ public:
     void fitWindow();
     float scale_ = 1;                       // real pixels to an app pixel
     SDL_Texture* frameTex_[2] = {};         // frames are drawn here, then shown: the last whole one is what the text card sits on
+    void remakeFrameTextures();             // the renderer lost its targets (Android, back from the home screen): new ones, the same size
     int frameCur_ = 0;
     plat::TextResult textCard(const char* header, const char* guide, const char* initial, char* out, size_t size);
     void textCardOwner();
@@ -1963,6 +1966,7 @@ private:
     std::vector<Subsonic::Song> srvStarred_;   // the server's starred tracks (the Liked page's group), copied when they change
     unsigned srvStarredGen_ = ~0u;
     size_t srvLikeSig_ = 0;                    // what the last like sync saw (Liked, the stars, the lists)
+    std::unordered_map<std::string, bool> srvStarSent_;   // a star (true) or an unstar this device sent for a liked song, until the server has answered (view_server.cpp)
     double srvLikeAt_ = 0;
     void serverLikesSync();
     bool serverGenreTile(Id id, const Subsonic::Genre& gn, float tx, float ty, float tileW, uint8_t flags = 0);

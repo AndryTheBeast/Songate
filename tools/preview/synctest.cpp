@@ -594,6 +594,24 @@ int main() {
         sync(a, b);
         check("moods: the switch off, nothing goes", !a.now.moods.count(A + "s3"));
     }
+    {   // a playlist holding a song with no identity here (no artist or title tag: never told to the other device)
+        Device a("aaa", "Switch"), b("bbb", "PC");
+        lib(a, A.c_str());
+        lib(b, B.c_str());
+        a.now.lists.push_back({ "Mix", { A + "s1", A + "no-tags", A + "s2" } });
+        sync(a, b);
+        check("a song without tags: the other device gets the rest", b.list("Mix") && b.list("Mix")->paths == std::vector<std::string>({ B + "s1", B + "s2" }));
+        check("and it is still in its playlist here", a.list("Mix")->paths == std::vector<std::string>({ A + "s1", A + "no-tags", A + "s2" }));
+        for (List& l : b.now.lists) l.paths.push_back(B + "s3");
+        sync(a, b);
+        check("the other device adds a song: the one without tags stays, in its place",
+              a.list("Mix")->paths == std::vector<std::string>({ A + "s1", A + "no-tags", A + "s2", A + "s3" }));
+        check("run twice: nothing to do", sync(a, b) == 0 && sync(a, b) == 0);
+        for (List& l : b.now.lists) l.paths = { B + "s3", B + "s1" };
+        sync(a, b);
+        check("reordered there: it stays, the rest as there", a.list("Mix")->paths == std::vector<std::string>({ A + "s3", A + "no-tags", A + "s1" }));
+        check("and the other device's list is not changed by it", b.list("Mix")->paths == std::vector<std::string>({ B + "s3", B + "s1" }) && sync(a, b) == 0);
+    }
     printf("%d passed, %d failed: %s\n", passed, failed, failed ? "SOME FAILED" : "ALL GOOD");
     return failed ? 1 : 0;
 }

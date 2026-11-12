@@ -675,7 +675,7 @@ void App::drawSettings(float x, float y, float w, float h) {
             }
             const char* hint = held && !sortWay        ? GF_MOVING_WORDS
                              : tab == Store::TabNow    ? "Always shown. Settings stays at the bottom"
-                             : tab == Store::TabFiles  ? "The whole " GF_CARD_NAME ": open, rename, copy, move and delete, and what fits each file"
+                             : tab == Store::TabFiles  ? "Everything " GF_ON_CARD ": open, rename, copy, move and delete, and what fits each file"
                                                        : "";
             Row r{ Store::tabName(tab), "", hint, sortWay ? sortW : 40 + 16 + mw, [this, tab, bit, i, mw, sortWay, sortCtl](float rx, float cy) {
                       if (bit) {
@@ -2492,7 +2492,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                   { infoRow("Gatefold", "Songate began as a recreation of Gatefold, DEVIROYrus's interface for foobar2000. Its palette "
                                         "algorithm, icons, app icon and typeface come from that project. © Gatefold contributors, MIT licence"),
                     infoRow("Inter", "The typeface. © The Inter Project Authors, SIL Open Font Licence"),
-                    infoRow("FFmpeg", "Decoding in Songate's own player: AAC, ALAC, FLAC, MP3, Ogg Vorbis, Opus and WAV. LGPL 2.1"),
+                    infoRow("FFmpeg", "Decoding in Songate's own player: MP3, M4A (AAC) and FLAC. LGPL 2.1"),
                     infoRow("SDL 2", "Graphics, sound, fonts and images: SDL, SDL_mixer, SDL_ttf, SDL_image. zlib licence"),
                     infoRow("libFLAC, mpg123, Opus, Tremor", "SDL_mixer's decoders, for a file FFmpeg cannot open. BSD and LGPL licences"),
                     infoRow("libcurl and zlib", "Updates: the connection to GitHub, over " GF_THE_CONSOLE "'s own secure connection. curl and zlib licences"),

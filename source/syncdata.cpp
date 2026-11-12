@@ -442,6 +442,11 @@ Changes plan(const Ledger& after, const Snapshot& now, ListIds& ids, Seen& seen,
                               mine->folder != incoming.folder;
             if (present(songs, g) != here || kind) {
                 incoming.name = known->second;
+                // Songs of this playlist that have no identity here (no artist or title tag, or not read yet) were never told
+                // to the other device, so its list cannot name them: they stay, each where it was, and are not taken for
+                // songs it removed (the playlist lost them for good at the first change made there)
+                for (size_t k = 0; k < mine->paths.size(); k++)
+                    if (!bySong.count(mine->paths[k])) paths.insert(paths.begin() + std::ptrdiff_t(std::min(k, paths.size())), mine->paths[k]);
                 incoming.paths = paths;
                 out.listsSet.push_back(std::move(incoming));
             }
