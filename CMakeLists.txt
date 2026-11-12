@@ -7,6 +7,9 @@ if(DEFINED ANDROID_ABI)   # (ANDROID itself is set only once project() reads the
   project(Songate CXX C)
   set(DEPS ${CMAKE_SOURCE_DIR}/tools/android/deps/prefix/${ANDROID_ABI})
   option(GF_DEV "A dev build: the frame times, the join trace" ON)
+  # The version is read when CMake configures, and Gradle only configures again when something it knows of changed: without this a
+  # new APP_VERSION gave an APK labelled with the new version whose own code still said the old one (found 2026-11-12)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/Makefile)
   file(STRINGS ${CMAKE_SOURCE_DIR}/Makefile VERSION_LINE REGEX "^APP_VERSION")
   string(REGEX REPLACE "^APP_VERSION[ \t:=]*" "" APP_VERSION "${VERSION_LINE}")
 
