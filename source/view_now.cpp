@@ -18,7 +18,18 @@ void App::drawNow(float x, float y, float w, float h) {
     // .np grid: padding clamp(16px, 3vh, 40px) clamp(20px, 4vw, 64px); gap clamp(24px, 4vw, 64px)
     const float padH = clampf(css::W * 0.04f, 20, 64), gap = clampf(css::W * 0.04f, 24, 64);
 #ifdef GF_WINDOWED
-    const float art = std::max(200.f, std::min({ css::H * 0.52f, css::W * 0.40f, 620.f, w - padH * 2 - gap - 440 }));   // a tall window: the info keeps its room
+    // What the song's buttons need with their names on (Add to Liked, Album, Artist, Folder and the menu): the cover leaves the
+    // info that much where the window has it. The cover grows with the window's height, and a little more height (the app's full
+    // screen against a maximised window on a 1280 x 800 screen) took the column 12 under the row, so all three went round with
+    // "plenty of space" beside them (the user, 2026-11-12)
+    const float actsNeed = [&] {
+        const Font bf{ css::Sm, Weight::SemiBold };
+        float need = 34;
+        for (const char* l : { "Add to Liked", "Album", "Artist", "Folder" }) need += 16 + 24 + g.measure(l, bf) + 16 + 8;
+        return need;
+    }();
+    const float infoRoom = std::max(440.f, std::min(actsNeed, w - padH * 2 - gap - 320));   // (never at the cost of a cover under 320)
+    const float art = std::max(200.f, std::min({ css::H * 0.52f, css::W * 0.40f, 620.f, w - padH * 2 - gap - infoRoom }));   // a tall window: the info keeps its room
 #else
     const float art = std::min({ css::H * 0.52f, css::W * 0.40f, 620.f });
 #endif
