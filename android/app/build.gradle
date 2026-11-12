@@ -4,10 +4,19 @@ plugins {
     id 'com.android.application'
 }
 
-// The version, as the Makefile has it (APP_VERSION := 2.0.0 BETA 2)
+// The version, as the Makefile has it (APP_VERSION := 2.0.0)
 def appVersion = file('../../Makefile').readLines().find { it.startsWith('APP_VERSION') }.replaceAll(/^APP_VERSION[ \t:=]*/, '').trim()
 def dev = (project.findProperty('dev') ?: '1') != '0'
 def abis = (project.findProperty('abis') ?: 'x86_64,arm64-v8a').split(',')
+// A release is signed with Songate's own key, kept for good outside the repository: an APK only updates itself when every
+// version carries the same signature. The key's file, alias and passwords are in a properties file the user wrote (storeFile,
+// storePassword, keyAlias, keyPassword); without it there is no signed release, only the debug build.
+def keyProps = new Properties()
+def keyFile = file(System.getenv('SONGATE_KEY_PROPERTIES') ?: 'C:/Android/keys/songate-release.properties')
+if (keyFile.exists()) keyFile.withInputStream { keyProps.load(it) }
+// Android installs an update only over a lower versionCode: 2.0.0 is 20000, 2.1.3 would be 20103 (a beta has its release's)
+def versionParts = (appVersion =~ /^(\d+)\.(\d+)\.(\d+)/)[0]
+def appVersionCode = versionParts[1].toInteger() * 10000 + versionParts[2].toInteger() * 100 + versionParts[3].toInteger()
 
 android {
     namespace 'io.github.andrythebeast.songate'
@@ -18,7 +27,7 @@ android {
         applicationId 'io.github.andrythebeast.songate'
         minSdk 29
         targetSdk 35
-        versionCode 1
+        versionCode appVersionCode
         versionName appVersion
         externalNativeBuild {
             cmake {
@@ -28,9 +37,23 @@ android {
         ndk { abiFilters(*abis) }
     }
 
+    signingConfigs {
+        if (keyFile.exists()) {
+            release {
+                storeFile file(keyProps['storeFile'])
+                storePassword keyProps['storePassword']
+                keyAlias keyProps['keyAlias']
+                keyPassword keyProps['keyPassword']
+            }
+        }
+    }
+
     buildTypes {
         debug { jniDebuggable false; minifyEnabled false }   // the native code optimised even here: frames are measured
-        release { minifyEnabled false }
+        release {
+            minifyEnabled false
+            if (keyFile.exists()) signingConfig signingConfigs.release
+        }
     }
 
     sourceSets {

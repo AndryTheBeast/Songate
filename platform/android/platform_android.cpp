@@ -244,7 +244,6 @@ bool inFocus() { return SDL_GetKeyboardFocus() != nullptr; }
 
 std::string selfPath(int, char**) { return {}; }
 bool swapsSelf() { return false; }   // Android's installer replaces the app
-bool relaunch(const std::string&) { return false; }
 bool legacyData() { return false; }
 
 /** SongateAND-<version>.apk. */
@@ -252,6 +251,24 @@ bool isInstaller(const std::string& name) {
     const size_t cut = name.find_last_of('/');
     const std::string n = cut == std::string::npos ? name : name.substr(cut + 1);
     return n.rfind("SongateAND-", 0) == 0 && n.size() > 15 && n.compare(n.size() - 4, 4, ".apk") == 0;
+}
+
+/** An update's APK: Android's own installer opens on it (SongateActivity.installApk) while Songate stays as it is; the
+ *  installer replaces the app when the user agrees. Nothing else is started from here. */
+bool relaunch(const std::string& program) {
+    if (!isInstaller(program)) return false;
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
+    if (!env) return false;
+    jclass cls = activityClass(env);
+    if (!cls) return false;
+    bool ok = false;
+    if (jmethodID m = env->GetStaticMethodID(cls, "installApk", "(Ljava/lang/String;)Z")) {
+        jstring path = env->NewStringUTF(program.c_str());
+        ok = env->CallStaticBooleanMethod(cls, m, path) == JNI_TRUE;
+        env->DeleteLocalRef(path);
+    }
+    if (env->ExceptionCheck()) { env->ExceptionClear(); ok = false; }
+    return ok;
 }
 
 // ---- input

@@ -1,6 +1,7 @@
 # Build output (binaries are attached to releases, not committed)
 build/
 build-windows*/
+build-android/
 *.elf
 *.nacp
 *.nro
@@ -42,4 +43,7 @@ android/local.properties
 android/app/.cxx/
 android/build/
 *.keystore
+*.jks
+songate-release.properties
+keys/
 *.jks

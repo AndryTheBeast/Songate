@@ -18,7 +18,7 @@
 #include "plicons.inc"
 
 #ifndef GF_VERSION
-#define GF_VERSION "2.0.0 BETA 2"
+#define GF_VERSION "2.0.0"
 #endif
 
 namespace {
@@ -1785,7 +1785,7 @@ void App::drawSettings(float x, float y, float w, float h) {
         std::vector<Card> cards;
         const std::string me = Updater::thisVersion();
         Row onRow{ "Updates", "", store.updates ? "Online only to GitHub, when you check, install or go back"
-                                                : "Off: Songate never goes online. On: new versions from GitHub, and going back",
+                                                : "Off: Songate never looks for updates. On: new versions from GitHub, and going back",
                    40, [this](float rx, float cy) {
                        if (toggle(uid("set.updon"), rx - 40, cy, store.updates != 0)) {
                            if (store.updates) {

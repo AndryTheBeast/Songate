@@ -186,16 +186,18 @@ bool App::init() {
         airplayQuestion(who, [](int) {});
     }
     // GF_TOG_MOCK: a session this device started, PC in time, the phone's link dropped, a deck linked and not in it (Settings > Devices)
-    if (getenv("GF_TOG_MOCK")) {
+    // (GF_TOG_MOCK=film: for the films and screenshots, both devices in time and under plain names)
+    if (const char* mock = getenv("GF_TOG_MOCK")) {
+        const bool film = std::string(mock) == "film";
         tog.stage = Tog::On;
         tog.host = true;
         tog.startAt = 1;
-        tog.missing = 3;
+        tog.missing = film ? 0 : 3;
         tog.peerId = "pc";
-        tog.peerName = "TheBeast's PC";
+        tog.peerName = film ? "My PC" : "TheBeast's PC";
         Tog::Member a, b;
-        a.id = "pc"; a.name = "TheBeast's PC"; a.state = 2;
-        b.id = "phone"; b.name = "Redmi Note"; b.state = 2; b.lost = true;
+        a.id = "pc"; a.name = tog.peerName; a.state = 2;
+        b.id = "phone"; b.name = film ? "My phone" : "Redmi Note"; b.state = 2; b.lost = !film;
         tog.members = { a, b };
     }
     // … and GF_AIRPLAY_MOCK_NOW=<an image file> an iPhone's song playing, with that file as its cover
@@ -924,18 +926,19 @@ void App::fitWindow() {
         return std::max(full, std::min(want, fit));
     };
     float u;
-    css::Phone = pw < ph && dw < kPhoneDp;
+    // Upright is the phone's layout on every screen, a tablet's and an open fold's too (the user, session 17: "Phone layout on
+    // tablets"; until then those over kPhoneDp across had the console's layout with the sidebar folded)
+    css::Phone = pw < ph;
     if (css::Phone) {
         // The phone's own layout, a phone held upright (the user, 2026-11-04: "everything is so tiny... It's a phone"): 440 app
         // pixels across on that 411 dp phone, and the same size in the hand on any other, so a narrower phone shows a little less
         // across and a wider one more; never under 400 across (narrower still: it shrinks to keep 400) nor over 560 (it grows).
         // Always Standard: Size is sideways' only (the user, 2026-11-04)
         u = dw / std::clamp(dw / (411.f / 440), kPhoneMinW, kPhoneMaxW);
-    } else if (pw >= ph) {
+    } else if (pw > ph) {
         u = console(dw, dh, 411.f / tall);
     } else {
-        // A tablet or an open foldable held upright: the console's layout at the size it has sideways, while that fits
-        u = console(dw, dh, console(dh, dw, 411.f / tall));
+        u = console(dw, dh, 411.f / tall);   // (a square window: neither way up)
     }
     float s = std::max(0.25f, std::floor(u * d * 20) / 20);
 #else

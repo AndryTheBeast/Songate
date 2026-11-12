@@ -42,7 +42,11 @@ namespace {
 
 LeaveFn leaveFn = nullptr;
 void* leaveArg = nullptr;
-SDL_GameController* padDev = nullptr;
+// Every game pad that is attached, all read as one (the user, session 17: "the PC version is not working with controllers":
+// only the first was opened, and on a PC that lists two for one pad, a handheld's own and its Xbox stand-in, or a pad beside a
+// silent virtual one, the first can be the one that never says anything)
+std::vector<SDL_GameController*> pads;
+int padCount = -1;   // SDL's joysticks when the pads were last opened: looked through again when it changes
 uint64_t heldNow = 0, heldBefore = 0;
 bool padLast = false;   // the last thing pressed was on a pad: key caps show its labels
 EXECUTION_STATE awakeBits = 0;
@@ -60,10 +64,26 @@ int leaveWatch(void*, SDL_Event* e) {
     return 0;
 }
 
-void openPad() {
-    if (padDev) return;
-    for (int i = 0; i < SDL_NumJoysticks(); i++)
-        if (SDL_IsGameController(i) && (padDev = SDL_GameControllerOpen(i))) return;
+void closePads() {
+    for (SDL_GameController* c : pads) SDL_GameControllerClose(c);
+    pads.clear();
+}
+
+/** The pads as they are now: opened again whenever one comes or goes (a count that changed, or one that no longer answers). */
+void openPads() {
+    const int n = SDL_NumJoysticks();
+    bool gone = false;
+    for (SDL_GameController* c : pads) if (!SDL_GameControllerGetAttached(c)) gone = true;
+    if (n == padCount && !gone) return;
+    closePads();
+    padCount = n;
+    for (int i = 0; i < n; i++)
+        if (SDL_IsGameController(i))
+            if (SDL_GameController* c = SDL_GameControllerOpen(i)) {
+                pads.push_back(c);
+                printf("[pads] %d: %s\n", i, SDL_GameControllerName(c) ? SDL_GameControllerName(c) : "?");   // (the log: which pads Songate reads)
+            }
+    fflush(stdout);
 }
 
 void awake() { SetThreadExecutionState(ES_CONTINUOUS | awakeBits); }
@@ -116,8 +136,7 @@ void init() {
 }
 
 void quit() {
-    if (padDev) SDL_GameControllerClose(padDev);
-    padDev = nullptr;
+    closePads();
 }
 
 bool mainLoop() { return true; }
@@ -168,8 +187,11 @@ bool legacyData() { return false; }
 // ---- input
 
 void padInit() {
+    // a pad's buttons count while another window is in front too (the Canvas on a second screen, a pad passed to the sofa);
+    // set before the pads' part of SDL starts
+    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER);
-    openPad();
+    openPads();
 }
 
 void padRead() {
@@ -199,12 +221,8 @@ void padRead() {
         }
     }
     const uint64_t fromKeys = b;
-    if (!padDev) openPad();
-    if (padDev && !SDL_GameControllerGetAttached(padDev)) {
-        SDL_GameControllerClose(padDev);
-        padDev = nullptr;
-    }
-    if (padDev) {
+    openPads();
+    for (SDL_GameController* padDev : pads) {
         // By label: Xbox's A is the bottom button and confirms, where Nintendo's A is the right one
         const std::pair<SDL_GameControllerButton, Button> map[] = {
             { SDL_CONTROLLER_BUTTON_A, BtnA },           { SDL_CONTROLLER_BUTTON_B, BtnB },           { SDL_CONTROLLER_BUTTON_X, BtnX },
@@ -225,9 +243,13 @@ uint64_t padDown() { return heldNow & ~heldBefore; }
 uint64_t padHeld() { return heldNow; }
 
 Stick stick(int which) {
-    if (!padDev) return { 0, 0 };
-    const int x = SDL_GameControllerGetAxis(padDev, which ? SDL_CONTROLLER_AXIS_RIGHTX : SDL_CONTROLLER_AXIS_LEFTX);
-    const int y = SDL_GameControllerGetAxis(padDev, which ? SDL_CONTROLLER_AXIS_RIGHTY : SDL_CONTROLLER_AXIS_LEFTY);
+    // of every pad, the stick pushed furthest
+    int x = 0, y = 0;
+    for (SDL_GameController* c : pads) {
+        const int cx = SDL_GameControllerGetAxis(c, which ? SDL_CONTROLLER_AXIS_RIGHTX : SDL_CONTROLLER_AXIS_LEFTX);
+        const int cy = SDL_GameControllerGetAxis(c, which ? SDL_CONTROLLER_AXIS_RIGHTY : SDL_CONTROLLER_AXIS_LEFTY);
+        if (std::abs(cx) + std::abs(cy) > std::abs(x) + std::abs(y)) { x = cx; y = cy; }
+    }
     return { std::clamp(x, -32767, 32767), std::clamp(-y, -32767, 32767) };   // SDL's down is positive, the app's up
 }
 

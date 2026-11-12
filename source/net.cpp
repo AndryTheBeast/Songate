@@ -13,7 +13,7 @@
 #include <mutex>
 
 #ifndef GF_VERSION
-#define GF_VERSION "2.0.0 BETA 2"
+#define GF_VERSION "2.0.0"
 #endif
 
 namespace net {

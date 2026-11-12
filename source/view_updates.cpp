@@ -649,6 +649,13 @@ void App::factoryErase(unsigned mask) {
 
 /** The background player from its new files (pm:shell), then Gatefold: it closes, the new .nro is swapped in, and it starts again. */
 void App::finishUpdate() {
+#ifdef GF_ANDROID
+    // Android replaces an app itself: its installer opens on the download, and Songate stays open until the user agrees there
+    if (const std::string setup = updater.installerFile(); !setup.empty()) {
+        if (!plat::relaunch(setup)) toast("Could not open Android's installer");
+        return;
+    }
+#endif
     if (updater.installed.bgChanged) {
         bg.disconnect();
         std::string err;

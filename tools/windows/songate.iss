@@ -11,6 +11,14 @@ AppId={{8F1B6C2E-5D7A-4E0B-9A63-6B7E2C4D1F01}
 AppName=Songate
 AppVersion={#AppVersion}
 AppPublisher=AndryTheBeast
+; The installer file's own Properties › Details (a beta's "2.0.0 BETA 1" is not a file version: its text only)
+#if Pos(" ", AppVersion) == 0
+VersionInfoVersion={#AppVersion}
+#endif
+VersionInfoProductName=Songate
+VersionInfoProductTextVersion={#AppVersion}
+VersionInfoDescription=Songate for Windows
+VersionInfoCompany=AndryTheBeast
 AppPublisherURL=https://github.com/AndryTheBeast/Songate
 DefaultDirName={localappdata}\Programs\Songate
 DefaultGroupName=Songate

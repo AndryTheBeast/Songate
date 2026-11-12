@@ -223,6 +223,24 @@ public class SongateActivity extends SDLActivity {
         });
     }
 
+    /** An update that Settings › Updates downloaded and checked (plat::relaunch): Android's own installer opens on it, asks, and
+     *  replaces Songate; its last page offers to open the new one. The first time, Android asks to let Songate install apps.
+     *  False when the file is not an update of Songate's or no installer answers. */
+    public static boolean installApk(final String path) {
+        final SongateActivity a = self;
+        if (a == null || path == null) return false;
+        final File f = new File(path);
+        if (!f.isFile() || !f.getName().startsWith("SongateAND-") || !f.getName().endsWith(".apk")) return false;
+        final Intent i = new Intent(Intent.ACTION_VIEW);
+        i.setDataAndType(new Uri.Builder().scheme("content").authority(ApkProvider.AUTHORITY).appendPath(f.getName()).build(), ApkProvider.MIME);
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+        if (i.resolveActivity(a.getPackageManager()) == null) return false;
+        a.runOnUiThread(() -> {
+            try { a.startActivity(i); } catch (Exception e) { Log.w("Songate", "installApk: " + e); }
+        });
+        return true;
+    }
+
     /** The battery beyond its charge (plat::batteryInfo), a "name=value" a line; what the phone does not say has no line:
      *  volts, temp (°C), plugged (0/1), amps (+ into the battery, − out of it), left and full (mAh), health (%), ttf (minutes to
      *  full, Android's own estimate), cycles. */

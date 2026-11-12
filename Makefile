@@ -44,7 +44,7 @@ DATA		:=	data
 INCLUDES	:=	source sysmodule/include
 APP_TITLE	:=	Songate
 APP_AUTHOR	:=	AndryTheBeast
-APP_VERSION	:=	2.0.0 BETA 2
+APP_VERSION	:=	2.0.0
 ROMFS	:=	romfs
 
 #---------------------------------------------------------------------------------
