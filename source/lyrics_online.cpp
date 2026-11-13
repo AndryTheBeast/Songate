@@ -27,7 +27,13 @@ void App::lyrOnlineReset() {
 void App::lyrMemoSet(const std::string& path, const lyrnet::Found* found, const std::string& why) {
     LyrMemo* m = nullptr;
     for (auto& e : lyrMemo_) if (e.path == path) m = &e;
-    if (!m) { lyrMemo_.push_back({ path, false, {}, {} }); m = &lyrMemo_.back(); }
+    if (!m) {
+        // (the last 64 songs looked up: each holds a whole answer, lyrics and all, and they were kept for every song ever asked;
+        // one let go is simply asked again when it next plays)
+        if (lyrMemo_.size() >= 64) lyrMemo_.erase(lyrMemo_.begin());
+        lyrMemo_.push_back({ path, false, {}, {} });
+        m = &lyrMemo_.back();
+    }
     m->have = found != nullptr;
     if (found) m->found = *found;
     m->why = found ? std::string() : why;

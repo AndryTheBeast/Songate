@@ -2033,6 +2033,12 @@ private:
     int albumMixSort_ = -1;
     size_t albumMixLocal_ = ~size_t(0);
     std::unordered_map<std::string, SDL_Texture*> serverCovers_;
+    // Each server cover's last frame drawn (serverCoverTick_, a frame a tick): over kServerCoversMost the ones not drawn for
+    // longest are let go and asked again when next shown. Before 2.0.1 every cover ever shown stayed until sign-out: 0.4 to
+    // 1.4 MB each, hundreds of MB over a day on a server of some size.
+    std::unordered_map<std::string, uint32_t> serverCoverUsed_;
+    uint32_t serverCoverTick_ = 0;
+    static constexpr int kServerCoversMost = 160;
     std::vector<std::pair<std::string, SDL_Surface*>> serverReady_;
     std::unordered_set<std::string> serverAsked_;   // what was asked of the server once (cleared at sign-out)
     // Stage 2: server songs play in a queue of their own (Now playing shows them as an outside source, with working controls);

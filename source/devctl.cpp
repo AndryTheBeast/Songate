@@ -13,11 +13,23 @@
  *   wheel <x> <y> <n> the wheel, n notches
  *   pad <mask>        buttons pressed for a frame (platform.hpp's bits)
  *   search <words>    the Search page for these words (the text card holds the frame, so a test cannot type into it)
- *   stats <file>      frames since the last "stats": how many, the mean and the worst time between two, the worst work
+ *   stats <file>      frames since the last "stats": how many, the mean and the worst time between two, the worst work; and the
+ *                     C heap's used bytes and blocks, walked (leak tests)
  * tools/preview/devresize.py and devsizes.py speak it.
  */
 #if defined(GF_WINDOWED) && defined(GF_DEV) && !defined(GF_ANDROID)
 #include "app.hpp"
+
+#include <malloc.h>
+
+/** The C heap's used bytes and blocks, walked (exact, a few ms): what the app itself holds, apart from the graphics driver's. */
+static void devHeap(size_t& bytes, size_t& blocks) {
+    bytes = blocks = 0;
+    _HEAPINFO h;
+    h._pentry = nullptr;
+    while (_heapwalk(&h) == _HEAPOK)
+        if (h._useflag == _USEDENTRY) { bytes += h._size; blocks++; }
+}
 
 void App::devControl() {
     static const char* path = getenv("GF_CTL");
@@ -70,8 +82,10 @@ void App::devControl() {
         else if (s.rfind("search ", 0) == 0) navigate(View::Search, -1, s.substr(7), route.view != View::Search);
         else if (s.rfind("stats ", 0) == 0) {
             if (FILE* out = fopen(s.substr(6).c_str(), "w")) {
-                fprintf(out, "frames %ld mean %.3f worst %.3f work %.3f hz %d scale %.4f size %d %d real %d %d\n", devN_, devN_ ? devSum_ / devN_ * 1000 : 0.0,
-                        devWorst_ * 1000, devWork_, hz_, double(scale_), css::W, css::H, framePw_, framePh_);
+                size_t heapBytes = 0, heapBlocks = 0;
+                devHeap(heapBytes, heapBlocks);   // (leak tests: after the rest, so the older readers of this line still find their words)
+                fprintf(out, "frames %ld mean %.3f worst %.3f work %.3f hz %d scale %.4f size %d %d real %d %d heap %zu %zu srvcovers %zu\n", devN_, devN_ ? devSum_ / devN_ * 1000 : 0.0,
+                        devWorst_ * 1000, devWork_, hz_, double(scale_), css::W, css::H, framePw_, framePh_, heapBytes, heapBlocks, serverCoverUsed_.size());
                 fclose(out);
             }
             devN_ = 0;

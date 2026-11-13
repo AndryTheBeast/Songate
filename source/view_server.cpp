@@ -404,7 +404,10 @@ void App::openServer(int level, const std::string& id, const std::string& name) 
 /** A cover from the server: its texture once it came (asked for once; none: nullptr for good). */
 SDL_Texture* App::serverCover(const std::string& id, int size) {
     if (id.empty()) return nullptr;
-    if (auto it = serverCovers_.find(id); it != serverCovers_.end()) return it->second;
+    if (auto it = serverCovers_.find(id); it != serverCovers_.end()) {
+        if (it->second) serverCoverUsed_[id] = serverCoverTick_;   // (drawn this frame: among the last to be let go)
+        return it->second;
+    }
     if (serverAsked_.insert("C:" + id).second) {
         subsonic.askCover(id, size);
     }
@@ -1208,13 +1211,17 @@ void App::serverForget() {
     srvPlaylistsGen_ = ~0u;
     for (auto& [k, t] : serverCovers_) if (t) SDL_DestroyTexture(t);
     serverCovers_.clear();
+    serverCoverUsed_.clear();
 }
 
 
 /** Covers decoded on the worker: textures from them, three a frame at most (each frame; nothing while none came). */
 void App::serverCoverPump() {
+    serverCoverTick_++;
     subsonic.takeCovers(serverReady_);
+    bool came = false;
     for (int k = 0; k < 3 && !serverReady_.empty(); k++) {
+        came = true;
         auto [id, s] = serverReady_.front();
         serverReady_.erase(serverReady_.begin());
         SDL_Texture* t = nullptr;
@@ -1228,6 +1235,29 @@ void App::serverCoverPump() {
         }
         if (auto it = serverCovers_.find(id); it != serverCovers_.end() && it->second) SDL_DestroyTexture(it->second);
         serverCovers_[id] = t;
+        if (t) serverCoverUsed_[id] = serverCoverTick_;
+    }
+    // Texture memory kept bounded, as MetaCache keeps the library's own covers: over the most, the covers not drawn for longest
+    // go (none drawn in the last two seconds: a page still on screen keeps all of its own), down to three quarters. One let go
+    // is no longer "asked": the page that shows it next asks again, and the server's bytes are usually still in Subsonic's cache.
+    int most = kServerCoversMost;
+#ifdef GF_DEV
+    if (static const char* m = getenv("GF_SRVCOVERS"); m && atoi(m) > 0) most = atoi(m);   // (tests: a small server shows it too)
+#endif
+    if (came && int(serverCoverUsed_.size()) > most) {
+        std::vector<std::pair<uint32_t, std::string>> old;
+        for (const auto& [id, used] : serverCoverUsed_) if (serverCoverTick_ - used > 120) old.push_back({ used, id });
+        std::sort(old.begin(), old.end());
+        int live = int(serverCoverUsed_.size());
+        for (size_t i = 0; i < old.size() && live > most * 3 / 4; i++, live--) {
+            const std::string& id = old[i].second;
+            if (auto it = serverCovers_.find(id); it != serverCovers_.end()) {
+                if (it->second) SDL_DestroyTexture(it->second);
+                serverCovers_.erase(it);
+            }
+            serverAsked_.erase("C:" + id);
+            serverCoverUsed_.erase(id);
+        }
     }
 }
 

@@ -199,6 +199,9 @@ void App::draw() {
     profMark(1);
 #ifdef GF_ANDROID
     if (phonePortrait()) {   // a phone held upright: its own layout (view_phone.cpp), the same overlays over it
+        // (the hold is set by the wide layout and the Canvas, each frame; turned upright during an Automix join it stayed on,
+        // and nothing was ever let go of the text cache for as long as the phone stayed upright)
+        g.holdCache(false);
         ui.region(Region::Main);
         drawPhone();
         drawSortDone();   // a list in sort mode (by touch): Done over the page's foot
