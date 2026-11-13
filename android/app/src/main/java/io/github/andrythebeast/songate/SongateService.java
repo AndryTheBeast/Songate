@@ -75,6 +75,18 @@ public class SongateService extends Service {
         ended = false;
     }
 
+    /** A media button pressed with Songate in front (SongateActivity.dispatchKeyEvent): handed to the session, which answers it
+     *  exactly as it does from anywhere else. False when there is no session (nothing has played yet): the key goes its usual way. */
+    static boolean mediaButton(android.view.KeyEvent event) {
+        final SongateService s = self;
+        if (s == null || s.session == null) return false;
+        try {
+            return s.session.getController().dispatchMediaButtonEvent(event);
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
     /** Songate ended (end()): no state still on its way may start the service again. */
     private static volatile boolean ended = false;
 

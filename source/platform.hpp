@@ -91,6 +91,19 @@ double commandSeek();
 /** The Canvas opened from a phone held upright: the screen is turned sideways and kept there (on), then given back to the phone's own
  *  turning (off), which puts it upright again when that is how it is held. */
 void holdLandscape(bool on);
+/** Settings › Appearance › Screen rotation: 0 Auto (with the device), 1 Portrait, 2 Landscape; held whatever the device's own
+ *  auto-rotate says. */
+void screenRotation(int kind);
+/** Songate as the device's home screen (Settings: "Use Songate as the home screen"). homeHeld: whether Android has it so now.
+ *  homeSet: on, Android asks in its own dialog; off, Android goes back to its other home app. apps: what a home screen lists,
+ *  each a name and what openApp takes; appIcon: size by size pixels, ARGB. */
+bool homeHeld();
+void homeSet(bool on);
+std::vector<std::pair<std::string, std::string>> apps();
+bool appIcon(const std::string& app, int size, std::vector<uint32_t>& argb);
+void openApp(const std::string& app);
+/** Android's own page for an app, or (uninstall) its own question whether to remove it. */
+void appPage(const std::string& app, bool uninstall);
 /** Android's density: real pixels to a dp (a 160th of an inch as the device's maker and the user's Display size have it; 2.625 on
  *  a 1080-wide phone of 411 dp). The window's size in dp is what the layout's scale comes from (App::fitWindow). */
 float screenDensity();

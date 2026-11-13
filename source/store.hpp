@@ -86,6 +86,14 @@ struct Store {
     // Background blur (2.0.1): how the cover is blurred behind every page and the Canvas. 0 Classic: 12x12 points of it stretched,
     // its patches showing (as it always was; the user likes it, "but some people might not"); 1 Smooth, as smooth as bgSmooth says
     int bgBlur = 0;
+    // Screen rotation (2.0.1, Android only): 0 Auto, with the device; 1 Portrait; 2 Landscape (plat::screenRotation)
+    int screenTurn = 0;
+    // Show Apps (2.0.1, Android only): the device's other apps as a sixth button of the upright bottom bar, while Songate is the
+    // home screen (Settings › Home screen)
+    bool appsTab = false;
+    // Sidebar opacity (2.0.1): how solid the sidebar's ground is when it opens over the page, 0.5 to 1 (solid, as it was). Only a
+    // screen too narrow for the sidebar beside the page opens it so (a small player held sideways, a narrow window)
+    float sideOpacity = 1.f;
     int bgSmooth = 1;               // Smooth's strength: 0 Light, 1 Medium, 2 Strong
     float saturation = 1;           // opts.intensity, 0..1 (higher changes nothing)
     float colourTransition = 1.1f;  // seconds the colours take to follow a new cover (Gatefold's --tx)

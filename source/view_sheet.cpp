@@ -469,6 +469,12 @@ void App::sheetBack() {
         closeSheet();
         return;
     }
+    if (sheet.page == Sheet::AppMenu) { closeSheet(); return; }
+    if (sheet.page == Sheet::AppIcon) {   // the symbols → the app's menu
+        sheet.page = Sheet::AppMenu;
+        ui.focusDefault();
+        return;
+    }
     if (sheet.page == Sheet::SrvPlIcon) {   // the icons → the server playlist's menu
         sheet.page = Sheet::SrvPlMenu;
         ui.focusDefault();

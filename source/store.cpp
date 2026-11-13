@@ -197,6 +197,9 @@ void Store::load() {
         else if (k == "theme") { theme = std::clamp(atoi(v.c_str()), 0, 4); if (theme == 2) theme = 1; }   // Grey is no longer offered: Dark
         else if (k == "brightness") brightness = std::clamp(atoi(v.c_str()), 0, 1);
         else if (k == "bgBlur") bgBlur = std::clamp(atoi(v.c_str()), 0, 1);
+        else if (k == "screenTurn") screenTurn = std::clamp(atoi(v.c_str()), 0, 2);
+        else if (k == "appsTab") appsTab = v == "1";
+        else if (k == "sideOpacity") sideOpacity = std::clamp(float(atof(v.c_str())), 0.5f, 1.f);
         else if (k == "bgSmooth") bgSmooth = std::clamp(atoi(v.c_str()), 0, 2);
         else if (k == "saturation") saturation = std::clamp(float(atof(v.c_str())), 0.f, 1.f);   // was up to 150%, which changed nothing past 100%
         else if (k == "colourTransition") colourTransition = std::clamp(float(atof(v.c_str())), 0.f, 3.f);
@@ -528,7 +531,10 @@ void Store::save() const {
 #ifdef GF_WINDOWED
     appendf(f, "window=%d %d %d %d %d\n", winX, winY, winW, winH, int(winMax));
 #endif
-    appendf(f, "bgBlur=%d\nbgSmooth=%d\n", bgBlur, bgSmooth);
+    appendf(f, "bgBlur=%d\nbgSmooth=%d\nsideOpacity=%.2f\n", bgBlur, bgSmooth, double(sideOpacity));
+#ifdef GF_ANDROID
+    appendf(f, "screenTurn=%d\nappsTab=%d\n", screenTurn, int(appsTab));
+#endif
     appendf(f, "brightness=%d\nsaturation=%.2f\ncolourTransition=%.2f\ncustomBg=%d\ncustomAccent=%d\ncustomAccent2=%d\n", brightness, double(saturation),
             double(colourTransition), customBg, customAccent, customAccent2);
     appendf(f, "customMode=%d\n", customMode);

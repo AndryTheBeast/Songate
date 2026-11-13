@@ -128,7 +128,8 @@ struct Sheet {
                 SrvMenu,                          // a server track's … (App::openServerMenu): its song in App::srvMenuSong_
                 SrvLists,                         // … its Add to a playlist… : the server's playlists
                 SrvPlMenu,                        // a server playlist's menu (+ on the Playlists page): App::srvMenuPl_
-                SrvPlIcon };                      // … its icon (server-playlist-icons.tsv)
+                SrvPlIcon,                        // … its icon (server-playlist-icons.tsv)
+                AppMenu, AppIcon };               // Android, the Apps page: an app's menu (a finger held on it) and its symbol (arg: the app, name: its name)
     Page page = Closed;
     int track = -1;
     int queuePos = -1;      // opened on a queue row: its position in play order; Jobs: the row to focus
@@ -203,6 +204,11 @@ private:
     SDL_Texture* backdropTex(bool prev) const;
     int backdropRadius() const;            // Smooth's blur for the loader (coverFrost); 0 for Classic
     void remakeBackdrop();                 // the setting changed: this song's smooth backdrop made again, from coverPx
+    void setBackdrop(int blur, int smooth);   // Settings' two rows: the choice kept, and what showed fading into the new one
+    void endBackdropFade();
+    SDL_Texture* bgOld_ = nullptr;         // what showed before the setting changed, fading out (drawBackground)
+    bool bgOldOwned_ = false;              // … a Smooth one of the strength before: this fade's own, freed at its end
+    double bgFadeAt_ = 0;
     PaletteOpts paletteOpts() const;
     Palette customPalette() const;
 
@@ -902,7 +908,7 @@ private:
     // Also the Playlists page's playlists (+ → Move) and the sidebar's tabs (Settings → Appearance → Move): same keys.
     // List: a track of one of your own playlists (route.ref), by its row on the page
     // (SrvPlaylists: the server's Playlists page, the playlist itself moved, as yours)
-    struct Grab { enum Kind { Queue, Playlists, Tabs, List, Battery, SrvList, SrvPlaylists } kind = Queue; int pos = -1; bool upNext = false; int cols = 1; int ref = -1; } grab;
+    struct Grab { enum Kind { Queue, Playlists, Tabs, List, Battery, SrvList, SrvPlaylists, Apps } kind = Queue; int pos = -1; bool upNext = false; int cols = 1; int ref = -1; } grab;
     void grabStep(int d);
     void grabDrop();
     // The same lists put in order BY TOUCH (the user, 2026-11-11: "a Dpad way to do it and a touch way like we have on setting -
@@ -1033,7 +1039,11 @@ private:
     struct Job {
         std::string label;
         int done = 0, total = 0;   // total 0: just busy
+#ifdef GF_ANDROID
+        int settingsCat = 4;   // SetLibrary (Android: Home screen is the first page)
+#else
         int settingsCat = 3;   // SetLibrary
+#endif
         Stoppable stop = Stoppable::None;
         const char* row = nullptr;   // its row in that Settings category (showSetting)
         bool kb = false;             // done and total are kilobytes: shown as "4.1 of 12.9 MB" (a download)
@@ -1418,6 +1428,7 @@ public:
     // page, 1 while narrow; when the window gets its room back with it open, the page slides out from under it (1 to 0)
     bool sidePeek_ = false;
     float peekK_ = 0;
+    float sideTopDim_ = 0, sideTopX_ = 0;   // the sidebar open over the page: how much the top bar dims, and from where (drawFrame)
     Route peekRoute_{};
     bool sidebarFolded() const { return narrow_ ? !sidePeek_ : store.sidebarCollapsed; }
     /** Where the page starts: the sidebar's width, but for what of it lies over the page */
@@ -1463,6 +1474,25 @@ public:
     bool phonePortrait() const { return css::Phone; }
     void drawPhone();
     bool phoneQueue_ = false, phoneLyrics_ = false;
+#ifdef GF_ANDROID
+    // Songate as the home screen (Settings › Home screen): Android's own word, asked once a second (homeHeld); the Apps page of
+    // the upright bottom bar's sixth button, shown over the page it was opened from (phoneApps_)
+    bool homeHeld();
+    bool appsTab() { return store.appsTab && homeHeld(); }
+    bool homeHeld_ = false, phoneApps_ = false;
+    // The Apps page's apps (view_phone.cpp): their order, symbols, names and which are hidden are Songate's own (apps.tsv)
+    void openAppMenu(int at);
+    void appMenuRows(std::vector<SheetRow>& rows);
+    void appSheetHead(const char*& icon, std::string& kick, std::string& title, std::string& sub);
+    int appIconCount() const;
+    void appIconGrid(float x, float ry, float w, float by, float bodyH, int cols, float tile, float rowH);
+    void appsRefresh(bool now = false);
+    void appsMove(int from, int to);
+    void appsSave();
+    int appsHidden();
+    void appsShowAll();
+    double homeHeldAt_ = -100;
+#endif
     float phoneQueueP_ = 0, phoneLyricsP_ = 0, phoneSeekP_ = 1;
     double phoneSeekAt_ = -10;   // the seek bar last touched
     double turnAt_ = -10;        // the phone last turned (upright ⇄ sideways): App::frame fades the new layout in
@@ -2304,6 +2334,11 @@ private:
     bool settingsFocusFirst = false;   // a category was chosen: its first setting takes the focus next frame
     int settingsCatSeen_ = -1;   // the category last drawn: opening one may read the card once (drawSettings)
     /** Settings' categories that other pages open by number (the progress cards, the equalizer button). */
-    enum SettingsCat { SetAppearance = 0, SetPlayback = 1, SetEqualizer = 2, SetLibrary = 3, SetStorage = 4, SetDevices = 9, SetLastfm = 10, SetReset = 11, SetUpdates = 12, SetSupport = 13 };   // (Reset above Updates: the user, 2026-10-30)
+#ifdef GF_ANDROID
+    enum { SetFirst = 1 };   // (Android: Home screen is Settings' first page, the user 2026-11-13; the others follow it)
+#else
+    enum { SetFirst = 0 };
+#endif
+    enum SettingsCat { SetAppearance = SetFirst, SetPlayback = SetFirst + 1, SetEqualizer = SetFirst + 2, SetLibrary = SetFirst + 3, SetStorage = SetFirst + 4, SetDevices = SetFirst + 9, SetLastfm = SetFirst + 10, SetReset = SetFirst + 11, SetUpdates = SetFirst + 12, SetSupport = SetFirst + 13 };   // (Reset above Updates: the user, 2026-10-30)
     std::string settingsQuery;
 };

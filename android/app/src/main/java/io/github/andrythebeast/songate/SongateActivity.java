@@ -38,6 +38,15 @@ public class SongateActivity extends SDLActivity {
     private static SongateActivity self;
     private WifiManager.MulticastLock multicast;
 
+    // A player's own buttons (pause, next, previous; a headset's button) with Songate in front: Android gives the key to the window
+    // first, where SDL took it as an ordinary key and nothing answered, so they worked everywhere but inside Songate (a Hiby R4,
+    // 2026-11-13). They go to the media session, as they do when another app is in front.
+    @Override
+    public boolean dispatchKeyEvent(android.view.KeyEvent event) {
+        if (android.view.KeyEvent.isMediaSessionKey(event.getKeyCode()) && SongateService.mediaButton(event)) return true;
+        return super.dispatchKeyEvent(event);
+    }
+
     @Override
     protected String[] getLibraries() {
         // FFmpeg and mpg123 are shared (LGPL): the system's linker finds them beside libmain when it loads
@@ -223,6 +232,21 @@ public class SongateActivity extends SDLActivity {
         });
     }
 
+    /** Settings › Appearance › Screen rotation (2.0.1): 0 Auto, with the device as its own auto-rotate allows (SDL's, as it always
+     *  was); 1 Portrait; 2 Landscape, either way round as it is held. Held whatever the device's auto-rotate says. While the Canvas
+     *  holds the screen sideways this is what it gives the screen back to. */
+    public static void screenRotation(final int kind) {
+        final SongateActivity a = self;
+        if (a == null) return;
+        a.runOnUiThread(() -> {
+            final int want = kind == 1 ? android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                           : kind == 2 ? android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                           : android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_USER;
+            if (landscapeHeld) orientationBefore = want;
+            else if (a.getRequestedOrientation() != want) a.setRequestedOrientation(want);
+        });
+    }
+
     /** An update that Settings › Updates downloaded and checked (plat::relaunch): Android's own installer opens on it, asks, and
      *  replaces Songate; its last page offers to open the new one. The first time, Android asks to let Songate install apps.
      *  False when the file is not an update of Songate's or no installer answers. */
@@ -261,9 +285,169 @@ public class SongateActivity extends SDLActivity {
     private static final int REQUEST_ALLOW_INSTALL = 4711;
     private static Intent pendingInstall = null;   // the installer's intent, waiting for "Allow from this source"
 
+    // ---------------------------------------------------------------- Songate as the home screen (2.0.1)
+    // "Use Songate as the home screen" (the user, 2026-11-13, for players used only for music: Songate is what the device starts
+    // into and where its home button returns). Android's own word is the only truth: whether Songate holds the home role. The
+    // switch enables the home entry (the manifest's HomeAlias) and Android asks, in its own dialog; turned off, the entry is
+    // disabled and Android goes back to its other home app. While it holds, Songate shows over the lock screen, and a lock
+    // screen without a PIN or pattern is passed (Android lets no app take a PIN away).
+    private static final int REQUEST_HOME_ROLE = 7402;
+
+    private static android.content.ComponentName homeAlias(Context c) {
+        return new android.content.ComponentName(c.getPackageName(), "io.github.andrythebeast.songate.HomeAlias");
+    }
+
+    public static boolean homeHeld() {
+        final SongateActivity a = self;
+        if (a == null || Build.VERSION.SDK_INT < 29) return false;
+        try {
+            final android.app.role.RoleManager rm = a.getSystemService(android.app.role.RoleManager.class);
+            return rm != null && rm.isRoleHeld(android.app.role.RoleManager.ROLE_HOME);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    public static void homeSet(final boolean on) {
+        final SongateActivity a = self;
+        if (a == null) return;
+        a.runOnUiThread(() -> {
+            try {
+                final PackageManager pm = a.getPackageManager();
+                pm.setComponentEnabledSetting(homeAlias(a),
+                                              on ? PackageManager.COMPONENT_ENABLED_STATE_ENABLED : PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                                              PackageManager.DONT_KILL_APP);
+                if (on && !homeHeld()) {
+                    Intent ask = null;
+                    if (Build.VERSION.SDK_INT >= 29) {
+                        final android.app.role.RoleManager rm = a.getSystemService(android.app.role.RoleManager.class);
+                        if (rm != null && rm.isRoleAvailable(android.app.role.RoleManager.ROLE_HOME))
+                            ask = rm.createRequestRoleIntent(android.app.role.RoleManager.ROLE_HOME);
+                    }
+                    if (ask != null) a.startActivityForResult(ask, REQUEST_HOME_ROLE);
+                    else a.startActivity(new Intent(Settings.ACTION_HOME_SETTINGS));   // (no dialog on this Android: its own page)
+                }
+            } catch (Exception e) {
+                Log.w("Songate", "homeSet: " + e);
+            }
+            a.applyHome();
+        });
+    }
+
+    /** Over the lock screen while Songate is the home screen; a lock screen with nothing to enter is passed. */
+    private void applyHome() {
+        try {
+            final boolean held = homeHeld();
+            if (Build.VERSION.SDK_INT >= 27) setShowWhenLocked(held);
+            if (!held) return;
+            final android.app.KeyguardManager km = (android.app.KeyguardManager) getSystemService(Context.KEYGUARD_SERVICE);
+            if (km != null && km.isKeyguardLocked() && !km.isKeyguardSecure() && Build.VERSION.SDK_INT >= 26) km.requestDismissKeyguard(this, null);
+        } catch (Exception e) {
+            Log.w("Songate", "applyHome: " + e);
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        applyHome();
+    }
+
+    /** The apps a home screen shows, by name: label, then "package/activity", for each (Songate itself left out). */
+    public static String[] apps() {
+        final SongateActivity a = self;
+        if (a == null) return new String[0];
+        try {
+            final PackageManager pm = a.getPackageManager();
+            final List<android.content.pm.ResolveInfo> found =
+                pm.queryIntentActivities(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0);
+            final java.util.ArrayList<String[]> rows = new java.util.ArrayList<>();
+            for (android.content.pm.ResolveInfo r : found) {
+                if (r.activityInfo == null || a.getPackageName().equals(r.activityInfo.packageName)) continue;
+                final CharSequence label = r.loadLabel(pm);
+                rows.add(new String[] { label != null ? label.toString() : r.activityInfo.packageName,
+                                        r.activityInfo.packageName + "/" + r.activityInfo.name });
+            }
+            java.util.Collections.sort(rows, (x, y) -> x[0].compareToIgnoreCase(y[0]));
+            final String[] out = new String[rows.size() * 2];
+            for (int i = 0; i < rows.size(); i++) {
+                out[i * 2] = rows.get(i)[0];
+                out[i * 2 + 1] = rows.get(i)[1];
+            }
+            return out;
+        } catch (Exception e) {
+            Log.w("Songate", "apps: " + e);
+            return new String[0];
+        }
+    }
+
+    /** An app's icon, size by size pixels of ARGB, or null. */
+    public static int[] appIcon(String component, int size) {
+        final SongateActivity a = self;
+        if (a == null || component == null || size <= 0 || size > 512) return null;
+        try {
+            final android.content.ComponentName cn = android.content.ComponentName.unflattenFromString(component);
+            if (cn == null) return null;
+            final android.graphics.drawable.Drawable d = a.getPackageManager().getActivityIcon(cn);
+            final android.graphics.Bitmap b = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888);
+            final android.graphics.Canvas c = new android.graphics.Canvas(b);
+            d.setBounds(0, 0, size, size);
+            d.draw(c);
+            final int[] px = new int[size * size];
+            b.getPixels(px, 0, size, 0, 0, size, size);
+            b.recycle();
+            return px;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Android's own page for an app (its menu's App settings), or its own question whether to uninstall it. */
+    public static void appPage(final String component, final boolean uninstall) {
+        final SongateActivity a = self;
+        if (a == null || component == null) return;
+        a.runOnUiThread(() -> {
+            try {
+                final android.content.ComponentName cn = android.content.ComponentName.unflattenFromString(component);
+                if (cn == null) return;
+                final Uri pkg = Uri.fromParts("package", cn.getPackageName(), null);
+                a.startActivity(new Intent(uninstall ? Intent.ACTION_DELETE : Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkg)
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            } catch (Exception e) {
+                Log.w("Songate", "appPage: " + e);
+            }
+        });
+    }
+
+    public static void openApp(final String component) {
+        final SongateActivity a = self;
+        if (a == null || component == null) return;
+        a.runOnUiThread(() -> {
+            try {
+                final android.content.ComponentName cn = android.content.ComponentName.unflattenFromString(component);
+                if (cn == null) return;
+                a.startActivity(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setComponent(cn)
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED));
+            } catch (Exception e) {
+                Log.w("Songate", "openApp: " + e);
+            }
+        });
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_HOME_ROLE) {
+            // not given (the dialog left by Cancel): the home entry off again, so Android does not keep offering Songate
+            if (!homeHeld()) {
+                try {
+                    getPackageManager().setComponentEnabledSetting(homeAlias(this), PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                                                                   PackageManager.DONT_KILL_APP);
+                } catch (Exception e) { Log.w("Songate", "home role: " + e); }
+            }
+            applyHome();
+            return;
+        }
         if (requestCode != REQUEST_ALLOW_INSTALL) return;
         final Intent i = pendingInstall;
         pendingInstall = null;

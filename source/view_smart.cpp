@@ -1097,6 +1097,13 @@ void App::drawSmartSheet() {
                          } });
         rows.push_back({ Row::Action, ICON_TAG, "Rename", "", "", [this, p] { closeSheet(); serverRenamePlaylist(p.id, p.name); } });
         rows.push_back({ Row::Action, ICON_X, "Delete", "", "", [this, p] { closeSheet(); serverDeletePlaylist(p.id, p.name, p.songs); } });
+#ifdef GF_ANDROID
+    } else if (page == Sheet::AppMenu) {   // an app on the Apps page (view_phone.cpp)
+        appMenuRows(rows);
+    } else if (page == Sheet::AppIcon) {
+        rows.push_back({ Row::Grid });
+        rows.back().h = ((appIconCount() + IconCols - 1) / IconCols) * IconRowH + 4;
+#endif
     } else if (page == Sheet::Battery) {
         const bool charging = battery.charging == 1;
         const int speed = battery.speed();
@@ -1424,7 +1431,13 @@ void App::drawSmartSheet() {
         fileTitle = "Crash reports";
         fileSub = "Atmosphère's, newest first";
     }
-    const bool ownHead = filePage || relPage || facPage || supPage || page == Sheet::Battery || page == Sheet::SrvMenu || page == Sheet::SrvLists || page == Sheet::SrvPlMenu || page == Sheet::SrvPlIcon;   // pages that say their own header
+#ifdef GF_ANDROID
+    const bool appPage = page == Sheet::AppMenu || page == Sheet::AppIcon;
+    if (appPage) appSheetHead(fileIcon, fileKick, fileTitle, fileSub);
+#else
+    const bool appPage = false;
+#endif
+    const bool ownHead = appPage || filePage || relPage || facPage || supPage || page == Sheet::Battery || page == Sheet::SrvMenu || page == Sheet::SrvLists || page == Sheet::SrvPlMenu || page == Sheet::SrvPlIcon;   // pages that say their own header
     const std::string kick = ownHead ? fileKick : plp ? playlistKind(sheet.recipe) : ask ? sheet.askKicker : eqp ? "Equalizer" : actl ? "Background player" : lacts ? "Games" : rc ? kGroups[rc->group] : plFile ? "Playlist file" : devs ? "Devices" : airp ? "AirPlay" : sleep ? "Sleep timer" : job || jobs ? "In the background" : page == Sheet::Smart ? "New playlist" : "Playlists";
     const std::string title = ownHead ? fileTitle : plp ? plp->name : ask ? sheet.askTitle
                             : eqp ? "Preset"
@@ -1635,6 +1648,9 @@ void App::drawSmartSheet() {
             break;
         }
         case Row::Grid: {
+#ifdef GF_ANDROID
+            if (page == Sheet::AppIcon) { appIconGrid(x, ry, w, by, bodyH, IconCols, IconTile, IconRowH); break; }
+#endif
             // The playlist's icons: tiles like the Settings category tiles, the one in use in the accent and focused first
             const bool srvIcon = page == Sheet::SrvPlIcon;   // a server playlist's: kept by its id (the cloud, none chosen)
             const int ref = srvIcon ? 0 : sheet.recipe;

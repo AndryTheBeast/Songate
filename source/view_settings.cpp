@@ -16,6 +16,7 @@
 #include "app.hpp"
 #include "icons.inc"
 #include "plicons.inc"
+#include "appicons.inc"
 
 #ifndef GF_VERSION
 #define GF_VERSION "2.0.0"
@@ -317,6 +318,11 @@ void App::sortSave() {
     tsort_.moved = false;
     switch (tsort_.kind) {
     case Grab::Playlists: store.save(); break;
+    case Grab::Apps:
+#ifdef GF_ANDROID
+        appsSave();
+#endif
+        break;
     case Grab::SrvPlaylists: saveServerPlaylistOrder(); break;
     case Grab::SrvList: {   // a server playlist's new order, to the server (as grabDrop)
         const SrvPage& pg = srvPage_[0];
@@ -337,6 +343,11 @@ void App::sortMove(int from, int to) {
     if (from == to) return;
     switch (tsort_.kind) {
     case Grab::Playlists: movePlaylist(from, to, false); break;
+    case Grab::Apps:
+#ifdef GF_ANDROID
+        appsMove(from, to);
+#endif
+        break;
     case Grab::SrvPlaylists: moveServerPlaylist(from, to, false); break;
     case Grab::SrvList: {
         SrvPage& pg = srvPage_[0];
@@ -606,6 +617,8 @@ void App::drawSettings(float x, float y, float w, float h) {
 
     std::vector<Section> sections;
     static float satShown, trShown;   // Saturation 0..100% and Colour transition 0..3 s, as the slider's 0..1
+    static float sideOpShown;         // Sidebar opacity 50..100 %, as the slider's 0..1
+    sideOpShown = (std::clamp(store.sideOpacity, 0.5f, 1.f) - 0.5f) / 0.5f;
     satShown = store.saturation;   // 0..100%: past 100% the palette changes no further
     trShown = store.colourTransition / 3.f;
 
@@ -851,21 +864,30 @@ void App::drawSettings(float x, float y, float w, float h) {
                                       // (narrow, it is folded whatever this says: said, so the switch is not taken for broken)
                                       narrow_ ? "This window is narrow, so it is folded for now: your choice is for a window with room" :
 #endif
-                                      "Icons only, more room for everything else", "set.side", store.sidebarCollapsed),
-                            toggleRow("Background motion", "The slowly drifting colours behind every view and the Canvas", "set.motion",
+                                      "Icons only, more room for everything else", "set.side", store.sidebarCollapsed) } });
+        const size_t layoutCard = cards.size() - 1;   // (Android adds its rows to it below: Screen rotation, and Size sideways)
+        // Background, a card of its own (the user, 2026-11-13: "Layout should have Collapse setting and screen rotation. Background
+        // (New row) should have Background motion, blur and smoothness")
+        cards.push_back({ "Background",
+                          { toggleRow("Background motion", "The slowly drifting colours behind every view and the Canvas", "set.motion",
                                       store.motion),
                             // (the user, 2026-11-13: today's blur "looks pixelated but I like it this way but some people might not")
                             segRow("Background blur", "How the cover is blurred behind every page", "set.bgblur", { "Classic", "Smooth" }, store.bgBlur,
-                                   [this](int i) { store.bgBlur = i; remakeBackdrop(); persistSoon(0.3f); }) } });
+                                   [this](int i) { setBackdrop(i, store.bgSmooth); }) } });
         if (store.bgBlur == 1)
             cards.back().rows.push_back(segRow("Smoothness", "Light keeps the cover's shapes; Strong is an even wash of its colours", "set.bgsmooth",
                                                { "Light", "Medium", "Strong" }, store.bgSmooth,
-                                               [this](int i) { store.bgSmooth = i; remakeBackdrop(); persistSoon(0.3f); }));
+                                               [this](int i) { setBackdrop(store.bgBlur, i); }));
 #ifdef GF_ANDROID
+        // Screen rotation (the user, 2026-11-13, Android only: "so the screen does not rotate to landscape even if autorotate is
+        // enabled in android settings", and the way to change between the two): Auto is the device's own turning, as it was
+        cards[layoutCard].rows.push_back(segRow("Screen rotation", "Auto follows the device; Portrait and Landscape hold Songate that way", "set.turn",
+                                           { "Auto", "Portrait", "Landscape" }, store.screenTurn,
+                                           [this](int i) { store.screenTurn = i; plat::screenRotation(i); }));
         // Size, sideways only (the user, 2026-11-04: "in portrait the default is standard but there will not be options to choose. in
         // landscape yes"): upright is always Standard, its row not shown there
         if (!css::Phone)
-            cards.back().rows.insert(cards.back().rows.begin(),
+            cards[layoutCard].rows.insert(cards[layoutCard].rows.begin(),
                                      segRow("Size", store.uiSize == 0 ? "As on the Switch and the PC" : store.uiSize == 1 ? "A little larger, for a phone held close"
                                                                                                            : "Larger still: less fits on each page",
                                             "set.uisize", { "Standard", "Medium", "Largest" }, store.uiSize, [this](int i) {
@@ -920,6 +942,19 @@ void App::drawSettings(float x, float y, float w, float h) {
                                                         : "Above the cover; on the Lyrics tab, in the lyrics' place",
                                      "set.mixhint", { "Automatic", "On the cover", "Above" }, store.mixHint, [this](int i) { store.mixHint = i; }));
         if (!css::Phone) cards.push_back({ "Automix", mixRows });   // upright: Full only, nothing to choose (App::mixCanvasMode)
+#ifdef GF_WINDOWED
+        // Sidebar opacity, where the sidebar opens over the page: a narrow window, a phone or a small player (held sideways there;
+        // upright has no sidebar, and says so nowhere: the row is for the other way of holding it)
+#ifndef GF_ANDROID
+        if (narrow_)
+#endif
+        {
+            char opV[16];
+            snprintf(opV, sizeof opV, "%d %%", int(std::lround(std::clamp(store.sideOpacity, 0.5f, 1.f) * 100)));
+            sidebarRows.push_back(sliderRow("Sidebar opacity", opV, "How solid the sidebar is when it opens over the page", "set.sideop", sideOpShown,
+                                            [this] { store.sideOpacity = std::round((0.5f + sideOpShown * 0.5f) * 100) / 100; }));
+        }
+#endif
         cards.push_back({ "Sidebar", sidebarRows });
         {   // the #-to-Z rail down a list's right edge, per list and per library (the user, 2026-11-09: each library its own set, the
             // card listing the lists that library has; the title bar's switch says which): all on to begin with
@@ -1052,6 +1087,10 @@ void App::drawSettings(float x, float y, float w, float h) {
                 r.label = stName[st];
                 r.hint = stHint[st];
                 r.blockH = narrowSet ? 136 : 92;
+                // (its effects' words, as segmented() measures them: six of them on a narrow screen go on two lines, 42 taller,
+                // which the page allows for below and the bar here: it grew both ways from its one-line place, up into the colours)
+                for (int look : stLooks[st]) r.words += g.measure(lookName[look], { css::Sm, Weight::SemiBold });
+                r.nOpts = stLooks[st].size();
                 r.block = [this, st, narrowSet, swatches](float bx, float by, float bw) {
                     // the battery in this state, as the title bar will draw it, larger
                     g.roundRect(bx, by + 2, 64, 38, 10, pal.text, 0.05f);
@@ -1071,7 +1110,10 @@ void App::drawSettings(float x, float y, float w, float h) {
                         if (looks[k] == store.batteryLook[st]) cur = int(k);
                     }
                     int p = -1;
-                    segmented(uid("set.batlook", st), bx + bw, narrowSet ? by + 108 : by + 68, opts, cur, &p, 0, bw, 1);
+                    float words = 0;
+                    for (const auto& o : opts) words += g.measure(o, { css::Sm, Weight::SemiBold });
+                    const float twoLines = segGrid(words, opts.size(), bw) ? 21.f : 0.f;   // (its middle, half the second line lower)
+                    segmented(uid("set.batlook", st), bx + bw, (narrowSet ? by + 108 : by + 68) + twoLines, opts, cur, &p, 0, bw, 1);
                     if (p >= 0 && p != cur) { store.batteryLook[st] = looks[size_t(p)]; persistSoon(0.3f); }
                 };
                 states.push_back(r);
@@ -1118,7 +1160,8 @@ void App::drawSettings(float x, float y, float w, float h) {
         // what Android does (SongateActivity.keepNativeWhenDestroyed): no switch, it always does it (a switch here changed nothing)
         // (the user chose a switch, 2026-11-04: "B"; SongateActivity.keepNativeWhenDestroyed reads it)
         bgRows.push_back(toggleRow("Keep playing when swiped away",
-                                   "Music keeps playing after you close Songate from the recent apps. Off: it stops",
+                                   // ("on devices that allow it", the user's choice, 2026-11-13: a Hiby R4's system force-stops a swiped app)
+                                   "Music keeps playing after you close Songate from the recent apps, on devices that allow it. Off: it stops",
                                    "set.swipe", store.swipeKeep));
 #elif defined(GF_WINDOWED)
         bgRows.push_back(toggleRow("Keep playing when the window closes", "Songate stays by the clock, playing; its icon brings it back. Off: closing the window quits",
@@ -2523,6 +2566,39 @@ void App::drawSettings(float x, float y, float w, float h) {
 #endif
                   } } } });
     }
+#ifdef GF_ANDROID
+    // Home screen (the user, 2026-11-13: "turn songate into kinda of a launcher ... an awesome feature for people that have DAPs
+    // like the hiby and don't want to see the android OS"). Android's own word is the truth (plat::homeHeld, asked once a second
+    // while Settings is open): the switch asks Android, which asks the user in its own dialog. While Songate is the home screen
+    // the device's other apps are listed here, Android's Settings among them: the way out of Songate.
+    {
+        const bool held = homeHeld();
+        Row sw{ "Use Songate as the home screen", "",
+                "Songate opens when the device starts and at the home button. For players used only for music", 40,
+                [this, held](float rx, float cy) {
+                    if (toggle(uid("set.home"), rx - 40, cy, held)) {
+                        plat::homeSet(!held);
+                        homeHeldAt_ = time - 0.5;   // (Android's answer read soon; after its dialog, within the second)
+                    }
+                } };
+        // Show Apps (the user, 2026-11-13: "a toggle to enable an extra menu on songate bottom bar in portrait... apps will only be
+        // visible in portrait"; usable only with the home screen on, their choice): greyed until then
+        Row ap{ "Show Apps", "", "Adds the device's other apps to the bottom bar when held upright", 40,
+                [this, held](float rx, float cy) {
+                    if (toggle(uid("set.apps"), rx - 40, cy, held && store.appsTab, held ? 1.f : 0.4f) && held) {
+                        store.appsTab = !store.appsTab;
+                        persistSoon(0.3f);
+                    }
+                } };
+        ap.dim = !held;
+        std::vector<Row> homeRows = { sw, ap };
+        // (apps hidden from the Apps page, in an app's menu there: brought back here)
+        if (const int hid = appsHidden(); hid > 0)
+            homeRows.push_back(buttonRow("Hidden apps", std::to_string(hid) + (hid == 1 ? " app is" : " apps are") + " hidden from the Apps page",
+                                         "set.unhide", nullptr, "Show all", [this] { appsShowAll(); }));
+        sections.push_back({ "Home screen", ICON_HOMESCREEN, { { "", homeRows } } });
+    }
+#endif
     // Storage goes with Library (your music, then where it and Gatefold's own files are): built later, placed after it
     {
         auto st = std::find_if(sections.begin(), sections.end(), [](const Section& s) { return std::string(s.name) == "Storage"; });
@@ -2554,6 +2630,14 @@ void App::drawSettings(float x, float y, float w, float h) {
             sections.insert(rs, std::move(s));
         }
     }
+#ifdef GF_ANDROID
+    // Home screen first (the user, 2026-11-13: "should on top of settings, the first tab"), the others after it as they were
+    // (App::SetFirst numbers them)
+    {
+        auto hs = std::find_if(sections.begin(), sections.end(), [](const Section& s) { return std::string(s.name) == "Home screen"; });
+        if (hs != sections.end() && hs != sections.begin()) std::rotate(sections.begin(), hs, hs + 1);
+    }
+#endif
     settingsCat = std::clamp(settingsCat, 0, int(sections.size()) - 1);
     // Pages that read the SD card do it once when they open: Storage and reset's sizes, Updates' backups
     if (settingsCat != settingsCatSeen_) {
@@ -2575,7 +2659,7 @@ void App::drawSettings(float x, float y, float w, float h) {
             { "Controls", "Buttons, the pointer" },                       { "Devices", "Pairing, listening together, AirPlay" },
             { "Last.fm", "Scrobbles and now playing" },                   { "Reset", "Settings, or everything" },
             { "Updates", "New versions, betas, going back" },             { "Support", "Reports and what they hold" },
-            { "About", "Songate, its credits, the tour" } };
+            { "About", "Songate, its credits, the tour" }, { "Home screen", "Songate as the home screen, the device's apps" } };
         ScrollArea& la = area("settings.phone");
         const float rowH = 66, lx = x + 18, lw = w - 36;
         la.view = { x, y, w, h };
@@ -2746,6 +2830,7 @@ void App::drawSettings(float x, float y, float w, float h) {
             Laid l{ &r, {}, 0, 0 };
             if (r.block) {
                 l.h = r.blockH + 16;
+                if (r.nOpts && segGrid(r.words, r.nOpts, innerW)) l.h += 42;   // (a block with a choice bar that takes two lines: a battery state)
             } else {
                 // upright (narrow; the user, 2026-11-04: "Settings that have one button, that button will be in the right"): a slider or
                 // a choice bar on a line of its own, the row's whole width; a button, a switch or a value stays on the right of its

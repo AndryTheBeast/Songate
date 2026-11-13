@@ -459,6 +459,100 @@ void keepOnSwipe(bool on) {
     done(env);
 }
 
+void screenRotation(int kind) {
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
+    if (!env) return;
+    jclass cls = activityClass(env);
+    if (!cls) return;
+    if (jmethodID m = env->GetStaticMethodID(cls, "screenRotation", "(I)V")) env->CallStaticVoidMethod(cls, m, jint(kind));
+    if (env->ExceptionCheck()) env->ExceptionClear();
+}
+
+bool homeHeld() {
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
+    jclass cls = env ? activityClass(env) : nullptr;
+    if (!cls) return false;
+    bool held = false;
+    if (jmethodID m = env->GetStaticMethodID(cls, "homeHeld", "()Z")) held = env->CallStaticBooleanMethod(cls, m) == JNI_TRUE;
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    return held;
+}
+
+void homeSet(bool on) {
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
+    jclass cls = env ? activityClass(env) : nullptr;
+    if (!cls) return;
+    if (jmethodID m = env->GetStaticMethodID(cls, "homeSet", "(Z)V")) env->CallStaticVoidMethod(cls, m, jboolean(on));
+    if (env->ExceptionCheck()) env->ExceptionClear();
+}
+
+std::vector<std::pair<std::string, std::string>> apps() {
+    std::vector<std::pair<std::string, std::string>> out;
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
+    jclass cls = env ? activityClass(env) : nullptr;
+    if (!cls) return out;
+    jmethodID m = env->GetStaticMethodID(cls, "apps", "()[Ljava/lang/String;");
+    auto arr = m ? static_cast<jobjectArray>(env->CallStaticObjectMethod(cls, m)) : nullptr;
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return out; }
+    if (!arr) return out;
+    auto str = [&](jsize i) {
+        std::string v;
+        if (auto s = static_cast<jstring>(env->GetObjectArrayElement(arr, i))) {
+            if (const char* c = env->GetStringUTFChars(s, nullptr)) { v = c; env->ReleaseStringUTFChars(s, c); }
+            env->DeleteLocalRef(s);
+        }
+        return v;
+    };
+    const jsize n = env->GetArrayLength(arr);
+    for (jsize i = 0; i + 1 < n; i += 2) out.emplace_back(str(i), str(i + 1));
+    env->DeleteLocalRef(arr);
+    return out;
+}
+
+bool appIcon(const std::string& app, int size, std::vector<uint32_t>& argb) {
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
+    jclass cls = env ? activityClass(env) : nullptr;
+    if (!cls) return false;
+    jmethodID m = env->GetStaticMethodID(cls, "appIcon", "(Ljava/lang/String;I)[I");
+    if (!m) { env->ExceptionClear(); return false; }
+    jstring name = env->NewStringUTF(app.c_str());
+    auto arr = static_cast<jintArray>(env->CallStaticObjectMethod(cls, m, name, jint(size)));
+    env->DeleteLocalRef(name);
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return false; }
+    if (!arr) return false;
+    const bool ok = env->GetArrayLength(arr) == size * size;
+    if (ok) {
+        argb.resize(size_t(size) * size_t(size));
+        env->GetIntArrayRegion(arr, 0, size * size, reinterpret_cast<jint*>(argb.data()));
+    }
+    env->DeleteLocalRef(arr);
+    return ok;
+}
+
+void appPage(const std::string& app, bool uninstall) {
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
+    jclass cls = env ? activityClass(env) : nullptr;
+    if (!cls) return;
+    if (jmethodID m = env->GetStaticMethodID(cls, "appPage", "(Ljava/lang/String;Z)V")) {
+        jstring name = env->NewStringUTF(app.c_str());
+        env->CallStaticVoidMethod(cls, m, name, jboolean(uninstall));
+        env->DeleteLocalRef(name);
+    }
+    if (env->ExceptionCheck()) env->ExceptionClear();
+}
+
+void openApp(const std::string& app) {
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
+    jclass cls = env ? activityClass(env) : nullptr;
+    if (!cls) return;
+    if (jmethodID m = env->GetStaticMethodID(cls, "openApp", "(Ljava/lang/String;)V")) {
+        jstring name = env->NewStringUTF(app.c_str());
+        env->CallStaticVoidMethod(cls, m, name);
+        env->DeleteLocalRef(name);
+    }
+    if (env->ExceptionCheck()) env->ExceptionClear();
+}
+
 void holdLandscape(bool on) {
     JNIEnv* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
     if (!env) return;

@@ -99,6 +99,9 @@ bool App::init() {
     startMark("init");
 #ifdef GF_WINDOWED
     store.load();   // the window goes where it was left
+#ifdef GF_ANDROID
+    if (store.screenTurn) plat::screenRotation(store.screenTurn);   // Settings › Appearance › Screen rotation, from the first frame
+#endif
     {
         // The console's shape, as big as the screen comfortably holds at this screen's own scale
         SDL_Rect room{ 0, 0, 1280, 720 };
@@ -649,6 +652,7 @@ void App::shutdown() {
     bg.disconnect();   // the background player carries on by itself
     Store::stopWriter();   // the last thread of ours: none may outlive Gatefold (hbloader cannot unload it then)
     sdMark("writer");
+    endBackdropFade();
     for (SDL_Texture* t : { now.cover, now.prevCover, now.blur, now.prevBlur, now.frost, now.prevFrost, now.soft, now.prevSoft, svTex, hueTex, wheelTex, lfmQr }) if (t) SDL_DestroyTexture(t);
     g.shutdown();
     if (renderer_) SDL_DestroyRenderer(renderer_);
@@ -1541,6 +1545,7 @@ void App::input() {
     if (pocketGuard_) pocketGuardTick();
     uint64_t down = plat::padDown();
 #if defined(GF_WINDOWED) && defined(GF_DEV) && !defined(GF_ANDROID)
+    if (devPad_) ui.setPadMode(true);   // (a test's pad press: the focus ring shows, as after a real pad's)
     down |= devPad_;
     devPad_ = 0;
 #endif
@@ -3739,6 +3744,7 @@ void App::forgetNowPlaying() {
     if (now.prevCover) SDL_DestroyTexture(now.prevCover);
     if (now.prevBlur) SDL_DestroyTexture(now.prevBlur);
     if (now.prevFrost) SDL_DestroyTexture(now.prevFrost);
+    endBackdropFade();   // (it may show one of this song's textures)
     if (now.prevSoft) SDL_DestroyTexture(now.prevSoft);
     now.prevCover = now.cover;
     now.prevBlur = now.blur;
@@ -3765,6 +3771,7 @@ void App::applyCover(TrackLoader::Result& r) {
     if (now.prevCover) SDL_DestroyTexture(now.prevCover);
     if (now.prevBlur) SDL_DestroyTexture(now.prevBlur);
     if (now.prevFrost) SDL_DestroyTexture(now.prevFrost);
+    endBackdropFade();   // (it may show one of this song's textures)
     if (now.prevSoft) SDL_DestroyTexture(now.prevSoft);
     now.prevCover = now.cover;
     now.prevBlur = now.blur;
@@ -3808,6 +3815,27 @@ SDL_Texture* App::backdropTex(bool prev) const {
     // (Light is the frost itself; and the frost stands in while a stronger one is not made yet, or was made for another strength)
     if (SDL_Texture* s = prev ? now.prevSoft : now.soft; s && store.bgSmooth != 0) return s;
     return prev ? now.prevFrost : now.frost;
+}
+
+void App::endBackdropFade() {
+    if (bgOld_ && bgOldOwned_) SDL_DestroyTexture(bgOld_);
+    bgOld_ = nullptr;
+    bgOldOwned_ = false;
+}
+
+void App::setBackdrop(int blur, int smooth) {
+    if (blur == store.bgBlur && smooth == store.bgSmooth) return;
+    // what shows now stays up and fades out under the new one. Classic's and Light's are the song's own and stay where they are;
+    // a stronger Smooth's would be made again for the new strength, so this fade takes it over and frees it when it ends
+    endBackdropFade();
+    bgOld_ = backdropTex(false);
+    bgOldOwned_ = bgOld_ && bgOld_ == now.soft;
+    if (bgOldOwned_) now.soft = nullptr;
+    bgFadeAt_ = time;
+    store.bgBlur = blur;
+    store.bgSmooth = smooth;
+    remakeBackdrop();
+    persistSoon(0.3f);
 }
 
 void App::remakeBackdrop() {
@@ -3892,6 +3920,7 @@ ScrollArea& App::area(const char* key, int ref) { return areas[uid(key, ref)]; }
 void App::navigate(View v, int ref, const std::string& query, bool push) {
 #ifdef GF_ANDROID
     if (canvasTurn_ == 2) endCanvasTurn();   // the Canvas left for a page: the screen is the phone's own to turn again
+    phoneApps_ = false;   // (upright: the Apps page lies over the page; going anywhere leaves it)
 #endif
     canvas = false;
     // A picker opened from elsewhere lists afresh: the card may have changed meanwhile (an export, Files)
@@ -4077,6 +4106,7 @@ void App::back() {
 #endif
 #ifdef GF_ANDROID
     // a phone upright: back closes its Up next, then its lyrics page, before it leaves the page (view_phone.cpp)
+    if (phonePortrait() && phoneApps_) { phoneApps_ = false; return; }
     if (phonePortrait() && phoneQueue_) { phoneQueue_ = false; return; }
     if (phonePortrait() && phoneLyrics_ && route.view == View::Now) { phoneLyrics_ = false; return; }
     if (phonePortrait() && route.view == View::Settings && (settingsPhoneOpen_ || !settingsQuery.empty()) && !settingsPhoneDirect_) {   // a page: to the list

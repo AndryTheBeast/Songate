@@ -17,6 +17,10 @@
 #include "app.hpp"
 #include "icons.inc"
 #include "plicons.inc"
+#include "appicons.inc"
+#include "words.hpp"
+#include "platform.hpp"
+#include <unordered_map>
 
 namespace {
 constexpr float kPad = 18;      // the page's side margin
@@ -24,6 +28,67 @@ constexpr float kTopH = 52;     // the wordmark's line
 constexpr float kNavH = 68;     // the bottom bar
 constexpr float kMiniH = 64;    // the mini player
 constexpr int kLibraryHome = -7;   // View::Library's ref for the phone's Library page (its rows); any other: the landscape one
+// The Apps page (Songate as the home screen): the device's apps. Their order, their symbols, their names here and which are hidden
+// are Songate's own (apps.tsv in its folder: the app, its symbol's key, its name here, hidden, a line each in the page's order;
+// written when one of those changes, never otherwise). An app's own icon, in grey, for the ones Songate has no symbol for.
+struct AppEntry { std::string name, app, icon, custom; bool hidden = false; };
+std::vector<AppEntry> gApps;   // every app installed, in the page's order (the hidden ones too)
+double gAppsAt = -100;
+bool gAppsRead = false;
+std::unordered_map<std::string, SDL_Texture*> gAppIcons;   // nullptr: asked, none
+
+// Songate's symbols for kinds of app: what Icon… offers before the playlists' symbols, and what an app gets by itself (appSymbol).
+// The keys are saved (apps.tsv, after "app:"): never rename one.
+struct AppKind { const char* key; const char* svg; };
+const AppKind kAppKinds[] = {
+    { "gear", ICON_GEAR },     { "folder", ICON_FOLDER },   { "camera", APP_CAMERA }, { "clock", APP_CLOCK },   { "calendar", ICON_CALENDAR },
+    { "globe", APP_GLOBE },    { "mail", APP_MAIL },        { "image", ICON_IMAGE },  { "video", APP_VIDEO },   { "music", ICON_MUSIC },
+    { "person", APP_PERSON },  { "phone", APP_PHONE },      { "chat", APP_CHAT },     { "calc", APP_CALC },     { "bag", APP_BAG },
+    { "pin", APP_PIN },        { "download", ICON_DOWNLOAD }, { "cloud", APP_CLOUD }, { "search", ICON_SEARCH }, { "apps", ICON_APPS } };
+
+/** Songate's own symbol for an app, by what its name and package say it is; nullptr: none (its own icon, in grey). */
+const char* appSymbol(const std::string& name, const std::string& app) {
+    std::string s = name + " " + app;
+    for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
+    static const std::pair<const char*, const char*> kinds[] = {
+        { "settings", ICON_GEAR },      { "documentsui", ICON_FOLDER }, { "files", ICON_FOLDER },   { "filemanager", ICON_FOLDER },
+        { "explorer", ICON_FOLDER },    { "camera", APP_CAMERA },       { "clock", APP_CLOCK },     { "calendar", ICON_CALENDAR },
+        { "chrome", APP_GLOBE },        { "browser", APP_GLOBE },       { "firefox", APP_GLOBE },   { "gmail", APP_MAIL },
+        { "mail", APP_MAIL },           { "photos", ICON_IMAGE },       { "gallery", ICON_IMAGE },  { "youtube", APP_VIDEO },
+        { "video", APP_VIDEO },         { "music", ICON_MUSIC },        { "spotify", ICON_MUSIC },  { "tidal", ICON_MUSIC },
+        { "qobuz", ICON_MUSIC },        { "contacts", APP_PERSON },     { "dialer", APP_PHONE },    { "phone", APP_PHONE },
+        { "messag", APP_CHAT },         { "mms", APP_CHAT },            { "calculator", APP_CALC }, { "vending", APP_BAG },
+        { "market", APP_BAG },          { "fdroid", APP_BAG },          { "maps", APP_PIN },        { "download", ICON_DOWNLOAD },
+        { "drive", APP_CLOUD },         { "cloud", APP_CLOUD },         { "search", ICON_SEARCH } };
+    for (const auto& [key, icon] : kinds)
+        if (s.find(key) != std::string::npos) return icon;
+    return nullptr;
+}
+
+/** The symbol an app wears: the one chosen for it (Icon…), else Songate's for its kind, else none. */
+const char* appWears(const AppEntry& e) {
+    if (e.icon.rfind("app:", 0) == 0) {
+        for (const AppKind& k : kAppKinds) if (e.icon.compare(4, std::string::npos, k.key) == 0) return k.svg;
+    } else if (!e.icon.empty()) {
+        if (const char* svg = playlistIconSvg(e.icon)) return svg;
+    }
+    return appSymbol(e.name, e.app);
+}
+
+const std::string& appName(const AppEntry& e) { return e.custom.empty() ? e.name : e.custom; }
+
+int appAt(const std::string& app) {
+    for (size_t i = 0; i < gApps.size(); i++) if (gApps[i].app == app) return int(i);
+    return -1;
+}
+
+/** The apps shown: each one's place in gApps. */
+std::vector<int> appsShown() {
+    std::vector<int> v;
+    for (size_t i = 0; i < gApps.size(); i++) if (!gApps[i].hidden) v.push_back(int(i));
+    return v;
+}
+
 float smooth(float p) { return p * p * (3 - 2 * p); }
 float inOutCubic(float p) { return p < 0.5f ? 4 * p * p * p : 1 - std::pow(-2 * p + 2, 3.f) / 2; }   // the Canvas's layout morph's
 }  // namespace
@@ -93,22 +158,29 @@ void App::drawPhone() {
         g.rect(0, y0, W, kNavH, pal.bg, 0.86f);
         g.rect(0, y0, W, 1, pal.text, 0.09f);
         struct Dest { const char* icon; const char* hintText; View view; };
-        static const Dest dests[5] = { { ICON_DISC, "Now playing", View::Now }, { ICON_GRID, "Library", View::Library }, { ICON_SEARCH, "Search", View::Search },
-                                       { ICON_HEART, "Playlists", View::Playlists }, { ICON_GEAR, "Settings", View::Settings } };
-        const float cw = W / 5;
+        static const Dest dests[6] = { { ICON_DISC, "Now playing", View::Now }, { ICON_GRID, "Library", View::Library }, { ICON_SEARCH, "Search", View::Search },
+                                       { ICON_HEART, "Playlists", View::Playlists }, { ICON_GEAR, "Settings", View::Settings },
+                                       { ICON_APPS, "Apps", View::Now } };   // (the sixth: Settings › Home screen › Show Apps; a page over the page)
+        const int nDest = appsTab() ? 6 : 5;
+        const float cw = W / nDest, pillW = std::min(68.f, cw - 6);
         int active = -1;
-        if (v == View::Now || v == View::Queue) active = 0;   // (the playlist playing: Up next's whole page)
+        if (phoneApps_) active = 5;
+        else if (v == View::Now || v == View::Queue) active = 0;   // (the playlist playing: Up next's whole page)
         else if (v == View::Search) active = 2;
         else if (v == View::Playlists || v == View::List || (v == View::Server && route.ref == 5)) active = 3;   // (a server playlist's page too)
         else if (v == View::Settings) active = 4;
         else if (v != View::PickFolder && v != View::PickPlaylist && v != View::PickExport) active = 1;   // the library's pages
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < nDest; i++) {
             const float cx = cw * i + cw / 2, cy = y0 + kNavH / 2;
             const Id id = uid("ph.nav", i);
             hint(id, dests[i].hintText);
             if (ui.item(id, { cw * i, y0, cw, kNavH }, 20)) {
+                const bool wasApps = phoneApps_;
+                phoneApps_ = i == 5;
+                if (i == 5) { if (wasApps) area("ph.apps").target = 0; }
+                else if (wasApps && dests[i].view == v) {}   // (Apps lay over this very page: it is simply there again)
                 // the destination already showing, pressed again: its page back at its top
-                if (i == 1) { if (v == View::Library && route.ref == kLibraryHome) area("ph.libhome").target = 0; else navigate(View::Library, kLibraryHome); }
+                else if (i == 1) { if (v == View::Library && route.ref == kLibraryHome) area("ph.libhome").target = 0; else navigate(View::Library, kLibraryHome); }
                 else if (i == 2) { if (v != View::Search) navigate(View::Search, -1, std::string()); else area("search", int(View::Search) * 1000 + route.ref).target = 0; }
                 else if (i == 3) { if (v != View::Playlists) navigate(View::Playlists); else area("playlists").target = 0; }
                 else if (i == 4) {
@@ -121,8 +193,8 @@ void App::drawPhone() {
                 else if (phoneLyrics_) phoneLyrics_ = false;   // (Now playing on its second page: the first)
             }
             const bool on = i == active;
-            if (on) g.roundRect(cx - 34, cy - 20, 68, 40, 20, pal.accent, 0.14f);
-            else if (ui.pressed(id)) g.roundRect(cx - 34, cy - 20, 68, 40, 20, pal.text, 0.08f);
+            if (on) g.roundRect(cx - pillW / 2, cy - 20, pillW, 40, 20, pal.accent, 0.14f);
+            else if (ui.pressed(id)) g.roundRect(cx - pillW / 2, cy - 20, pillW, 40, 20, pal.text, 0.08f);
             g.icon(dests[i].icon, cx, cy, 24, on ? pal.accent : pal.text2);
             if (i == 4) {
                 // What the folded sidebar shows above Settings, on Settings' own button here: a newer version's dot, or the
@@ -720,6 +792,81 @@ void App::drawPhone() {
     if (now.track != marqueeTrack || now.info.title != marqueeTitle) { marqueeTrack = now.track; marqueeTitle = now.info.title; marqueeAt = time; }
     top();
     const float pageTop = kTopH, pageBottom = H - kNavH - (v == View::Now ? 0 : kMiniH + 16);
+    // The Apps page (the bottom bar's sixth button, while Songate is the home screen and Show Apps is on): a grid of the device's
+    // other apps, four across, each on Songate's own tile: Songate's symbol for it, or its own icon in grey. A finger held on one:
+    // its menu (openAppMenu). Its Move: the tiles dragged into order, as the Playlists page's (App::sortRun), Done to end.
+    if (phoneApps_ && !appsTab()) phoneApps_ = false;
+    if (phoneApps_) {
+        const bool sort = sorting(Grab::Apps);
+        if (!sort) appsRefresh();
+        const std::vector<int> shown = appsShown();
+        const float top0 = pageTop, bottom = H - kNavH - kMiniH - 16;
+        const int cols = 4, n = int(shown.size());
+        const float cw = (W - 2 * kPad) / cols, cellH = 108, head = 62, tile = 60;
+        ScrollArea& a = area("ph.apps");
+        a.view = { 0, top0, W, bottom - top0 };
+        a.content = head + ((n + cols - 1) / cols) * cellH + 20;
+        g.clip(0, top0, W, bottom - top0);
+        ui.pushArea(&a);
+        g.text("Apps", { css::Xl, Weight::Bold }, kPad, top0 + 16 - a.y, pal.text);
+        const float gridTop = top0 + head - a.y;
+        auto slot = [&](int i) -> SDL_FRect { return { kPad + cw * (i % cols) + 2, gridTop + (i / cols) * cellH, cw - 4, cellH - 6 }; };
+        if (sort) sortRun(n, 0, n - 1, a, slot, true);
+        const int floats = sort ? (tsort_.held >= 0 ? tsort_.held : tsort_.settle) : -1;
+        int loaded = 0, menu = -1;
+        std::string open;
+        for (int k = 0; k <= n; k++) {
+            const bool fl = k == n;   // (after the others: the tile held, or settling)
+            if (fl && (floats < 0 || floats >= n)) break;
+            const int i = fl ? floats : k;
+            if (!fl && i == floats) continue;
+            const SDL_FRect home = slot(i);
+            const SDL_FPoint at = sort ? sortAt(i, home) : SDL_FPoint{ home.x, home.y };
+            if (!fl && (at.y + home.h < top0 || at.y > bottom)) continue;
+            const AppEntry& e = gApps[size_t(shown[size_t(i)])];
+            const SDL_FRect cell{ at.x, at.y, home.w, home.h };
+            const float cx = cell.x + cell.w / 2;
+            if (fl) sortFloatBox(cell.x, cell.y, cell.w, cell.h, 16);
+            const Id id = uid("ph.app", i);
+            const bool hit = ui.item(id, cell, 16) && !sort;   // (in sort mode a tap opens nothing)
+            if (sort) sortGrip("ph.appsort", i, cell, cell);   // (the whole tile drags)
+            if (!sort && ui.pressed(id)) g.roundRect(cell.x, cell.y, cell.w, cell.h, 16, pal.text, 0.07f);
+            const float tx = cx - tile / 2, tyy = cell.y + 8;
+            g.roundRect(tx, tyy, tile, tile, 18, pal.text, 0.07f);
+            g.roundStroke(tx, tyy, tile, tile, 18, 1, pal.text, 0.1f);
+            if (const char* symbol = appWears(e)) {
+                g.icon(symbol, cx, tyy + tile / 2, 28, pal.accent);
+            } else {
+                auto it = gAppIcons.find(e.app);
+                if (it == gAppIcons.end() && loaded < 2) {   // (two a frame: Android draws each on this thread)
+                    loaded++;
+                    std::vector<uint32_t> px;
+                    SDL_Texture* t = nullptr;
+                    if (plat::appIcon(e.app, 96, px) && (t = SDL_CreateTexture(g.renderer(), SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, 96, 96))) {
+                        for (uint32_t& q : px) {   // grey, its own shape kept: it sits in Songate's colours, not its maker's
+                            const uint32_t l = (((q >> 16) & 255) * 77 + ((q >> 8) & 255) * 150 + (q & 255) * 29) >> 8;
+                            q = (q & 0xff000000u) | (l << 16) | (l << 8) | l;
+                        }
+                        SDL_UpdateTexture(t, nullptr, px.data(), 96 * 4);
+                        SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
+                        SDL_SetTextureScaleMode(t, SDL_ScaleModeLinear);
+                    }
+                    it = gAppIcons.emplace(e.app, t).first;
+                }
+                if (it != gAppIcons.end() && it->second) g.image(it->second, cx - 20, tyy + tile / 2 - 20, 40, 40, 10, 0.92f);
+            }
+            g.text(appName(e), { css::Sm }, cx, tyy + tile + 8, pal.text2, 1, Align::Center, int(cw - 6));
+            if (!sort && ui.touchHeld() == id) menu = shown[size_t(i)];
+            else if (hit) open = e.app;
+        }
+        ui.popArea();
+        g.unclip();
+        mini();
+        nav();
+        if (menu >= 0) openAppMenu(menu);   // (after the page: it changes nothing the loop still reads)
+        else if (!open.empty()) plat::openApp(open);
+        return;
+    }
     if (v == View::Now) {
         const bool modal = ui.modal();
         if (phoneQueue_) ui.setModal(true);   // under the open sheet the page takes no touch; once it is closing, the page answers at once
@@ -813,4 +960,210 @@ float App::phoneWorkCard(float x, float y, float w) {
 
 /** Upright: where a page ends over the bar of five (and the mini player, off Now playing): what floats over the foot sits there (Done, while a list is in sort mode). */
 float App::phoneFoot() const { return route.view == View::Now ? css::H - 18.f : css::H - kNavH - kMiniH - 8 - 10; }
+// ------------------------------------------------------------ the Apps page's apps: what Songate keeps about them, an app's menu
+
+/** The apps installed, asked again every few seconds while the page shows (now: at once): Songate's order kept, a new app after
+ *  the others, one that went dropped. The first time, apps.tsv is read. */
+void App::appsRefresh(bool now) {
+    if (!now && time - gAppsAt < 6 && time >= gAppsAt) return;
+    gAppsAt = time;
+    std::vector<AppEntry> kept = gApps;
+    if (!gAppsRead) {
+        gAppsRead = true;
+        std::string text;
+        if (FILE* f = fopen(store.path("apps.tsv").c_str(), "rb")) {
+            char buf[4096];
+            for (size_t k; (k = fread(buf, 1, sizeof buf, f)) > 0;) text.append(buf, k);
+            fclose(f);
+        }
+        size_t at = 0;
+        while (at < text.size()) {
+            size_t end = text.find('\n', at);
+            if (end == std::string::npos) end = text.size();
+            std::string line = text.substr(at, end - at);
+            at = end + 1;
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            std::vector<std::string> cell;
+            for (size_t c = 0;;) {
+                const size_t t = line.find('\t', c);
+                cell.push_back(line.substr(c, t == std::string::npos ? std::string::npos : t - c));
+                if (t == std::string::npos) break;
+                c = t + 1;
+            }
+            if (cell.size() < 4 || cell[0].empty()) continue;
+            kept.push_back({ {}, cell[0], cell[1], cell[2], cell[3] == "1" });
+        }
+    }
+    const auto installed = plat::apps();   // by name
+    std::vector<AppEntry> next;
+    for (const AppEntry& e : kept)
+        for (const auto& [name, app] : installed)
+            if (app == e.app) { next.push_back({ name, app, e.icon, e.custom, e.hidden }); break; }
+    for (const auto& [name, app] : installed) {
+        bool have = false;
+        for (const AppEntry& e : next) if (e.app == app) { have = true; break; }
+        if (!have) next.push_back({ name, app, {}, {}, false });
+    }
+    gApps = std::move(next);
+}
+
+/** apps.tsv: written when the order, a symbol, a name or what is hidden changed, at once (a few lines). */
+void App::appsSave() {
+    std::string out;
+    for (const AppEntry& e : gApps) {
+        std::string custom = e.custom;
+        for (char& c : custom) if (c == '\t' || c == '\n' || c == '\r') c = ' ';
+        out += e.app + "\t" + e.icon + "\t" + custom + "\t" + (e.hidden ? "1" : "0") + "\n";
+    }
+    if (FILE* f = fopen(store.path("apps.tsv").c_str(), "wb")) {
+        fwrite(out.data(), 1, out.size(), f);
+        fclose(f);
+    }
+}
+
+/** The sort mode's move: the app shown at from goes to to, the ones between closing up (the hidden ones keep out of it). */
+void App::appsMove(int from, int to) {
+    const std::vector<int> shown = appsShown();
+    const int n = int(shown.size());
+    if (from < 0 || to < 0 || from >= n || to >= n || from == to) return;
+    const int d = to > from ? 1 : -1;
+    const AppEntry moved = gApps[size_t(shown[size_t(from)])];
+    for (int k = from; k != to; k += d) gApps[size_t(shown[size_t(k)])] = gApps[size_t(shown[size_t(k + d)])];
+    gApps[size_t(shown[size_t(to)])] = moved;
+}
+
+int App::appsHidden() {
+    appsRefresh();
+    int n = 0;
+    for (const AppEntry& e : gApps) n += e.hidden ? 1 : 0;
+    return n;
+}
+
+void App::appsShowAll() {
+    for (AppEntry& e : gApps) e.hidden = false;
+    appsSave();
+    toast("Every app is on the Apps page again");
+}
+
+/** An app's menu: a finger held on its tile. */
+void App::openAppMenu(int at) {
+    if (at < 0 || at >= int(gApps.size())) return;
+    if (sheet.preview) SDL_DestroyTexture(sheet.preview);
+    sheet = Sheet{};
+    sheet.page = Sheet::AppMenu;
+    sheet.arg = gApps[size_t(at)].app;
+    sheet.name = appName(gApps[size_t(at)]);
+    sheet.returnFocus = ui.focusedId();
+    ui.focusDefault();
+}
+
+void App::appSheetHead(const char*& icon, std::string& kick, std::string& title, std::string& sub) {
+    const int at = appAt(sheet.arg);
+    const char* symbol = at >= 0 ? appWears(gApps[size_t(at)]) : nullptr;
+    icon = symbol ? symbol : ICON_APPS;
+    kick = "App";
+    title = at >= 0 ? appName(gApps[size_t(at)]) : sheet.name;
+    sub = sheet.page == Sheet::AppIcon ? "Its symbol on the Apps page: " GF_TAP " one" : "More for this app";
+}
+
+void App::appMenuRows(std::vector<SheetRow>& rows) {
+    const int at = appAt(sheet.arg);
+    if (at < 0) { closeSheet(); return; }   // (it went while the menu was open)
+    const std::string app = sheet.arg;
+    const char* symbol = appWears(gApps[size_t(at)]);
+    rows.push_back({ SheetRow::Action, ICON_PLAY, "Open", "", "", [this, app] {
+                         closeSheet();
+                         plat::openApp(app);
+                     } });
+    rows.push_back({ SheetRow::Action, symbol ? symbol : ICON_APPS, "Icon…", "Its symbol on the Apps page", "", [this] {
+                         sheet.page = Sheet::AppIcon;
+                         ui.focusDefault();
+                     } });
+    if (appsShown().size() > 1)
+        rows.push_back({ SheetRow::Action, ICON_SORT_DOWN, "Move", "", "", [this, app] {
+                             closeSheet();
+                             grabDrop();
+                             sortEnd();
+                             const std::vector<int> shown = appsShown();
+                             const int me = appAt(app);
+                             tsort_ = TouchSort{};
+                             tsort_.on = true;
+                             tsort_.kind = Grab::Apps;
+                             tsort_.ran = true;
+                             for (size_t i = 0; i < shown.size(); i++) if (shown[i] == me) tsort_.show = int(i);
+                             toast("Drag them into order, then " GF_TAP " Done");
+                         } });
+    rows.push_back({ SheetRow::Action, ICON_TAG, "Rename", "", "", [this, app] {
+                         closeSheet();
+                         const int i = appAt(app);
+                         if (i < 0) return;
+                         std::string name = appName(gApps[size_t(i)]);
+                         if (!keyboard("Rename the app", name, name)) return;
+                         while (!name.empty() && name.back() == ' ') name.pop_back();
+                         while (!name.empty() && name[0] == ' ') name.erase(0, 1);
+                         const int j = appAt(app);
+                         if (j < 0) return;
+                         gApps[size_t(j)].custom = name == gApps[size_t(j)].name ? std::string() : name;   // (emptied: its own name again)
+                         appsSave();
+                     } });
+    rows.push_back({ SheetRow::Action, ICON_X, "Hide", "Off the Apps page; Settings › Home screen brings it back", "", [this, app] {
+                         closeSheet();
+                         const int i = appAt(app);
+                         if (i < 0) return;
+                         gApps[size_t(i)].hidden = true;
+                         appsSave();
+                         toast("Hidden");
+                     } });
+    rows.push_back({ SheetRow::Action, ICON_INFO, "App settings", "Android's page for this app", "", [this, app] {
+                         closeSheet();
+                         plat::appPage(app, false);
+                     } });
+    rows.push_back({ SheetRow::Action, ICON_X, "Uninstall", "Android asks before it removes it", "", [this, app] {
+                         closeSheet();
+                         plat::appPage(app, true);
+                         gAppsAt = -100;   // (the page asks again at once when Songate is back in front)
+                     } });
+}
+
+/** Icon…'s tiles: the first follows the app's kind (none chosen), then Songate's symbols for kinds of app, then the playlists'. */
+int App::appIconCount() const { return 1 + int(std::size(kAppKinds)) + int(std::size(kPlaylistIcons)); }
+
+void App::appIconGrid(float x, float ry, float w, float by, float bodyH, int cols, float tile, float rowH) {
+    const int at = appAt(sheet.arg);
+    if (at < 0) { closeSheet(); return; }
+    AppEntry& e = gApps[size_t(at)];
+    const int nk = int(std::size(kAppKinds)), n = appIconCount();
+    const float gap = (w - 48 - cols * tile) / (cols - 1);
+    const char* automatic = appSymbol(e.name, e.app);
+    for (int k = 0; k < n; k++) {
+        const char* svg = k == 0 ? (automatic ? automatic : ICON_SPARKLE) : k <= nk ? kAppKinds[k - 1].svg : kPlaylistIcons[k - 1 - nk].svg;
+        const std::string key = k == 0 ? std::string() : k <= nk ? std::string("app:") + kAppKinds[k - 1].key : std::string(kPlaylistIcons[k - 1 - nk].key);
+        const float tx = x + 24 + (k % cols) * (tile + gap), ty = ry + 2 + (k / cols) * rowH;
+        const Id tid = uid("sp.appicon", k);
+        const bool on = e.icon == key;
+        const bool hit = ui.item(tid, { tx, ty, tile, tile }, 14, on ? DefaultFocus : 0);
+        if (ty + tile > by - 4 && ty < by + bodyH + 4) {
+            const bool hot = ui.pressed(tid) || (ui.focused(tid) && ui.showFocusRing());
+            g.roundRect(tx, ty, tile, tile, 14, on ? pal.accent : pal.text, on ? 0.18f : hot ? 0.1f : 0.05f);
+            if (on) g.roundStroke(tx, ty, tile, tile, 14, 1.5f, pal.accent, 0.6f);
+            g.icon(svg, tx + tile / 2, ty + tile / 2, 24, on ? pal.accentInk : hot ? pal.text : pal.text2);
+        }
+        if (hit) {
+            e.icon = key;
+            appsSave();
+            closeSheet();
+            break;
+        }
+    }
+}
+
+/** Whether Android has Songate as its home screen now (asked once a second; the switch asks again at once). */
+bool App::homeHeld() {
+    if (time - homeHeldAt_ > 1 || time < homeHeldAt_) {
+        homeHeld_ = plat::homeHeld();
+        homeHeldAt_ = time;
+    }
+    return homeHeld_;
+}
+
 #endif

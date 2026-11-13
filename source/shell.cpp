@@ -272,15 +272,33 @@ void App::draw() {
         if (peekK_ > 0.001f && sideW > css::SideWCollapsed + 0.5f) {
             const float over = sideOpen() * peekK_, px = std::round(sideW + edge_.side);
             if (sidePeek_ && ui.item(uid("side.scrim"), { mx, my, mw, mh }, 0)) sidePeek_ = false;
-            g.rect(mx, my, css::W - mx, mh, { 0, 0, 0 }, 0.34f * over);
-            for (int i = 0; i < 6; i++) g.rect(px + i * 3.f, my, 3, mh, { 0, 0, 0 }, 0.16f * over * (6 - i) / 6.f);
-            g.rect(0, my, px, mh, pal.bg, peekK_);
-            g.rect(px, my, 1, mh, pal.text, 0.1f * over);
+            // How solid its ground is: Settings › Appearance › Sidebar › Sidebar opacity (the user, 2026-11-13, a small player held
+            // sideways: the page shows through it).
+            // The top bar is part of it (the user, 2026-11-13, on the Hiby: "When the sidebar open the whole app kinda looks
+            // darker, just do the same for the top part"): the sidebar's ground, shadow and edge run from the screen's top, and the
+            // bar right of it dims as the page does, over its own words (so after it is drawn, below).
+            // (the ground leaves with the sidebar's last third of the way shut, and comes with its first: it stayed whole until the
+            // sidebar was folded and then was gone in one frame, the user on the Hiby, 2026-11-13: "it just abruptly switches from
+            // the sidebar darker shade to the normal without smoothing")
+            const float gk = std::clamp(sideOpen() / 0.35f, 0.f, 1.f);
+            const float ground = peekK_ * std::clamp(store.sideOpacity, 0.5f, 1.f) * gk * gk * (3 - 2 * gk), th = my + mh;
+            const Rgb black{ 0, 0, 0 };
+            g.rect(mx, my, css::W - mx, mh, black, 0.34f * over);
+            g.rect(mx, 0, px - mx, my, black, 0.34f * over);   // (under the sidebar's ground too, as below: one tone when it is not solid)
+            for (int i = 0; i < 6; i++) g.rect(px + i * 3.f, 0, 3, th, black, 0.16f * over * (6 - i) / 6.f);
+            g.rect(0, 0, px, th, pal.bg, ground);
+            g.rect(px, 0, 1, th, pal.text, 0.1f * over);
+            sideTopDim_ = 0.34f * over;
+            sideTopX_ = px;
         }
+        else sideTopDim_ = 0;
 #endif
         drawSidebar();
         ui.region(Region::Title);
         drawTitlebar();
+#ifdef GF_WINDOWED
+        if (sideTopDim_ > 0.001f) g.rect(sideTopX_, 0, css::W - sideTopX_, my, { 0, 0, 0 }, sideTopDim_);   // (the open sidebar: the bar dims with the page)
+#endif
     }
     profMark(3);
     if (!hidden) {
@@ -484,8 +502,19 @@ void App::drawBackground() {
         SDL_RenderCopy(renderer_, t, nullptr, &full);
     };
     const float k = ease(now.fade);
-    art(backdropTex(true), 0.62f * (1 - k));   // (Background blur: Classic's 12×12, or Smooth's)
-    art(backdropTex(false), 0.62f * k);
+    // Background blur changed in Settings: what showed fades into the new one (the user, 2026-11-13: "should be smooth and not abrupt")
+    // (… and "even smoother": 0.9 s, slow at both ends (t³(6t² − 15t + 10)), and a true cross-fade: the old one's share is what the
+    // new one over it leaves of 0.62, so the two always add up to one backdrop and the page's own colour never shows through more
+    // mid-way, as it did with each simply at its half)
+    float kb = 1;
+    if (bgOld_) {
+        const float t = std::clamp(float((time - bgFadeAt_) / 0.9), 0.f, 1.f);
+        kb = t * t * t * (t * (6 * t - 15) + 10);
+        if (t >= 1) endBackdropFade();
+        else art(bgOld_, 0.62f * (1 - kb) / std::max(1e-3f, 1 - 0.62f * kb));
+    }
+    art(backdropTex(true), 0.62f * (1 - k) * kb);   // (Background blur: Classic's 12×12, or Smooth's)
+    art(backdropTex(false), 0.62f * k * kb);
 
     // .aurora: ambient.js — four 78vmax radial gradients drifting there and back
     struct Blob { float x, y, dx, dy, s, T, a; };

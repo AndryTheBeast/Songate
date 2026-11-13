@@ -557,7 +557,7 @@ void App::drawCanvas() {
     const float totalW = segW + 8 + restW;
     float x = mid - (twoRows ? segW : totalW) / 2;
     const float cy = toolsCy + slide, sy = (twoRows ? segCy : toolsCy) + slide;
-    g.roundRect(x, sy - 19, segW, 38, 19, pal.text, 0.08f * ctlA);
+    g.roundRect(x, sy - 21, segW, 42, 21, pal.text, 0.08f * ctlA);   // (42, as the volume pill and the round buttons beside it: it was 38)
     float bx = x + 3;
     // While Minimal is forced (no lyrics), the layouts that cannot show are greyed and ignore presses,
     // and the one actually shown is the raised one.
@@ -566,9 +566,9 @@ void App::drawCanvas() {
         const float w = g.measure(layouts[i], segF) + 28;
         const Id id = uid("cv.layout", i);
         const bool disabled = off & (1u << i);
-        if (live && !disabled && ui.item(id, { bx, sy - 16, w, 32 }, 16)) { store.canvasLayout = i; persistSoon(0.3f); }
+        if (live && !disabled && ui.item(id, { bx, sy - 18, w, 36 }, 18)) { store.canvasLayout = i; persistSoon(0.3f); }
         const bool on = canvasLayoutShown() == i, hot = !disabled && ui.focused(id) && ui.showFocusRing();
-        if (on || hot) g.roundRect(bx, sy - 16, w, 32, 16, pal.text, (on ? 0.16f : 0.08f) * ctlA);
+        if (on || hot) g.roundRect(bx, sy - 18, w, 36, 18, pal.text, (on ? 0.16f : 0.08f) * ctlA);
         g.textC(layouts[i], segF, bx + w / 2, sy, on ? pal.text : pal.text2, ctlA * (disabled ? 0.35f : 1.f), Align::Center);
         bx += w;
     }

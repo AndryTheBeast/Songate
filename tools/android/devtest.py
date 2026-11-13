@@ -134,7 +134,7 @@ try:
     tap_item("ph.nav#4")
     s = wait(lambda s: "set.cat" in s.items and s.has_text("Appearance"), 5)
     step("Settings upright: the list of categories", s)
-    tap_item("set.cat")
+    tap_item("set.cat#1")   # (Appearance: Home screen is Settings' first page on Android since 2.0.1)
     s = wait(lambda s: s.has_text("Saturation"), 5)
     step("a category's page", s)
     adb("shell", "input", "keyevent", "4")

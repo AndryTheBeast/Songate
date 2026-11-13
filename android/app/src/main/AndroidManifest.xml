@@ -35,6 +35,15 @@
         </intent>
     </queries>
 
+    <!-- an app's menu on the Apps page: Uninstall (Android's own question; without this it is never asked) -->
+    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+    <!-- the home screen's list of apps (SongateActivity.apps): the ones a launcher shows -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
     <application android:label="Songate"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="false"
@@ -54,6 +63,19 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- Songate as the home screen (Settings: "Use Songate as the home screen", 2.0.1): off until the switch enables it
+             (SongateActivity.homeSet), so Android does not offer Songate as a home app to those who never asked -->
+        <activity-alias android:name=".HomeAlias"
+            android:targetActivity=".SongateActivity"
+            android:label="Songate"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity-alias>
         <provider android:name=".ApkProvider"
             android:authorities="io.github.andrythebeast.songate.apk"
             android:exported="false"
