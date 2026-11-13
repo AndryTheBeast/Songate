@@ -46,6 +46,12 @@ inline Result pmdmntGetProgramId(u64*, u64) { return 1; }
 inline bool hosversionAtLeast(int, int, int) { return true; }
 inline Result audaSetAudioOutputProcessMasterVolume(u64, u64, float) { return 0; }
 inline Result audoutaSetProcessMasterVolume(u64, u64, float) { return 0; }
+inline Result audaInitialize() { return 0; }   // (the engine opens and closes these itself since 2.0)
+inline void audaExit() {}
+inline Result audoutaInitialize() { return 0; }
+inline void audoutaExit() {}
+inline Result pdmqryInitialize() { return 1; }
+inline void pdmqryExit() {}
 
 enum { PdmPlayEventType_Applet = 0 };
 enum { AppletId_application = 1 };

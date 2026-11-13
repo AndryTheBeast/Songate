@@ -77,6 +77,10 @@ private:
     float gain_ = 0, gainTarget_ = 1, gainStep_ = 1;   // per output frame
     float vol_ = 0.5f;          // volume_ as applied, eased so a slider drag never crackles
     bool pauseAtSilence_ = false, autoPausing_ = false, autoPaused_ = false;
+    // A game event's new music (PlayFade) while something is heard: that fades out first (Fade out), and the start waits here
+    // for the silence. Anything else asked meanwhile (a pause, a skip, another queue) takes its place.
+    bool startWaits_ = false;
+    Cmd startCmd_{};
     bool tailFlushed_ = false;  // the resampler's tail is out: the track is really over
     bool flush_ = false;        // drop the buffers audout holds (a seek, a track picked by hand)
     std::string playing_;      // the path loaded now

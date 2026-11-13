@@ -233,6 +233,7 @@ bool Engine::setQueue(const u8* data, size_t size, u32 by) {
     automix_ = (h.flags & GfbgQueue_Automix) != 0;
     if (automix_ && mode_ == GfbgMode_Shuffle) mode_ = GfbgMode_Default;   // its own order (Gatefold's holdOrderForAutomix)
     mj_ = MixJoin{};   // planned again for this queue
+    if (startWaits_) { startWaits_ = false; rampTo(1, 0.04f, false); }   // (a game event's start was waiting: the app's queue takes over)
     name_.assign(h.name, strnlen(h.name, sizeof h.name));
     // Whatever plays now carries on: Gatefold follows a new queue with PlayAt when it wants
     // another track. KeepCurrent only says the track is the one at pos already.
@@ -502,9 +503,21 @@ void Engine::markDirty() {
 // ============================================================ transport (audio thread, m_ held)
 
 void Engine::runCommands() {
+    // the start that waited for what was playing to fade out: now (or that has ended by itself meanwhile)
+    if (startWaits_ && (gain_ <= 0 || status_ != GfbgStatus_Playing || !dec_)) {
+        startWaits_ = false;
+        cmds_.push_front(startCmd_);
+        if (status_ == GfbgStatus_Playing) status_ = GfbgStatus_Paused;   // (silent: started as from a pause, never crossfaded from)
+    }
     while (!cmds_.empty()) {
         const Cmd c = cmds_.front();
         cmds_.pop_front();
+        // something else was asked while a start waits: that start is off, and what plays is heard again (a pause then
+        // fades it its own way; a seek is no change of mind)
+        if (startWaits_ && c.kind != Cmd::PlayFade && c.kind != Cmd::Seek) {
+            startWaits_ = false;
+            rampTo(1, 0.04f, false);
+        }
         switch (c.kind) {
         case Cmd::PlayAt:
             failed_ = 0;
@@ -546,6 +559,16 @@ void Engine::runCommands() {
             break;
         case Cmd::PlayFade:
             autoPaused_ = autoPausing_ = false;
+            // Music is playing (the folder a game's closing started, and now the game opens with a playlist of its own): it
+            // was cut off where it stood, and only the new music faded. It fades out first, over Fade out; the new queue
+            // starts in the silence and fades in as before (the user, 2026-11-13: "it cuts the audio ... it does not fade")
+            if (status_ == GfbgStatus_Playing && !pauseAtSilence_ && dec_ && gain_ > 0.02f && cfg_.fadeOut >= 0.05f) {
+                startWaits_ = true;
+                startCmd_ = c;
+                rampTo(0, cfg_.fadeOut, false);
+                break;
+            }
+            startWaits_ = false;
             failed_ = 0;
             playAtPos(c.pos, false, c.start);
             gain_ = 0;
@@ -966,10 +989,10 @@ int Engine::produce(s16* out, int frames) {
             // Automix: the join planned by the watch thread starts 0.6 s before its moment, as in Gatefold, the next track
             // waiting delay_ frames for its sample; not ready yet (still being opened), this one plays on and it starts as
             // soon as it is (late: at once)
-            if (dec_ && !outDec_ && mj_.gen == trackGen_ && mj_.dec && status_ == GfbgStatus_Playing && !pauseAtSilence_ &&
+            if (dec_ && !outDec_ && mj_.gen == trackGen_ && mj_.dec && status_ == GfbgStatus_Playing && !pauseAtSilence_ && !startWaits_ &&
                 base_ + double(outFrames_) / GFBG_RATE >= mj_.plan.startOut - 0.6)
                 startJoin();
-        } else if (cfg_.crossfade > 0 && dec_ && !outDec_ && !xfChecked_ && status_ == GfbgStatus_Playing && !pauseAtSilence_ && dec_->duration > 0) {
+        } else if (cfg_.crossfade > 0 && dec_ && !outDec_ && !xfChecked_ && status_ == GfbgStatus_Playing && !pauseAtSilence_ && !startWaits_ && dec_->duration > 0) {
             // Crossfade: once the track being decoded is within the fade of its end, the next one starts under it.
             const double left = dec_->duration - (base_ + double(outFrames_) / GFBG_RATE);
             if (left <= cfg_.crossfade && left > 0.25) {
