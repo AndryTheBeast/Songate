@@ -18,6 +18,10 @@
 #include "metadata.hpp"
 #include "palette.hpp"
 
+/** A 64×64 RGBA sample of a cover blurred smooth: three passes of a box blur 2·radius+1 texels wide each way, edges held
+ *  (radius 4 is the frost of an Automix join). Stretched with linear filtering it shows no grid. The caller frees it. */
+SDL_Surface* coverFrost(const uint8_t* rgba, int pitch, int radius);
+
 class TrackLoader {
 public:
     struct Request {
@@ -27,6 +31,7 @@ public:
         std::vector<uint8_t> image;   // a picture in memory instead (AirPlay's cover): no file is read, no tags
         bool readInfo = true;   // false: only the cover again (one set or forgotten in the track menu)
         PaletteOpts opts;
+        int softRadius = 0;     // the backdrop blurred smooth, this far (coverFrost's radius); 0: not wanted (Background blur: Classic)
     };
     struct Result {
         unsigned gen = 0;
@@ -43,6 +48,7 @@ public:
         std::vector<uint8_t> airCover;   // AirPlay speakers' cover (airsend.hpp): JPEG or PNG, 512 KB at most (GF_AIRPLAY)
         SDL_Surface* blur = nullptr;     // 12×12, stretched with linear filtering for the backdrop
         SDL_Surface* frost = nullptr;    // 64×64, blurred (three box passes): the cover frosted while Automix joins
+        SDL_Surface* soft = nullptr;     // 64×64, blurred further (Request::softRadius): the backdrop, Background blur: Smooth
         std::vector<uint8_t> px;         // the 64×64 sample the palette came from (Brightness and Saturation rebuild it)
         Palette pal;
         void release();

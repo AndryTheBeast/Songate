@@ -649,7 +649,7 @@ void App::shutdown() {
     bg.disconnect();   // the background player carries on by itself
     Store::stopWriter();   // the last thread of ours: none may outlive Gatefold (hbloader cannot unload it then)
     sdMark("writer");
-    for (SDL_Texture* t : { now.cover, now.prevCover, now.blur, now.prevBlur, now.frost, now.prevFrost, svTex, hueTex, wheelTex, lfmQr }) if (t) SDL_DestroyTexture(t);
+    for (SDL_Texture* t : { now.cover, now.prevCover, now.blur, now.prevBlur, now.frost, now.prevFrost, now.soft, now.prevSoft, svTex, hueTex, wheelTex, lfmQr }) if (t) SDL_DestroyTexture(t);
     g.shutdown();
     if (renderer_) SDL_DestroyRenderer(renderer_);
     if (window_) SDL_DestroyWindow(window_);
@@ -3229,6 +3229,7 @@ void App::loadTrack(int trackIdx, bool paused, bool start, double fade, const au
     r.folder = t.folder;
     if (auto it = store.covers.find(t.path); it != store.covers.end()) r.myCover = it->second;
     r.opts = paletteOpts();
+    r.softRadius = backdropRadius();
     loader.request(std::move(r));
 
     wave.request(t.path);
@@ -3676,6 +3677,7 @@ void App::loadTrackCoverAgain() {
     r.readInfo = now.loading;   // the track's own load would be dropped for this one: do its part too
     if (auto it = store.covers.find(t.path); it != store.covers.end()) r.myCover = it->second;
     r.opts = paletteOpts();
+    r.softRadius = backdropRadius();
     loader.request(std::move(r));
 }
 
@@ -3737,10 +3739,12 @@ void App::forgetNowPlaying() {
     if (now.prevCover) SDL_DestroyTexture(now.prevCover);
     if (now.prevBlur) SDL_DestroyTexture(now.prevBlur);
     if (now.prevFrost) SDL_DestroyTexture(now.prevFrost);
+    if (now.prevSoft) SDL_DestroyTexture(now.prevSoft);
     now.prevCover = now.cover;
     now.prevBlur = now.blur;
     now.prevFrost = now.frost;
-    now.cover = now.blur = now.frost = nullptr;
+    now.prevSoft = now.soft;
+    now.cover = now.blur = now.frost = now.soft = nullptr;
     now.fade = 0;
     savedTrack = -1;
 }
@@ -3761,10 +3765,12 @@ void App::applyCover(TrackLoader::Result& r) {
     if (now.prevCover) SDL_DestroyTexture(now.prevCover);
     if (now.prevBlur) SDL_DestroyTexture(now.prevBlur);
     if (now.prevFrost) SDL_DestroyTexture(now.prevFrost);
+    if (now.prevSoft) SDL_DestroyTexture(now.prevSoft);
     now.prevCover = now.cover;
     now.prevBlur = now.blur;
     now.prevFrost = now.frost;
-    now.cover = now.blur = now.frost = nullptr;
+    now.prevSoft = now.soft;
+    now.cover = now.blur = now.frost = now.soft = nullptr;
     now.fade = 0;
     coverPx.clear();
     coverPal = store.brightness ? paletteFixed(FixedTheme::Light) : paletteDefault();
@@ -3783,12 +3789,37 @@ void App::applyCover(TrackLoader::Result& r) {
         now.frost = SDL_CreateTextureFromSurface(renderer_, r.frost);
         if (now.frost) SDL_SetTextureScaleMode(now.frost, SDL_ScaleModeLinear);
     }
+    if (r.soft) {
+        now.soft = SDL_CreateTextureFromSurface(renderer_, r.soft);
+        if (now.soft) SDL_SetTextureScaleMode(now.soft, SDL_ScaleModeLinear);
+    }
     if (!r.px.empty()) {
         coverPal = r.pal;
         coverPx = std::move(r.px);
     }
     r.release();
     applyTheme();
+}
+
+int App::backdropRadius() const { return store.bgBlur != 1 ? 0 : store.bgSmooth == 0 ? 4 : store.bgSmooth == 1 ? 9 : 14; }
+
+SDL_Texture* App::backdropTex(bool prev) const {
+    if (store.bgBlur != 1) return prev ? now.prevBlur : now.blur;
+    // (Light is the frost itself; and the frost stands in while a stronger one is not made yet, or was made for another strength)
+    if (SDL_Texture* s = prev ? now.prevSoft : now.soft; s && store.bgSmooth != 0) return s;
+    return prev ? now.prevFrost : now.frost;
+}
+
+void App::remakeBackdrop() {
+    if (now.soft) { SDL_DestroyTexture(now.soft); now.soft = nullptr; }
+    if (now.prevSoft) { SDL_DestroyTexture(now.prevSoft); now.prevSoft = nullptr; }   // (of another strength: the frost stands in for the fade's rest)
+    const int radius = backdropRadius();
+    if (radius <= 0 || radius == 4 || coverPx.size() != 64 * 64 * 4) return;
+    if (SDL_Surface* s = coverFrost(coverPx.data(), 64 * 4, radius)) {
+        now.soft = SDL_CreateTextureFromSurface(renderer_, s);
+        if (now.soft) SDL_SetTextureScaleMode(now.soft, SDL_ScaleModeLinear);
+        SDL_FreeSurface(s);
+    }
 }
 
 /** [mm:ss.xx] LRC lines become timed lines; anything else is plain text. */

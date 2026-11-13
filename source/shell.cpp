@@ -484,8 +484,8 @@ void App::drawBackground() {
         SDL_RenderCopy(renderer_, t, nullptr, &full);
     };
     const float k = ease(now.fade);
-    art(now.prevBlur, 0.62f * (1 - k));
-    art(now.blur, 0.62f * k);
+    art(backdropTex(true), 0.62f * (1 - k));   // (Background blur: Classic's 12×12, or Smooth's)
+    art(backdropTex(false), 0.62f * k);
 
     // .aurora: ambient.js — four 78vmax radial gradients drifting there and back
     struct Blob { float x, y, dx, dy, s, T, a; };

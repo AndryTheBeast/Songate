@@ -203,12 +203,14 @@ void App::drawCanvas() {
     if (pageWipe_.on) {   // each song's on its side of the page's edge
         const float bw = css::W * 1.24f * drift, bh = css::H * 1.24f * drift;
         wipedImage(0, float(css::W), 0, float(css::H), false, true, [&](bool old) {   // (no light down the whole screen)
-            if (SDL_Texture* tex = mixCover(old, now.blur, now.prevBlur)) g.imageStretched(tex, (css::W - bw) / 2, (css::H - bh) / 2, bw, bh, 0, 0.62f);
+            if (SDL_Texture* tex = mixCover(old, backdropTex(false), backdropTex(true))) g.imageStretched(tex, (css::W - bw) / 2, (css::H - bh) / 2, bw, bh, 0, 0.62f);
         });
     } else {
-        const float bk = now.fade, bn = now.blur ? 0.62f * (now.prevBlur ? bk : 1.f) : 0.f;
-        if (bk < 1) blur(now.prevBlur, 0.62f * (1 - bk) / std::max(1e-3f, 1 - bn));
-        blur(now.blur, bn);
+        SDL_Texture* const bNow = backdropTex(false);   // (Background blur: Classic's 12×12, or Smooth's)
+        SDL_Texture* const bPrev = backdropTex(true);
+        const float bk = now.fade, bn = bNow ? 0.62f * (bPrev ? bk : 1.f) : 0.f;
+        if (bk < 1) blur(bPrev, 0.62f * (1 - bk) / std::max(1e-3f, 1 - bn));
+        blur(bNow, bn);
     }
     const float g1 = alternate(t, 60), g3 = alternate(t, 76);
     g.glow(-20 * vmax() + 35 * vmax() + 14 * vmax() * g1, -24 * vmax() + 35 * vmax() + 10 * vmax() * g1, 35 * vmax() * (1 + 0.15f * g1), pal.blobs[0], 0.5f);

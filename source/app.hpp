@@ -199,6 +199,10 @@ private:
     Palette target = paletteDefault();
     Palette coverPal = paletteDefault();   // the playing cover's own colours, whatever the theme
     std::vector<uint8_t> coverPx;          // its 64×64 sample, so Brightness and Saturation can rebuild coverPal
+    /** Background blur (Settings › Appearance): the blurred cover behind the pages and the Canvas, this song's or the one before's. */
+    SDL_Texture* backdropTex(bool prev) const;
+    int backdropRadius() const;            // Smooth's blur for the loader (coverFrost); 0 for Classic
+    void remakeBackdrop();                 // the setting changed: this song's smooth backdrop made again, from coverPx
     PaletteOpts paletteOpts() const;
     Palette customPalette() const;
 
@@ -212,6 +216,8 @@ private:
         SDL_Texture* prevBlur = nullptr;
         SDL_Texture* frost = nullptr;      // the cover blurred smooth (TrackLoader's frost): Automix's join
         SDL_Texture* prevFrost = nullptr;
+        SDL_Texture* soft = nullptr;       // … blurred further: the backdrop of Background blur: Smooth, Medium and Strong (Light is the frost)
+        SDL_Texture* prevSoft = nullptr;
         float fade = 1;
         std::vector<LyricLine> lyrics;
         bool synced = false;

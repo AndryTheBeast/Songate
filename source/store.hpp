@@ -83,6 +83,10 @@ struct Store {
     bool tracksDesc = false;
     int theme = 0;                  // 0 from the cover, 1 Dark, 3 Light (theme.js FIXED), 4 Custom; 2 was Grey, read as Dark
     int brightness = 0;             // From the cover: 0 dark, 1 light (palette-core.js opts.mode)
+    // Background blur (2.0.1): how the cover is blurred behind every page and the Canvas. 0 Classic: 12x12 points of it stretched,
+    // its patches showing (as it always was; the user likes it, "but some people might not"); 1 Smooth, as smooth as bgSmooth says
+    int bgBlur = 0;
+    int bgSmooth = 1;               // Smooth's strength: 0 Light, 1 Medium, 2 Strong
     float saturation = 1;           // opts.intensity, 0..1 (higher changes nothing)
     float colourTransition = 1.1f;  // seconds the colours take to follow a new cover (Gatefold's --tx)
     // Custom: your background and accents as 0xRRGGBB, −1 when left to the cover (theme.js customTheme)

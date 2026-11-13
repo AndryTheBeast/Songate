@@ -853,7 +853,14 @@ void App::drawSettings(float x, float y, float w, float h) {
 #endif
                                       "Icons only, more room for everything else", "set.side", store.sidebarCollapsed),
                             toggleRow("Background motion", "The slowly drifting colours behind every view and the Canvas", "set.motion",
-                                      store.motion) } });
+                                      store.motion),
+                            // (the user, 2026-11-13: today's blur "looks pixelated but I like it this way but some people might not")
+                            segRow("Background blur", "How the cover is blurred behind every page", "set.bgblur", { "Classic", "Smooth" }, store.bgBlur,
+                                   [this](int i) { store.bgBlur = i; remakeBackdrop(); persistSoon(0.3f); }) } });
+        if (store.bgBlur == 1)
+            cards.back().rows.push_back(segRow("Smoothness", "Light keeps the cover's shapes; Strong is an even wash of its colours", "set.bgsmooth",
+                                               { "Light", "Medium", "Strong" }, store.bgSmooth,
+                                               [this](int i) { store.bgSmooth = i; remakeBackdrop(); persistSoon(0.3f); }));
 #ifdef GF_ANDROID
         // Size, sideways only (the user, 2026-11-04: "in portrait the default is standard but there will not be options to choose. in
         // landscape yes"): upright is always Standard, its row not shown there

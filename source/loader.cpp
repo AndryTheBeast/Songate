@@ -27,6 +27,8 @@ void TrackLoader::Result::release() {
     if (cover) SDL_FreeSurface(cover);
     if (blur) SDL_FreeSurface(blur);
     if (frost) SDL_FreeSurface(frost);
+    if (soft) SDL_FreeSurface(soft);
+    soft = nullptr;
 #ifdef GF_WINDOWED
     if (mediaCover) SDL_FreeSurface(mediaCover);
     mediaCover = nullptr;
@@ -40,14 +42,18 @@ namespace {
  * way (close to a Gaussian of σ ≈ 4.5 texels), edges held. Stretched over the cover with linear filtering it is smooth;
  * the backdrop's 12×12 showed its grid there (the user, 2026-10-28: "frosted should be more like blur").
  */
-SDL_Surface* frostOf(const SDL_Surface* thumb) {
-    constexpr int N = 64, R = 4;
+SDL_Surface* frostOf(const SDL_Surface* thumb) { return coverFrost(static_cast<const uint8_t*>(thumb->pixels), thumb->pitch, 4); }
+}  // namespace
+
+SDL_Surface* coverFrost(const uint8_t* rgba, int pitch, int radius) {
+    constexpr int N = 64;
+    const int R = std::clamp(radius, 1, 24);
     SDL_Surface* out = SDL_CreateRGBSurfaceWithFormat(0, N, N, 32, SDL_PIXELFORMAT_RGBA32);
     if (!out) return nullptr;
     std::vector<float> a(N * N * 3), b(N * N * 3);
     for (int y = 0; y < N; y++)
         for (int x = 0; x < N; x++)
-            for (int c = 0; c < 3; c++) a[(y * N + x) * 3 + c] = static_cast<const uint8_t*>(thumb->pixels)[y * thumb->pitch + x * 4 + c];
+            for (int c = 0; c < 3; c++) a[(y * N + x) * 3 + c] = rgba[y * pitch + x * 4 + c];
     for (int pass = 0; pass < 3; pass++)
         for (int dir = 0; dir < 2; dir++) {   // across, then down
             for (int y = 0; y < N; y++)
@@ -70,7 +76,6 @@ SDL_Surface* frostOf(const SDL_Surface* thumb) {
         }
     return out;
 }
-}  // namespace
 
 void TrackLoader::start() {
     if (thread_.joinable()) return;
@@ -199,6 +204,7 @@ void TrackLoader::work(const Request& r, Result& out) {
         out.pal = paletteFromPixels(out.px.data(), 64, 64, r.opts);
         if (SDL_SoftStretchLinear(thumb, nullptr, tiny, nullptr) == 0) { out.blur = tiny; tiny = nullptr; }
         out.frost = frostOf(thumb);
+        if (r.softRadius > 0 && r.softRadius != 4) out.soft = coverFrost(static_cast<const uint8_t*>(thumb->pixels), thumb->pitch, r.softRadius);   // (4 is the frost itself)
     }
     if (thumb) SDL_FreeSurface(thumb);
     if (tiny) SDL_FreeSurface(tiny);
