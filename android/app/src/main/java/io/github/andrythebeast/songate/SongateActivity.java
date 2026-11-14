@@ -55,6 +55,29 @@ public class SongateActivity extends SDLActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // A second copy of the activity in a process where Songate already runs. Android 12 makes one when Songate becomes the
+        // home app while it is open as an ordinary app (the home entry is started in the home task, a new activity, in the same
+        // process), and at the home button after that. SDL runs once a process: its second start ran the app's main beside the
+        // first and crashed (the user's Hiby R4, 2026-11-14: SIGSEGV in SDLThread as "Set as default" was pressed, and Songate
+        // was not the home screen after it). So the running one is asked to close as at any quit (what it keeps is saved), and
+        // the process ends: Android starts Songate afresh, once, in the place it was asked for. (Newer Androids end the process
+        // themselves before the home entry starts.)
+        // Only while the other copy is still there: an activity made after the last one was closed (Songate swiped away with its
+        // music kept playing, then opened again) joins the running app as it always did, and nothing restarts.
+        // (mDetached: SDL's own word that the screen before was closed with the app left running.)
+        if (self != null && self != this)
+            Log.w("Songate", "an activity made after another: the app's thread " + (mSDLThread == null ? "none" : mSDLThread.isAlive() ? "alive" : "ended")
+                             + ", detached " + mDetached);
+        if (self != null && self != this && !mDetached && mSDLThread != null && mSDLThread.isAlive()) {
+            Log.w("Songate", "a second copy of the activity: closing the running one, starting afresh");
+            try {
+                nativeSendQuit();
+                mSDLThread.join(2500);
+            } catch (Throwable t) {
+                Log.w("Songate", "closing the running copy: " + t);
+            }
+            System.exit(0);   // (before SDL's own onCreate: it would set up a second SDL over the first)
+        }
         self = this;
         SongateService.attach(this);
         copyRomfs();   // before SDL starts the app's thread: the fonts are read at launch

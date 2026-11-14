@@ -77,7 +77,7 @@ constexpr int Xs = 12, Sm = 13, Base = 15, Md = 16, Lg = 19, Xl = 25, Xxl = 34, 
 struct TourStep;   // tour.cpp
 
 enum class View { Now, Queue, Artists, Artist, Genres, Genre, Library, Album, Folders, List, Search, Settings, PickFolder, Albums, PickPlaylist, PickExport,
-                  Files, Playlists, Server };
+                  Files, Playlists, Server, Apps };   // Apps: Android's, Songate as the home screen (view_phone.cpp)
 
 /** Gatefold 1.4.2's four list views (.pl-modes): by album, with covers, as tiles, as a plain list. */
 enum class ListMode { Albums = 0, Covers = 1, Grid = 2, List = 3 };
@@ -786,6 +786,7 @@ private:
     double sessionAt = 0;    // last time the session (queue, position) was written
     int savedTrack = -1;
     bool savedPlaying = false;
+    bool rescanFromList_ = false;   // this rescan takes last time's list as a launch does (Android: the music folder arriving late)
     bool ready_ = false;     // init finished: before that there is nothing worth saving over the files
     std::vector<float> pcm_;
     // Settings → About → Frame times: the last 120 frames, interval and the work before the present
@@ -1022,7 +1023,10 @@ private:
     /** store.tabOrder's indices as the sidebar can show them (Server, which is in Library now, left out). Settings lists them
      *  so, and Move steps along this list. */
     std::vector<int> sidebarTabsShown() const;
-    bool backOn_ = false;        // the touch back button is wanted
+#ifndef GF_ANDROID
+    bool appsTabShown() const { return false; }   // (the Apps tab is Android's alone: its own is beside phonePortrait)
+#endif
+    bool backOn_ = false;       // the touch back button is wanted
     float backAnim_ = 0;         // ... and how far it is shown, eased towards that each frame (never restarted: no jumps)
     double backTick_ = 0;
     bool touchUi_ = false;       // the last input was a finger, for the back button: a button or a click clears it, the stick's drift does not
@@ -1466,12 +1470,19 @@ public:
     // Android's access to the music (plat::storageAllowed): asked for by a card (accessCard) or the music folder page; looked at
     // once a second until it is given, then the music is offered as on any first start
     bool storageOk_ = true;
+    // The music folder is chosen but not there (rootAway_): Songate as the home screen starts with the device, before Android has
+    // the card (or any storage) ready; and a card can be taken out. Looked for once a second; when it is there the music is read
+    // as at any start and the queue comes back. Until then the queue kept from last time is not written over with an empty one.
+    bool rootAway_ = false;
+    double rootCheckAt_ = 0;
+    int rootWaitedMs_ = -1;   // how long the start waited for it (the dev log says, once)
     double storageCheckAt_ = 0;
     void accessCard();
     void storageGiven();
     // A phone held upright (view_phone.cpp): its own layout of the same pages. Up next and the lyrics page are Now playing's own,
     // opened and closed with their animation (the P values, 0..1); the seek bar is the visualizer until touched (phoneSeekP_)
     bool phonePortrait() const { return css::Phone; }
+    bool appsTabShown() const { return store.appsTab && homeHeld_; }   // the sidebar's Apps tab can show (homeHeld_: asked once a second)
     void drawPhone();
     bool phoneQueue_ = false, phoneLyrics_ = false;
 #ifdef GF_ANDROID
@@ -1480,6 +1491,14 @@ public:
     bool homeHeld();
     bool appsTab() { return store.appsTab && homeHeld(); }
     bool homeHeld_ = false, phoneApps_ = false;
+    // The page itself (appsGrid): upright over the page it was opened from, sideways the sidebar's Apps tab's page (drawApps,
+    // View::Apps; the tab shows while appsTab() and can be moved and switched off in Settings › Appearance › Sidebar)
+    void appsGrid(float x, float top0, float w, float bottom, float pad, int cols, bool wide);
+    void appsAct();
+    void drawApps(float x, float y, float w, float h);
+    void appsPlusMenu();
+    int appHover_ = -1, appMenuAsk_ = -1;
+    std::string appOpenAsk_;
     // The Apps page's apps (view_phone.cpp): their order, symbols, names and which are hidden are Songate's own (apps.tsv)
     void openAppMenu(int at);
     void appMenuRows(std::vector<SheetRow>& rows);

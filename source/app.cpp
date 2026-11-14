@@ -341,6 +341,21 @@ bool App::init() {
 #ifdef GF_ANDROID
     storageOk_ = plat::storageAllowed();   // a Music folder is seen without access, but nothing in it: offered once it is given
     if (store.musicRoot.empty() && storageOk_) found = plat::musicFolder();
+    rootAway_ = storageOk_ && !store.musicRoot.empty() && Library::validRoots({ store.musicRoot }).empty();   // (not ready yet: looked for each second)
+    // Not there yet (the device has just started): waited for here, before anything is drawn, for up to four seconds. It comes
+    // within a second or three on the user's Hiby R4, and then the music and the queue are read as at any start, behind the
+    // first frame; read after it, they were a third of a second out of the opening animation (the user, 2026-11-14: "still a
+    // slight stutter"). Longer than that (a device locked with a PIN keeps its storage shut until it is unlocked): Songate
+    // opens empty and the folder is looked for each second (App::update).
+    if (rootAway_) {
+        const Uint32 from = SDL_GetTicks();
+        while (rootAway_ && SDL_GetTicks() - from < 4000) {
+            SDL_Delay(50);
+            rootAway_ = Library::validRoots({ store.musicRoot }).empty();
+        }
+        fprintf(stderr, "the music folder: waited %u ms, %s\n", unsigned(SDL_GetTicks() - from), rootAway_ ? "not there yet" : "there");
+        rootWaitedMs_ = int(SDL_GetTicks() - from);
+    }
 #elif defined(GF_WINDOWED)
     if (store.musicRoot.empty()) found = plat::musicFolder();
 #else
@@ -444,8 +459,10 @@ void App::rescan(const std::vector<std::string>* given, Library* built) {
     std::vector<std::string> files;
     bool remembered = false;
     if (given) files = *given;
-    else if (!ready_ && !roots.empty()) {
+    else if ((!ready_ || rescanFromList_) && !roots.empty()) {
         // Launch: the list from last time, if it is for the same folder ("root=" first, then one path a line).
+        // (Also Android's music folder arriving after the start, rescanFromList_: the folder is walked on a worker, as here,
+        // not in the frame: the user, 2026-11-14, "remove it from the screen thread (only android)".)
         if (FILE* f = fopen(store.path("library.tsv").c_str(), "rb")) {
             char line[2048];
             std::string root;
@@ -796,6 +813,9 @@ void App::persistNow(bool sessionOnly) {
     saveStats();
     if (lyricNudgeUnsaved_) { lyricNudgeUnsaved_ = false; store.saveLyricNudges(); }
     if (!store.resume) return;
+#ifdef GF_ANDROID
+    if (rootAway_) return;   // the music folder is not there yet: the queue from last time stays as it was saved (it comes back with it)
+#endif
     Session s;
     const Queue& kept = tog.queueTaken ? tog.savedQueue : q;   // a session's list is never saved
     s.name = kept.name;
@@ -1413,6 +1433,10 @@ void App::plusMenu(bool held) {
     } else if (route.view == View::Playlists && !canvas) {   // the Playlists page: the playlist's menu (Move, Icon, Rename)
         if (plHoverShown >= 0) openPlaylistMenu(plHoverShown);
         else if (!held) toast(plHoverShown == -1 ? "Liked stays first" : "Select a playlist, then " GF_MENU_WORDS);
+#ifdef GF_ANDROID
+    } else if (route.view == View::Apps && !canvas) {   // Apps (sideways): the app's menu
+        appsPlusMenu();
+#endif
     } else if (route.view == View::Files && !canvas) {   // Files: the menu of the row under focus
         if (!files.hover.empty()) openFileMenu(files.hover);
         else if (!held) toast("Select a file or folder, then " GF_MENU_WORDS);
@@ -1773,6 +1797,36 @@ void App::update() {
     if (!storageOk_ && time >= storageCheckAt_) {
         storageCheckAt_ = time + 1;
         if (plat::storageAllowed()) storageGiven();
+    }
+    // The music folder was not there (Songate as the home screen, started with the device before its storage was ready; a card
+    // taken out): once it is, the music is read and the queue from last time comes back, as at a start (the user's Hiby R4,
+    // 2026-11-14: "I rebooted ... Songate is the main launcher but I lost the music folder")
+    if (storageOk_ && !store.musicRoot.empty() && time >= rootCheckAt_) {
+        rootCheckAt_ = time + 1;
+#ifdef GF_DEV
+        if (rootWaitedMs_ >= 0) { logLine("Music folder: the start waited " + std::to_string(rootWaitedMs_) + " ms for it" + (rootAway_ ? ", not there yet" : "")); rootWaitedMs_ = -1; }
+#endif
+        const bool there = !Library::validRoots({ store.musicRoot }).empty();
+        if (rootAway_ && there) {
+            rootAway_ = false;
+            fprintf(stderr, "the music folder is there now: read\n");
+            const Uint64 t0 = SDL_GetPerformanceCounter();
+            rescanFromList_ = true;   // the list kept from last time now, the folder itself walked on a worker and compared after
+            rescan();
+            rescanFromList_ = false;
+            const Uint64 t1 = SDL_GetPerformanceCounter();
+            if (store.resume && now.track < 0 && q.tracks.empty()) restoreSession();
+#ifdef GF_DEV
+            {
+                const double f = 1000.0 / double(SDL_GetPerformanceFrequency());
+                char line[120];
+                snprintf(line, sizeof line, "Music folder arrived: read %.0f ms, queue back %.0f ms", double(t1 - t0) * f, double(SDL_GetPerformanceCounter() - t1) * f);
+                logLine(line);
+            }
+#endif
+        } else if (!rootAway_ && !there && lib.tracks.empty()) {
+            rootAway_ = true;   // (gone while nothing of it is loaded: waited for, the same)
+        }
     }
     // Hidden, Android has taken the GPU's surface away: a new song's cover waits to be uploaded until Songate is seen again, and only
     // the system's music controls get it now (from memory)

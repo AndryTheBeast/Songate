@@ -193,7 +193,7 @@ void Store::load() {
         else if (k == "libTab") libTab = std::clamp(atoi(v.c_str()), 0, 4);
         else if (k == "tracksSort") tracksSort = std::clamp(atoi(v.c_str()), 0, 5);
         else if (k == "tracksDesc") tracksDesc = v == "1";
-        else if (k == "hiddenTabs") hiddenTabs = unsigned(atoi(v.c_str())) & 127u;
+        else if (k == "hiddenTabs") hiddenTabs = unsigned(atoi(v.c_str())) & (HasAppsTab ? 127u | 256u : 127u);
         else if (k == "theme") { theme = std::clamp(atoi(v.c_str()), 0, 4); if (theme == 2) theme = 1; }   // Grey is no longer offered: Dark
         else if (k == "brightness") brightness = std::clamp(atoi(v.c_str()), 0, 1);
         else if (k == "bgBlur") bgBlur = std::clamp(atoi(v.c_str()), 0, 1);
@@ -215,6 +215,7 @@ void Store::load() {
         else if (k == "vizBands") vizBands = std::clamp(atoi(v.c_str()), 16, 96);
         else if (k == "vizPeaks") vizPeaks = v == "1";
         else if (k == "seekWave") seekWave = v == "1";
+        else if (k == "seekAnim") seekAnim = std::clamp(atoi(v.c_str()), 0, 2);
         else if (k == "canvasPulse") canvasPulse = v == "1";
         else if (k == "canvasBars") canvasBars = std::clamp(atoi(v.c_str()), 16, 128);
         else if (k == "canvasIdleAfter") canvasIdleAfter = std::clamp(float(atof(v.c_str())), 1.f, 30.f);
@@ -304,12 +305,22 @@ void Store::load() {
             std::vector<int> o;
             for (size_t i = 0; i < v.size();) {
                 const int t = atoi(v.c_str() + i);
-                if (((t >= 0 && t < TabCount) || isLine(t)) && std::find(o.begin(), o.end(), t) == o.end()) o.push_back(t);
+                if ((tabExists(t) || isLine(t)) && std::find(o.begin(), o.end(), t) == o.end()) o.push_back(t);
                 const size_t c = v.find(',', i);
                 if (c == std::string::npos) break;
                 i = c + 1;
             }
-            for (int t = 0; t < TabCount; t++) if (std::find(o.begin(), o.end(), t) == o.end()) o.push_back(t);
+            for (int t = 0; t < TabCount; t++) {
+                if (!tabExists(t) || std::find(o.begin(), o.end(), t) != o.end()) continue;
+                // Apps (Android's, newer than any settings file before 2.1.0) goes under Library, with the other tabs, not past
+                // the line Files has above it
+                auto lib = t == TabApps ? std::find(o.begin(), o.end(), int(TabLibrary)) : o.end();
+                if (lib != o.end()) {
+                    ++lib;
+                    if (lib != o.end() && *lib == TabServer) ++lib;
+                    o.insert(lib, t);
+                } else o.push_back(t);
+            }
             tabOrder = o;
         }
         else if (k == "filesTab") filesTabKnown = true;
@@ -523,6 +534,9 @@ void Store::save() const {
             sidebarCollapsed, motion, showSpectrum, canvasLayout, canvasLyrics);
     appendf(f, "vizSensitivity=%.3f\nvizSmoothing=%.3f\nvizBands=%d\nvizPeaks=%d\ncoverPulse=%.3f\nseekWave=%d\n", vizSensitivity, vizSmoothing, vizBands,
             vizPeaks, coverPulse, seekWave);
+#ifdef GF_ANDROID
+    appendf(f, "seekAnim=%d\n", seekAnim);   // (Android's alone: no other build has that bar, so none keeps a line for it)
+#endif
     appendf(f, "canvasPulse=%d\nhiddenTabs=%u\n", canvasPulse, hiddenTabs);
     appendf(f, "canvasBars=%d\ncanvasIdleAfter=%.2f\ncanvasVizTime=%.2f\n", canvasBars, double(canvasIdleAfter), double(canvasVizTime));
     appendf(f, "canvasFloat=%d\ncanvasZoom=%d\nresume=%d\ntheme=%d\ncanvasAutoMinimal=%d\n", canvasFloat, canvasZoom, resume, theme,

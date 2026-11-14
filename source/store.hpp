@@ -108,7 +108,10 @@ struct Store {
     float vizSmoothing = 0.f;
     int vizBands = 56;
     bool vizPeaks = true;
-    bool seekWave = true;          // Settings › Visualizer › Seek bar › Waveform: the song's loudness as bars; off, a plain line
+    // Android upright, Settings › Visualizer › Seek bar › Seek bar animation: how the bars come back after scrubbing. 0 Quick (half a
+    // second, all together), 1 Smooth (longer and gentler: the default, the user's choice), 2 Wave (out from the song's place)
+    int seekAnim = 1;
+    bool seekWave = true;         // Settings › Visualizer › Seek bar › Waveform: the song's loudness as bars; off, a plain line
     float coverPulse = 1.f;     // 1 = Gatefold's breathing
     bool canvasPulse = true;    // the pulse on the Canvas cover too
     int canvasBars = 112;           // the Canvas's idle spectrum (Now playing has vizBands)
@@ -187,20 +190,31 @@ struct Store {
     // (Files is hidden until shown: a settings.txt from before it existed gets bit 6 too, Store::load)
     unsigned hiddenTabs = 64;
     // The sidebar's tabs in your order (Settings → Appearance → Sidebar); Settings stays at the bottom
-    enum Tab { TabNow, TabQueue, TabAlbums, TabArtists, TabGenres, TabFolders, TabLibrary, TabFiles, TabServer, TabCount };   // TabServer: a Subsonic server's (shown while signed in)
+    enum Tab { TabNow, TabQueue, TabAlbums, TabArtists, TabGenres, TabFolders, TabLibrary, TabFiles, TabServer, TabApps, TabCount };   // TabServer: a Subsonic server's (shown while signed in)
     // Lines between the tabs, placed as you like (Settings → Appearance → Sidebar: Add a line, Move, Remove): ids TabLine + k
     static constexpr int TabLine = 100, MaxLines = 4;
     static bool isLine(int tab) { return tab >= TabLine && tab < TabLine + MaxLines; }
+    // TabApps is Android's alone (the device's apps, while Songate is its home screen): no other build keeps it in its order
+#ifdef GF_ANDROID
+    static constexpr bool HasAppsTab = true;
+#else
+    static constexpr bool HasAppsTab = false;
+#endif
+    static bool tabExists(int tab) { return tab >= 0 && tab < TabCount && (tab != TabApps || HasAppsTab); }
     static unsigned tabBit(int tab) {   // its bit in hiddenTabs (0.4's numbering); Now playing and lines have none
-        static const unsigned bits[TabCount] = { 0, 1, 32, 2, 4, 16, 8, 64, 128 };
+        static const unsigned bits[TabCount] = { 0, 1, 32, 2, 4, 16, 8, 64, 128, 256 };
         return tab >= 0 && tab < TabCount ? bits[tab] : 0;
     }
     static const char* tabName(int tab) {
-        static const char* names[TabCount] = { "Now playing", "Playlist", "Albums", "Artists", "Genres", "Folders", "Library", "Files", "Server" };
+        static const char* names[TabCount] = { "Now playing", "Playlist", "Albums", "Artists", "Genres", "Folders", "Library", "Files", "Server", "Apps" };
         return tab >= 0 && tab < TabCount ? names[tab] : "Line";
     }
     // (a line above Files by default: it had one of its own before lines could be placed)
+#ifdef GF_ANDROID
+    std::vector<int> tabOrder = { TabNow, TabQueue, TabAlbums, TabArtists, TabGenres, TabFolders, TabLibrary, TabServer, TabApps, TabLine, TabFiles };
+#else
     std::vector<int> tabOrder = { TabNow, TabQueue, TabAlbums, TabArtists, TabGenres, TabFolders, TabLibrary, TabServer, TabLine, TabFiles };
+#endif
     bool showHidden = false;   // Files: names starting with a dot
     // Settings → Storage and reset → Folders: where each browser starts (empty: its own default)
     std::string filesDir, importDir, exportDir, coverDir, backupDir;

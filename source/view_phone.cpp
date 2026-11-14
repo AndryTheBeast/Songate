@@ -97,6 +97,11 @@ void App::drawPhone() {
     const float W = float(css::W), H = float(css::H);
     const bool has = now.track >= 0 || extOn;
     const TrackInfo& in = now.info;
+    if (route.view == View::Apps) {   // turned upright on the sidebar's Apps page: the same page here, over the one before it
+        if (!history.empty()) { route = history.back(); history.pop_back(); }
+        else route = { View::Now, -1, "", 0 };
+        phoneApps_ = appsTab();
+    }
     const View v = route.view;
     auto mix = [](const Rgb& p, const Rgb& q, float t) { return Rgb{ p.r + (q.r - p.r) * t, p.g + (q.g - p.g) * t, p.b + (q.b - p.b) * t }; };
     auto grad = [&](float t) { return mix(pal.accent2, pal.accent, std::clamp(t, 0.f, 1.f)); };
@@ -267,12 +272,15 @@ void App::drawPhone() {
             if (const int st = ui.sliderStep(sid)) seekBy(st * 5);
             if (ui.sliderReleased(sid)) player.seek(std::clamp((ui.lastDragX() - x) / w, 0.f, 1.f) * dur);
         }
-        step(phoneSeekP_, time - phoneSeekAt_ > 0.5 && !(ui.focused(sid) && ui.showFocusRing()), 0.5f);   // back to the visualizer half a second after the finger (the user: "0.5/1s")
+        // (to the scrub in half a second, so it answers the finger at once; back as a wave, 0.95 s from its first column to its last)
+        const bool seekBack = time - phoneSeekAt_ > 0.5 && !(ui.focused(sid) && ui.showFocusRing());
+        const int seekVar = store.seekAnim;   // Settings › Visualizer › Seek bar › Seek bar animation: 0 Quick, 1 Smooth, 2 Wave
+        step(phoneSeekP_, seekBack, seekBack ? (seekVar == 1 ? 0.75f : seekVar == 2 ? 0.95f : 0.5f) : 0.5f);   // back to the visualizer half a second after the finger (the user: "0.5/1s")
         const float e = smooth(phoneSeekP_);
         float frac = dur > 0 ? float(std::clamp(shownPosition() / dur, 0.0, 1.0)) : 0;
         if (drag >= 0) frac = std::clamp((drag - x) / w, 0.f, 1.f);
         const float foot = y + h, cy = y + h / 2;
-        if (e >= 0.999f && spec.bands > 0) drawSpectrum(x, y, w, h, frac);   // the song's place: the bars before it bright (the Canvas's look)
+        if (phoneSeekP_ >= 1 && spec.bands > 0) drawSpectrum(x, y, w, h, frac);   // the song's place: the bars before it bright (the Canvas's look)
         else {
             const bool waveNow = store.seekWave && wave.ready() && !playingFile().empty() && wave.path() == playingFile();
             const auto& pk = wave.peaks();
@@ -281,37 +289,87 @@ void App::drawPhone() {
             const int bars = int(w / pt.step);
             const int n = std::max(1, spec.bands);
             const float gap = std::max(2.f, std::round(w / n * 0.28f)), colW = (w - gap * (n - 1)) / n;
-            for (int i = 0; i < bars; i++) {
+            // One shape all the way (the user, session 19: "the still square bars abruptly turn into round ones, it should be
+            // smooth"; and of a first try that faded the round columns in over the square bars: "still a snap at the end").
+            // First the scrub's thin bars gather into their columns (ex: there by 45 % of a column's way, each column's bars at one
+            // height, one colour, side by side, so a column is a plain rectangle); from there each column is drawn as that one
+            // shape, moving to the music's height while its corners grow round and its colour takes the visualizer's fade (rt),
+            // and it ends as drawSpectrum draws it: nothing is left to change when that takes over.
+            // A wave out from the song's place (the user's pick of three, session 19: "B, the wave"): each column goes its own way
+            // (eOf), the ones at the song's place first, the far ends last (spread: how much later), each gently in and out
+            // (ease), gathered by 45 % of its way and rounding over the rest.
+            // The three the user saw in the clips are all kept, as a setting: Quick (every column together, gathered by 60 % of the
+            // way), Smooth (the same, longer, gentler in and out, rounding over more of the way), Wave (Smooth's, spread out).
+            const float gatherAt = seekVar ? 0.45f : 0.6f, spread = seekVar == 2 ? 0.9f : 0.f;
+            auto ease = [&](float p) { return seekVar ? p * p * p * (p * (p * 6 - 15) + 10) : smooth(p); };
+            auto eOf = [&](int k) {
+                const float d = std::fabs((k + 0.5f) / n - frac);
+                return ease(std::clamp(phoneSeekP_ * (1 + spread) - d * spread, 0.f, 1.f));
+            };
+            auto exOf = [&](float ek) { return smooth(std::clamp(ek / gatherAt, 0.f, 1.f)); };
+            auto rtOf = [&](float ek) { return smooth(std::clamp((ek - gatherAt) / (1 - gatherAt), 0.f, 1.f)); };
+            auto colOf = [&](int i) { return std::min(n - 1, i * n / bars); };
+            auto seekOf = [&](int i, float& sh, Rgb& sc, float& sa) {   // the scrub's own bar i: height, colour, brightness
                 float vv = 0.3f;
                 if (waveNow && !pk.empty()) {
                     const size_t a = size_t(i) * pk.size() / bars, b = std::max(a + 1, size_t(i + 1) * pk.size() / bars);
                     vv = 0;
                     for (size_t j = a; j < b && j < pk.size(); j++) vv = std::max(vv, pk[j]);
                 }
-                const float seekH = std::max(1.5f, vv * h * 0.9f);
-                const int k = std::min(n - 1, i * n / bars), i0 = (k * bars + n - 1) / n, i1 = ((k + 1) * bars + n - 1) / n;
-                const int cnt = std::max(1, i1 - i0), at = i - i0;
-                const float colX = x + k * (colW + gap);
-                const float specH = std::max(2.f, (spec.bands > 0 ? spec.bars[k] : 0.f) * h * 0.94f);
-                const float bx = x0 + i * pt.step + (colX + at * colW / cnt - (x0 + i * pt.step)) * e;
-                const float bw = pt.bar + (colW / cnt + 0.5f - pt.bar) * e;
-                const float bh = seekH + (specH - seekH) * e;
-                const float by = (cy - seekH / 2) + ((foot - specH) - (cy - seekH / 2)) * e;
+                sh = std::max(1.5f, vv * h * 0.9f);
                 const bool played = i * pt.step < frac * w;
-                const Rgb seekC = played ? grad(float(i) / bars) : pal.text;
-                const float seekA = played ? 1.f : (drag >= 0 ? 0.2f : 0.13f);
-                const Rgb c = mix(seekC, grad(specH / h), e);
-                const float specA = bx + bw <= x + frac * w ? 1.f : 0.4f;   // to the visualizer's own brightness, played or not
-                g.rect(bx, by, bw, bh, c, seekA + (specA - seekA) * e);
-            }
-            const float late = std::clamp((e - 0.55f) / 0.45f, 0.f, 1.f);
-            if (late > 0 && spec.bands > 0)
-                for (int k = 0; k < n; k++) {
-                    const float bh = std::max(2.f, spec.bars[k] * h * 0.94f), bx = x + k * (colW + gap);
-                    const float pa = late * (bx + colW <= x + frac * w ? 1.f : 0.4f);
-                    g.roundRectV(bx, foot - bh, colW, bh, std::min({ colW / 2, 4.f, bh / 2 }), grad(bh / h), pal.accent2, pa);
-                    if (store.vizPeaks) g.rect(bx, std::max(y, foot - spec.peaks[k] * h * 0.94f - 3), colW, 1.5f, pal.accent, 0.55f * pa);
+                sc = played ? grad(float(i) / bars) : pal.text;
+                sa = played ? 1.f : (drag >= 0 ? 0.2f : 0.13f);
+            };
+            // each column's bars as one: their mean height, colour and brightness
+            static std::vector<float> mH, mA;
+            static std::vector<Rgb> mC;
+            static std::vector<int> mN;
+            mH.assign(size_t(n), 0.f); mA.assign(size_t(n), 0.f); mC.assign(size_t(n), Rgb{ 0, 0, 0 }); mN.assign(size_t(n), 0);
+            if (e > 0)
+                for (int i = 0; i < bars; i++) {
+                    float sh, sa; Rgb sc;
+                    seekOf(i, sh, sc, sa);
+                    const size_t k = size_t(colOf(i));
+                    mH[k] += sh; mA[k] += sa; mC[k].r += sc.r; mC[k].g += sc.g; mC[k].b += sc.b; mN[k]++;
                 }
+            for (size_t k = 0; k < size_t(n); k++)
+                if (mN[k] > 0) { const float q = 1.f / mN[k]; mH[k] *= q; mA[k] *= q; mC[k].r *= q; mC[k].g *= q; mC[k].b *= q; }
+            auto specHOf = [&](int k) { return std::max(2.f, (spec.bands > 0 ? spec.bars[k] : 0.f) * h * 0.94f); };
+            auto specAOf = [&](int k) { return x + k * (colW + gap) + colW <= x + frac * w ? 1.f : 0.4f; };   // the visualizer's own brightness, played or not
+            {
+                for (int i = 0; i < bars; i++) {
+                    const int k = colOf(i), i0 = (k * bars + n - 1) / n, i1 = ((k + 1) * bars + n - 1) / n;
+                    const float e = eOf(k), ex = exOf(e);   // (its column's own way there)
+                    if (ex >= 1) continue;
+                    float seekH, seekA; Rgb seekC;
+                    seekOf(i, seekH, seekC, seekA);
+                    const int cnt = std::max(1, i1 - i0), at = i - i0;
+                    const float colX = x + k * (colW + gap), specH = specHOf(k);
+                    const float h1 = seekH + (mH[size_t(k)] - seekH) * ex;                  // towards its column's own height …
+                    const float a1 = seekA + (mA[size_t(k)] - seekA) * ex;
+                    const Rgb c1 = mix(seekC, mC[size_t(k)], ex);
+                    const float bx = x0 + i * pt.step + (colX + at * colW / cnt - (x0 + i * pt.step)) * ex;   // … and its place in it
+                    const float bw = pt.bar + (colW / cnt + 0.5f - pt.bar) * ex;
+                    const float bh = h1 + (specH - h1) * e;                                 // the column on its way to the music's
+                    const float by = (cy - h1 / 2) + ((foot - specH) - (cy - h1 / 2)) * e;
+                    g.rect(bx, by, bw, bh, mix(c1, grad(specH / h), e), a1 + (specAOf(k) - a1) * e);
+                }
+            }
+            {
+                for (int k = 0; k < n; k++) {
+                    const float e = eOf(k), rt = rtOf(e);
+                    if (exOf(e) < 1) continue;
+                    const float colX = x + k * (colW + gap), specH = specHOf(k), h1 = mH[size_t(k)];
+                    const float bh = h1 + (specH - h1) * e, by = (cy - h1 / 2) + ((foot - specH) - (cy - h1 / 2)) * e;
+                    const Rgb flat = mix(mC[size_t(k)], grad(specH / h), e);
+                    const float pa = mA[size_t(k)] + (specAOf(k) - mA[size_t(k)]) * e;
+                    const float rad = spec.bands > 0 ? std::min({ colW / 2, 4.f, bh / 2 }) * rt : 0.f;
+                    g.roundRectV(colX, by, colW, bh, rad, flat, mix(flat, pal.accent2, spec.bands > 0 ? rt : 0.f), pa);
+                    if (store.vizPeaks && spec.bands > 0 && rt > 0)
+                        g.rect(colX, std::max(y, foot - spec.peaks[k] * h * 0.94f - 3), colW, 1.5f, pal.accent, 0.55f * pa * rt);
+                }
+            }
         }
         if (drag >= 0 && dur > 0) {   // as the player bar's: the time under the finger
             const std::string tip = fmtTime(frac * dur);
@@ -797,74 +855,10 @@ void App::drawPhone() {
     // its menu (openAppMenu). Its Move: the tiles dragged into order, as the Playlists page's (App::sortRun), Done to end.
     if (phoneApps_ && !appsTab()) phoneApps_ = false;
     if (phoneApps_) {
-        const bool sort = sorting(Grab::Apps);
-        if (!sort) appsRefresh();
-        const std::vector<int> shown = appsShown();
-        const float top0 = pageTop, bottom = H - kNavH - kMiniH - 16;
-        const int cols = 4, n = int(shown.size());
-        const float cw = (W - 2 * kPad) / cols, cellH = 108, head = 62, tile = 60;
-        ScrollArea& a = area("ph.apps");
-        a.view = { 0, top0, W, bottom - top0 };
-        a.content = head + ((n + cols - 1) / cols) * cellH + 20;
-        g.clip(0, top0, W, bottom - top0);
-        ui.pushArea(&a);
-        g.text("Apps", { css::Xl, Weight::Bold }, kPad, top0 + 16 - a.y, pal.text);
-        const float gridTop = top0 + head - a.y;
-        auto slot = [&](int i) -> SDL_FRect { return { kPad + cw * (i % cols) + 2, gridTop + (i / cols) * cellH, cw - 4, cellH - 6 }; };
-        if (sort) sortRun(n, 0, n - 1, a, slot, true);
-        const int floats = sort ? (tsort_.held >= 0 ? tsort_.held : tsort_.settle) : -1;
-        int loaded = 0, menu = -1;
-        std::string open;
-        for (int k = 0; k <= n; k++) {
-            const bool fl = k == n;   // (after the others: the tile held, or settling)
-            if (fl && (floats < 0 || floats >= n)) break;
-            const int i = fl ? floats : k;
-            if (!fl && i == floats) continue;
-            const SDL_FRect home = slot(i);
-            const SDL_FPoint at = sort ? sortAt(i, home) : SDL_FPoint{ home.x, home.y };
-            if (!fl && (at.y + home.h < top0 || at.y > bottom)) continue;
-            const AppEntry& e = gApps[size_t(shown[size_t(i)])];
-            const SDL_FRect cell{ at.x, at.y, home.w, home.h };
-            const float cx = cell.x + cell.w / 2;
-            if (fl) sortFloatBox(cell.x, cell.y, cell.w, cell.h, 16);
-            const Id id = uid("ph.app", i);
-            const bool hit = ui.item(id, cell, 16) && !sort;   // (in sort mode a tap opens nothing)
-            if (sort) sortGrip("ph.appsort", i, cell, cell);   // (the whole tile drags)
-            if (!sort && ui.pressed(id)) g.roundRect(cell.x, cell.y, cell.w, cell.h, 16, pal.text, 0.07f);
-            const float tx = cx - tile / 2, tyy = cell.y + 8;
-            g.roundRect(tx, tyy, tile, tile, 18, pal.text, 0.07f);
-            g.roundStroke(tx, tyy, tile, tile, 18, 1, pal.text, 0.1f);
-            if (const char* symbol = appWears(e)) {
-                g.icon(symbol, cx, tyy + tile / 2, 28, pal.accent);
-            } else {
-                auto it = gAppIcons.find(e.app);
-                if (it == gAppIcons.end() && loaded < 2) {   // (two a frame: Android draws each on this thread)
-                    loaded++;
-                    std::vector<uint32_t> px;
-                    SDL_Texture* t = nullptr;
-                    if (plat::appIcon(e.app, 96, px) && (t = SDL_CreateTexture(g.renderer(), SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, 96, 96))) {
-                        for (uint32_t& q : px) {   // grey, its own shape kept: it sits in Songate's colours, not its maker's
-                            const uint32_t l = (((q >> 16) & 255) * 77 + ((q >> 8) & 255) * 150 + (q & 255) * 29) >> 8;
-                            q = (q & 0xff000000u) | (l << 16) | (l << 8) | l;
-                        }
-                        SDL_UpdateTexture(t, nullptr, px.data(), 96 * 4);
-                        SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
-                        SDL_SetTextureScaleMode(t, SDL_ScaleModeLinear);
-                    }
-                    it = gAppIcons.emplace(e.app, t).first;
-                }
-                if (it != gAppIcons.end() && it->second) g.image(it->second, cx - 20, tyy + tile / 2 - 20, 40, 40, 10, 0.92f);
-            }
-            g.text(appName(e), { css::Sm }, cx, tyy + tile + 8, pal.text2, 1, Align::Center, int(cw - 6));
-            if (!sort && ui.touchHeld() == id) menu = shown[size_t(i)];
-            else if (hit) open = e.app;
-        }
-        ui.popArea();
-        g.unclip();
+        appsGrid(0, pageTop, W, H - kNavH - kMiniH - 16, kPad, 4, false);
         mini();
         nav();
-        if (menu >= 0) openAppMenu(menu);   // (after the page: it changes nothing the loop still reads)
-        else if (!open.empty()) plat::openApp(open);
+        appsAct();
         return;
     }
     if (v == View::Now) {
@@ -1046,6 +1040,111 @@ void App::appsShowAll() {
 }
 
 /** An app's menu: a finger held on its tile. */
+/** The Apps page's grid in x, top0, w down to bottom: the device's other apps, `cols` across, each on Songate's own tile (its
+ *  symbol for the app, or the app's own icon in grey). A tap opens one; a finger held on it (or the menu button, sideways) opens
+ *  its menu (openAppMenu). Its Move: the tiles dragged into order, as the Playlists page's (App::sortRun), Done to end.
+ *  Upright (the bottom bar's sixth button) and sideways (the sidebar's Apps tab, drawApps) are this same page. */
+void App::appsGrid(float x, float top0, float w, float bottom, float pad, int cols, bool wide) {
+    const bool sort = sorting(Grab::Apps);
+    if (!sort) appsRefresh();
+    const std::vector<int> shown = appsShown();
+    const int n = int(shown.size());
+    // sideways the tiles are larger (the user, session 19, from the mock-ups: "B, larger tiles"): 84 where upright has 60
+    const float tile = wide ? 84 : 60, cellH = wide ? 136 : 108, ts = tile / 60;
+    const float cw = (w - 2 * pad) / cols;
+    const float head = wide ? 112 : 62;
+    ScrollArea& a = area("ph.apps");
+    a.view = { x, top0, w, bottom - top0 };
+    a.content = head + ((n + cols - 1) / cols) * cellH + 20;
+    g.clip(x, top0, w, bottom - top0);
+    ui.pushArea(&a);
+    if (wide) {   // a page beside the sidebar: its head as the other pages' (drawPlaylists': kicker, title, a count under it)
+        float cy = top0 - a.y + 18 + 8;
+        kicker("Home screen", x + pad, cy, pal.text3);
+        cy += 10;
+        g.text("Apps", { css::Xxl, Weight::Bold }, x + pad, cy, pal.text);
+        cy += 38;
+        g.text(std::to_string(n) + (n == 1 ? " app" : " apps"), { css::Sm }, x + pad, cy + 4, pal.text3);
+    } else g.text("Apps", { css::Xl, Weight::Bold }, x + pad, top0 + 16 - a.y, pal.text);
+    const float gridTop = top0 + head - a.y;
+    auto slot = [&](int i) -> SDL_FRect { return { x + pad + cw * (i % cols) + 2, gridTop + (i / cols) * cellH, cw - 4, cellH - 6 }; };
+    if (sort) sortRun(n, 0, n - 1, a, slot, true);
+    const int floats = sort ? (tsort_.held >= 0 ? tsort_.held : tsort_.settle) : -1;
+    int loaded = 0, menu = -1;
+    std::string open;
+    appHover_ = -1;
+    for (int k = 0; k <= n; k++) {
+        const bool fl = k == n;   // (after the others: the tile held, or settling)
+        if (fl && (floats < 0 || floats >= n)) break;
+        const int i = fl ? floats : k;
+        if (!fl && i == floats) continue;
+        const SDL_FRect home = slot(i);
+        const SDL_FPoint at = sort ? sortAt(i, home) : SDL_FPoint{ home.x, home.y };
+        if (!fl && (at.y + home.h < top0 || at.y > bottom)) continue;
+        const AppEntry& e = gApps[size_t(shown[size_t(i)])];
+        const SDL_FRect cell{ at.x, at.y, home.w, home.h };
+        const float cx = cell.x + cell.w / 2;
+        if (fl) sortFloatBox(cell.x, cell.y, cell.w, cell.h, 16);
+        const Id id = uid("ph.app", i);
+        const bool hit = ui.item(id, cell, 16) && !sort;   // (in sort mode a tap opens nothing)
+        if (sort) sortGrip("ph.appsort", i, cell, cell);   // (the whole tile drags)
+        if (!sort && ui.focused(id)) appHover_ = shown[size_t(i)];
+        if (!sort && (ui.pressed(id) || (ui.focused(id) && ui.showFocusRing()))) g.roundRect(cell.x, cell.y, cell.w, cell.h, 16, pal.text, 0.07f);
+        const float tx = cx - tile / 2, tyy = cell.y + 8;
+        g.roundRect(tx, tyy, tile, tile, 18 * ts, pal.text, 0.07f);
+        g.roundStroke(tx, tyy, tile, tile, 18 * ts, 1, pal.text, 0.1f);
+        if (const char* symbol = appWears(e)) {
+            g.icon(symbol, cx, tyy + tile / 2, 28 * ts, pal.accent);
+        } else {
+            auto it = gAppIcons.find(e.app);
+            if (it == gAppIcons.end() && loaded < 2) {   // (two a frame: Android draws each on this thread)
+                loaded++;
+                std::vector<uint32_t> px;
+                SDL_Texture* t = nullptr;
+                if (plat::appIcon(e.app, 96, px) && (t = SDL_CreateTexture(g.renderer(), SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, 96, 96))) {
+                    for (uint32_t& q : px) {   // grey, its own shape kept: it sits in Songate's colours, not its maker's
+                        const uint32_t l = (((q >> 16) & 255) * 77 + ((q >> 8) & 255) * 150 + (q & 255) * 29) >> 8;
+                        q = (q & 0xff000000u) | (l << 16) | (l << 8) | l;
+                    }
+                    SDL_UpdateTexture(t, nullptr, px.data(), 96 * 4);
+                    SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
+                    SDL_SetTextureScaleMode(t, SDL_ScaleModeLinear);
+                }
+                it = gAppIcons.emplace(e.app, t).first;
+            }
+            if (it != gAppIcons.end() && it->second) g.image(it->second, cx - 20 * ts, tyy + tile / 2 - 20 * ts, 40 * ts, 40 * ts, 10 * ts, 0.92f);
+        }
+        g.text(appName(e), { css::Sm }, cx, tyy + tile + 8, pal.text2, 1, Align::Center, int(cw - 6));
+        if (!sort && ui.touchHeld() == id) menu = shown[size_t(i)];
+        else if (hit) open = e.app;
+    }
+    ui.popArea();
+    g.unclip();
+    appMenuAsk_ = menu;   // (acted on after the page is drawn: appsAct)
+    appOpenAsk_ = open;
+}
+
+/** What the grid was asked this frame, once everything over it is drawn (it changes nothing the page's loop still reads). */
+void App::appsAct() {
+    const int menu = appMenuAsk_;
+    const std::string open = appOpenAsk_;
+    appMenuAsk_ = -1;
+    appOpenAsk_.clear();
+    if (menu >= 0) openAppMenu(menu);
+    else if (!open.empty()) plat::openApp(open);
+}
+
+/** Sideways: the sidebar's Apps tab's page, the same grid across the page's width. */
+void App::drawApps(float x, float y, float w, float h) {
+    appsGrid(x, y, w, y + h, 28, std::max(4, int((w - 56) / 185)), true);   // (six across on a phone's 20:9 screen)
+    appsAct();
+}
+
+/** The menu button on the Apps page: the menu of the app under focus. */
+void App::appsPlusMenu() {
+    if (appHover_ >= 0 && appHover_ < int(gApps.size())) openAppMenu(appHover_);
+}
+
 void App::openAppMenu(int at) {
     if (at < 0 || at >= int(gApps.size())) return;
     if (sheet.preview) SDL_DestroyTexture(sheet.preview);

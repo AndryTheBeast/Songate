@@ -1664,7 +1664,14 @@ void App::drawSettings(float x, float y, float w, float h) {
                     toggleRow("Peak caps", "The thin marks that fall slowly above the bars", "set.vpeaks", store.vizPeaks) } },
                 { "Seek bar",   // (the user, 2026-11-06: "Let's make the waveform togglable on settings")
                   { toggleRow("Waveform", store.seekWave ? "The song's loudness as bars along the seek line" : "A plain line, the part played lit",
-                              "set.seekwave", store.seekWave) } },
+                              "set.seekwave", store.seekWave)
+#ifdef GF_ANDROID
+                    // (the user, session 19, of the three ways the bar came back in the clips: "I think we should have both as a
+                    // setting", then all three, these words, Smooth by default)
+                    , segRow("Seek bar animation", "How the bars come back after scrubbing", "set.seekanim", { "Quick", "Smooth", "Wave" }, store.seekAnim,
+                             [this](int i) { store.seekAnim = i; })
+#endif
+                  } },
                 { "Cover",
                   { sliderRow("Bass pulse", store.coverPulse < 0.01f ? "Off" : pct(store.coverPulse),
                               "How much the cover breathes with the bass. 100% is the default, 0 turns it off", "set.vpulse",
@@ -2583,7 +2590,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                 } };
         // Show Apps (the user, 2026-11-13: "a toggle to enable an extra menu on songate bottom bar in portrait... apps will only be
         // visible in portrait"; usable only with the home screen on, their choice): greyed until then
-        Row ap{ "Show Apps", "", "Adds the device's other apps to the bottom bar when held upright", 40,
+        Row ap{ "Show Apps", "", "Adds the device's other apps: a button in the bottom bar upright, a tab in the sidebar sideways", 40,
                 [this, held](float rx, float cy) {
                     if (toggle(uid("set.apps"), rx - 40, cy, held && store.appsTab, held ? 1.f : 0.4f) && held) {
                         store.appsTab = !store.appsTab;
@@ -2942,6 +2949,7 @@ std::vector<int> App::sidebarTabsShown() const {
     std::vector<int> order;
     for (int idx = 0; idx < int(store.tabOrder.size()); idx++) {
         if (store.tabOrder[size_t(idx)] == Store::TabServer) continue;   // (Server is in Library now: Local | Server)
+        if (store.tabOrder[size_t(idx)] == Store::TabApps && !appsTabShown()) continue;   // (Android's, with Show Apps on)
         order.push_back(idx);
     }
     return order;

@@ -11,6 +11,9 @@
 #include "app.hpp"
 #include "icons.inc"
 #include "plicons.inc"
+#ifdef GF_ANDROID
+#include "appicons.inc"   // (the sidebar's Apps tab)
+#endif
 
 static const bool kBackForce = false;   // (dev: the touch back button shown without a touch, to look at it)
 
@@ -237,6 +240,16 @@ void App::draw() {
     g.holdCache(shown < 1);   // what it shows stays cached meanwhile, so its return is not a stutter
 
     const float mx = std::round(pageSideW() + edge_.side), my = css::TbH, mw = css::W - mx - std::round(edge_.mainR), mh = css::H - css::TbH - css::BarH;
+#ifdef GF_ANDROID
+    // The Apps page through a turn: open upright (over its page), it is the sidebar's tab's page here; and it is left when
+    // Songate stops being the home screen or Show Apps goes off
+    if (phoneApps_) {
+        const bool tab = appsTab() && !(store.hiddenTabs & Store::tabBit(Store::TabApps));
+        phoneApps_ = false;
+        if (tab) navigate(View::Apps);
+    }
+    if (route.view == View::Apps && !appsTab()) navigate(View::Now, -1, "", false);
+#endif
     ui.region(Region::Main);
     g.clip(mx, my, mw, mh);
     switch (route.view) {
@@ -253,6 +266,9 @@ void App::draw() {
     case View::Files: drawFiles(mx, my, mw, mh); break;
     case View::Playlists: drawPlaylists(mx, my, mw, mh); break;
     case View::Server: drawServer(mx, my, mw, mh); break;
+#ifdef GF_ANDROID
+    case View::Apps: drawApps(mx, my, mw, mh); break;
+#endif
     case View::PickFolder:
     case View::PickPlaylist:
     case View::PickExport: drawPicker(mx, my, mw, mh); break;
@@ -1087,6 +1103,7 @@ void App::drawSidebar() {
         if (Store::isLine(tab)) { if (!shownTabs.empty() && !Store::isLine(shownTabs.back())) shownTabs.push_back(tab); continue; }
         if (tab != Store::TabNow && (hide & Store::tabBit(tab))) continue;
         if (tab == Store::TabServer) continue;   // the server's music is in Library (Local | Server), not a tab of its own (the user, 2026-11-06)
+        if (tab == Store::TabApps && !appsTabShown()) continue;   // Android's, while Songate is the home screen and Show Apps is on
         shownTabs.push_back(tab);
     }
     while (!shownTabs.empty() && Store::isLine(shownTabs.back())) shownTabs.pop_back();
@@ -1191,6 +1208,11 @@ void App::drawSidebar() {
         case Store::TabFiles:
             if (navItem("nav.files", PLI_SDCARD, "Files", v == View::Files, "", tabH, navFont)) openFiles(filesStart());
             break;
+#ifdef GF_ANDROID
+        case Store::TabApps:   // the device's other apps (view_phone.cpp: drawApps)
+            if (navItem("nav.apps", ICON_APPS, "Apps", v == View::Apps, "", tabH, navFont)) navigate(View::Apps);
+            break;
+#endif
         case Store::TabServer: {   // a Subsonic server's music (view_server.cpp)
             const Subsonic::View sv = subsonic.view();
             if (navItem("nav.server", PLI_CLOUD, "Server", v == View::Server, sv.songs >= 0 ? std::to_string(sv.songs) : "", tabH, navFont)) openServer(0, "", "");
