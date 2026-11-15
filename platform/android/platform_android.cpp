@@ -903,6 +903,129 @@ std::string volumeLabel(const std::string& path) {
     return {};
 }
 
+// ---- the music volume (SongateActivity: its keys, its watch on every change) and the HiBy R4's settings service
+
+namespace {
+std::atomic<int> volIndex{ -1 }, volMax{ 15 };
+std::atomic<unsigned> volGen{ 0 }, volKeys{ 0 }, resumeCount{ 0 };
+
+/** A static method of SongateActivity, with what the caller does with it; the exception (if any) cleared. */
+template <class F> void callStatic(const char* name, const char* sig, F use) {
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
+    if (!env) return;
+    jclass cls = activityClass(env);
+    if (!cls) return;
+    if (jmethodID m = env->GetStaticMethodID(cls, name, sig)) use(env, cls, m);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+}
+
+std::string fromJava(JNIEnv* env, jstring s) {
+    std::string out;
+    if (!s) return out;
+    if (const char* c = env->GetStringUTFChars(s, nullptr)) {
+        out = c;
+        env->ReleaseStringUTFChars(s, c);
+    }
+    env->DeleteLocalRef(s);
+    return out;
+}
+}  // namespace
+
+MediaVolume mediaVolume() {
+    if (volIndex.load() < 0) {   // not reported yet (the app's start): asked once
+        callStatic("volumeNow", "()I", [](JNIEnv* env, jclass cls, jmethodID m) {
+            const int v = env->CallStaticIntMethod(cls, m);
+            if (v >= 0) {
+                volMax = std::max(1, v >> 16);
+                volIndex = v & 0xffff;
+                volGen++;
+            }
+        });
+    }
+    MediaVolume o;
+    o.index = volIndex.load();
+    o.max = volMax.load();
+    o.gen = volGen.load();
+    o.keys = volKeys.load();
+    return o;
+}
+
+void mediaVolumeSet(int index) {
+    index = std::clamp(index, 0, volMax.load());
+    if (index == volIndex.load()) return;
+    volIndex = index;   // at once, so the slider does not jump back before Android's word comes
+    volGen++;
+    callStatic("volumeSet", "(I)V", [index](JNIEnv* env, jclass cls, jmethodID m) { env->CallStaticVoidMethod(cls, m, jint(index)); });
+}
+
+void volumeKeysOwn(bool own) {
+    callStatic("volumeKeysOwn", "(Z)V", [own](JNIEnv* env, jclass cls, jmethodID m) { env->CallStaticVoidMethod(cls, m, jboolean(own)); });
+}
+
+unsigned resumes() { return resumeCount.load(); }
+
+int hibyState() {
+    int st = 0;
+    callStatic("hibyState", "()I", [&st](JNIEnv* env, jclass cls, jmethodID m) { st = env->CallStaticIntMethod(cls, m); });
+    return st;
+}
+
+bool volumeReady(const std::string& path) {
+    bool ok = true;
+    callStatic("volumeReady", "(Ljava/lang/String;)Z", [&](JNIEnv* env, jclass cls, jmethodID m) {
+        jstring s = env->NewStringUTF(path.c_str());
+        ok = env->CallStaticBooleanMethod(cls, m, s) == JNI_TRUE;
+        env->DeleteLocalRef(s);
+    });
+    return ok;
+}
+
+bool hibyDevice() {
+    static int known = -1;   // asked once
+    if (known < 0) {
+        known = 0;
+        callStatic("hibyDevice", "()Z", [](JNIEnv* env, jclass cls, jmethodID m) { known = env->CallStaticBooleanMethod(cls, m) == JNI_TRUE ? 1 : 0; });
+    }
+    return known == 1;
+}
+
+std::string hibyGet() {
+    std::string out;
+    callStatic("hibyGet", "()Ljava/lang/String;", [&out](JNIEnv* env, jclass cls, jmethodID m) {
+        out = fromJava(env, static_cast<jstring>(env->CallStaticObjectMethod(cls, m)));
+    });
+    return out;
+}
+
+std::string hibySet(const std::string& key, const std::string& value) {
+    std::string err = "No answer from the HiBy service";
+    callStatic("hibySet", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", [&](JNIEnv* env, jclass cls, jmethodID m) {
+        jstring k = env->NewStringUTF(key.c_str()), v = env->NewStringUTF(value.c_str());
+        err = fromJava(env, static_cast<jstring>(env->CallStaticObjectMethod(cls, m, k, v)));
+        env->DeleteLocalRef(k);
+        env->DeleteLocalRef(v);
+    });
+    return err;
+}
+
+bool hibyEqSet(const std::string& eq) {
+    bool ok = false;
+    callStatic("hibyEqSet", "(Ljava/lang/String;)Z", [&](JNIEnv* env, jclass cls, jmethodID m) {
+        jstring s = env->NewStringUTF(eq.c_str());
+        ok = env->CallStaticBooleanMethod(cls, m, s) == JNI_TRUE;
+        env->DeleteLocalRef(s);
+    });
+    return ok;
+}
+
+bool hibyLedLive(int rgb, int bright, bool breath) {
+    bool ok = false;
+    callStatic("hibyLedLive", "(IIZ)Z", [&](JNIEnv* env, jclass cls, jmethodID m) {
+        ok = env->CallStaticBooleanMethod(cls, m, jint(rgb), jint(bright), jboolean(breath)) == JNI_TRUE;
+    });
+    return ok;
+}
+
 bool measureFiles(const std::string&, int&, uint64_t&, int) { return false; }
 bool measureStorage(const std::string&, int64_t&, int&, bool (*)(const std::string&)) { return false; }
 
@@ -921,6 +1044,19 @@ extern "C" JNIEXPORT void JNICALL Java_io_github_andrythebeast_songate_SongateAc
     if (!plat::leaveFn) return;   // not started yet, or ending
     plat::leavePending = true;
     plat::leaveCv.wait_for(g, std::chrono::seconds(1), [] { return !plat::leavePending; });
+}
+
+/** SongateActivity, on Android's UI thread: the music volume changed (fromKey: a volume key Songate took itself). */
+extern "C" JNIEXPORT void JNICALL Java_io_github_andrythebeast_songate_SongateActivity_nativeVolume(JNIEnv*, jclass, jint index, jint max, jboolean fromKey) {
+    plat::volMax = std::max(1, int(max));
+    plat::volIndex = std::clamp(int(index), 0, int(max));
+    plat::volGen++;
+    if (fromKey) plat::volKeys++;
+}
+
+/** SongateActivity.onResume, on Android's UI thread. */
+extern "C" JNIEXPORT void JNICALL Java_io_github_andrythebeast_songate_SongateActivity_nativeResumed(JNIEnv*, jclass) {
+    plat::resumeCount++;
 }
 
 /** SongateActivity.reportEdges, on Android's UI thread each time the window is laid out. */

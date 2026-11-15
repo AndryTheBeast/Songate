@@ -503,6 +503,7 @@ void App::storageGiven() {
         if (!found.empty()) welcomeCard(found);
     } else {
         rescan();
+        if (store.resume && now.track < 0 && q.tracks.empty()) restoreSession();   // (access came late, at a boot: the queue with it)
     }
 }
 #endif

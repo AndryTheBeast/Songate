@@ -3,6 +3,7 @@
  */
 #include "loader.hpp"
 #include "coverio.hpp"
+#include "cardhold.hpp"
 
 #include <SDL2/SDL_image.h>
 
@@ -135,6 +136,10 @@ void TrackLoader::run() {
 void TrackLoader::work(const Request& r, Result& out) {
     out.gen = r.gen;
     out.readInfo = r.readInfo;
+    // The song's card still mounting (cardhold.hpp): only the cover Songate keeps (App::loadTrack hands it over as myCover);
+    // nothing on the card is read. The song's own load follows once the card is there
+    const bool cardWait = cardhold::under(r.path);
+    if (cardWait) out.readInfo = false;
     std::vector<uint8_t> bytes;
     const bool inMemory = !r.image.empty();
     if (inMemory) bytes = r.image;
@@ -145,7 +150,7 @@ void TrackLoader::work(const Request& r, Result& out) {
             while ((n = fread(buf, 1, sizeof buf, f)) > 0) bytes.insert(bytes.end(), buf, buf + n);
             fclose(f);
         }
-    if (inMemory) {
+    if (inMemory || cardWait) {
         // (only the picture)
     } else if (r.readInfo) {
         readTrackInfo(r.path, out.info, bytes.empty(), true);
@@ -165,7 +170,7 @@ void TrackLoader::work(const Request& r, Result& out) {
         readTrackInfo(r.path, info, true, false);
         bytes = std::move(info.cover);
     }
-    if (bytes.empty()) bytes = findFolderCover(r.folder);
+    if (bytes.empty() && !cardWait) bytes = findFolderCover(r.folder);
     if (bytes.empty()) return;
 
     SDL_Surface* rgba = nullptr;

@@ -190,6 +190,7 @@ void App::draw() {
         drawSleepPrompt();
         drawToast();
         if (veilA > 0.005f) g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, veilA);
+        drawBootFade();
         drawFocusRing();
         drawHint();
         drawEdges();
@@ -220,6 +221,7 @@ void App::draw() {
         drawSleepPrompt();
         drawToast();
         if (veilA > 0.005f) g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, veilA);
+        drawBootFade();
         drawFocusRing();
         drawHint();
         drawEdges();
@@ -339,6 +341,7 @@ void App::draw() {
     drawSleepPrompt();
     drawToast();
     if (veilA > 0.005f) g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, veilA);   // Dim the screen, docked
+    drawBootFade();
     if (!hidden) {   // with the interface (the user: "if something is selected, it remains selected" while it faded)
         if (shown < 1) g.setFade(shown);
         drawFocusRing();
@@ -1573,13 +1576,12 @@ void App::drawPlayerbar() {
     x -= 34 + 14;   // Gatefold has the mini-player button here; keep the slider clear of the Canvas button
     float vol = volumeShown;
     slider(uid("pb.vol"), x - 110, cy, 110, volumeShown, &vol);
-    if (vol != volumeShown) { volumeShown = vol; player.setVolume(vol); }
+    if (vol != volumeShown) setVolume(vol);
     x -= 110 + 4 + 7;
     static float beforeMute = 1;
     if (iconButton(uid("pb.mute"), volumeShown <= 0.001f ? ICON_VOL_X : ICON_VOL, x - 17, cy)) {
-        if (volumeShown > 0.001f) { beforeMute = volumeShown; volumeShown = 0; }
-        else volumeShown = beforeMute > 0.01f ? beforeMute : 1;
-        player.setVolume(volumeShown);
+        if (volumeShown > 0.001f) { beforeMute = volumeShown; setVolume(0); }
+        else setVolume(beforeMute > 0.01f ? beforeMute : 1);
     }
     x -= 34 + 8;
     if (iconButton(uid("pb.queue"), ICON_QUEUE, x - 17, cy, route.view == View::Queue)) navigate(View::Queue);
@@ -1939,7 +1941,54 @@ void App::closeCoverNotice() {
     else ui.focusDefault();
 }
 
+/** Songate's own pop-up for the volume keys (Android; Settings › Playback › Volume keys show "Songate"; the user chose it to be a
+ *  choice, 2026-11-15): Top, a pill under the top line; Side, an upright capsule at the right edge beside the keys, filling from the
+ *  foot; Bottom, the pill where toasts sit. In the toast's own card; the number as Volume as says (the device's steps, or %). */
+void App::drawVolumePop() {
+#ifdef GF_ANDROID
+    if (time >= volPopUntil_) return;
+    const float a = std::clamp(float(volPopUntil_ - time) / 0.25f, 0.f, 1.f) * std::clamp(float(time - volPopFrom_) / 0.12f, 0.f, 1.f);
+    if (a <= 0.001f) return;
+    const plat::MediaVolume mv = plat::mediaVolume();
+    const float vol = volumeShown;
+    const int step = int(std::lround(vol * float(mv.max)));
+    const std::string num = store.volNum ? std::to_string(int(std::lround(vol * 100))) + "%" : std::to_string(step);
+    const Font nf{ css::Sm, Weight::SemiBold };
+    const bool upright = phonePortrait();
+    auto card = [&](float x, float y, float w, float h, float r) {
+        g.roundRect(x, y + 6, w, h, r, { 0, 0, 0 }, 0.25f * a);
+        g.roundRect(x, y, w, h, r, pal.surface2, a);
+        g.roundStroke(x, y, w, h, r, 1, pal.text, 0.09f * a);
+    };
+    const float slide = (1 - a) * 8;
+    if (store.volWhere != 1) {   // a pill: the speaker, the bar, the number
+        const float w = std::min(css::W - 24.f, 340.f), h = 44, x = (css::W - w) / 2;
+        const float y = store.volWhere == 0 ? 52 + 6 - slide
+                                            : (upright ? css::H - 68 - (64 + 16 + 12) - h : css::H - css::BarH - 20 - h) + slide;
+        card(x, y, w, h, 22);
+        const float cy = y + h / 2;
+        g.icon(step == 0 ? ICON_VOL_X : ICON_VOL, x + 26, cy, 18, pal.text2, a);
+        const float bx = x + 48, bw = w - 48 - 46;
+        g.roundRect(bx, cy - 3, bw, 6, 3, pal.text, 0.12f * a);
+        if (vol > 0.001f) g.roundRectH(bx, cy - 3, std::max(6.f, bw * vol), 6, 3, pal.accent2, pal.accent, a);
+        g.textNumC(num, nf, x + w - 18, cy, pal.text, a, Align::Right);
+    } else {   // Side: beside the keys
+        const float w = 52, h = 232, x = css::W - 12 - w + slide, y = (css::H - h) / 2 - 20;
+        card(x, y, w, h, 26);
+        g.textNumC(num, nf, x + w / 2, y + 24, pal.text, a, Align::Center);
+        const float bx = x + w / 2 - 4, by = y + 46, bh = h - 46 - 48;
+        g.roundRect(bx, by, 8, bh, 4, pal.text, 0.12f * a);
+        if (vol > 0.001f) {
+            const float fh = std::max(8.f, bh * vol);
+            g.roundRectV(bx, by + bh - fh, 8, fh, 4, pal.accent, pal.accent2, a);
+        }
+        g.icon(step == 0 ? ICON_VOL_X : ICON_VOL, x + w / 2, y + h - 24, 18, pal.text2, a);
+    }
+#endif
+}
+
 void App::drawToast() {
+    drawVolumePop();
     if (toastT <= 0) return;
     const float a = std::min(1.f, toastT / 0.25f) * std::min(1.f, (3.2f - toastT) / 0.2f + 0.01f);
     const Font f{ css::Sm, Weight::SemiBold };

@@ -543,7 +543,7 @@ void App::slider(Id id, float x, float cy, float w, float value, float* out) {
     g.circle(tx, cy, 7, pal.text);
 }
 
-void App::vslider(Id id, float cx, float top, float h, float value, float* out, Id left, Id right) {
+void App::vslider(Id id, float cx, float top, float h, float value, float* out, Id left, Id right, bool draw) {
     ui.item(id, { cx - 16, top - 8, 32, h + 16 }, 10, Slider | Slider2D);
     // The 14 px thumb travels inside the track, as the flat slider's does.
     const float travel = h - 14, y0 = top + 7;
@@ -556,6 +556,7 @@ void App::vslider(Id id, float cx, float top, float h, float value, float* out, 
     }
     if (const float dy = ui.sliderDragY(id); dy >= 0) v = std::clamp(1 - (dy - y0) / travel, 0.f, 1.f);
     if (out) *out = v;
+    if (!draw) return;
     const float mid = y0 + travel * 0.5f, ky = y0 + travel * (1 - v);
     g.roundRect(cx - 2, top, 4, h, 2, pal.text, 0.16f);
     g.rect(cx - 7, mid - 0.5f, 14, 1, pal.text, 0.28f);   // 0 dB

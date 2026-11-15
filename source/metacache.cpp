@@ -114,6 +114,27 @@ std::string field(const std::string& s) {
 
 }  // namespace
 
+/** A song's cover as the disk cache keeps it (Songate's own folder, never the card): read from the cache's map file, not the map
+ *  in memory (the worker's), so any thread may ask. "" when there is none. For the card still mounting (cardhold.hpp). */
+std::string MetaCache::cachedCoverFile(const std::string& artDir, const std::string& path) {
+    const unsigned long long want = fnv64(path.data(), path.size());
+    const std::vector<uint8_t> raw = readAll(artDir + "/map.tsv");
+    const char* p = reinterpret_cast<const char*>(raw.data());
+    const char* end = p + raw.size();
+    while (p < end) {
+        const char* nl = static_cast<const char*>(memchr(p, '\n', size_t(end - p)));
+        if (!nl) nl = end;
+        const char* t1 = static_cast<const char*>(memchr(p, '\t', size_t(nl - p)));
+        if (t1 && strtoull(std::string(p, t1).c_str(), nullptr, 16) == want) {
+            const char* t2 = static_cast<const char*>(memchr(t1 + 1, '\t', size_t(nl - t1 - 1)));
+            const std::string file(t1 + 1, t2 ? t2 : nl);
+            return file.empty() || file == "-" ? std::string() : artDir + "/" + file;
+        }
+        p = nl + 1;
+    }
+    return {};
+}
+
 void MetaCache::start(Library* lib, const std::string& cacheFile, bool keep) {
     lib_ = lib;
     cacheFile_ = cacheFile;

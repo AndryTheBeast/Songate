@@ -1,6 +1,7 @@
 /*
  * Gatefold NX · player.cpp
  */
+#include "cardhold.hpp"
 #include "player.hpp"
 #ifdef GF_AIRPLAY
 #include "airsend.hpp"
@@ -97,7 +98,7 @@ bool Player::load(const std::string& path, bool paused, double fade, const autom
         // SDL_mixer's own decoders, for a file FFmpeg cannot open: no crossfade or equalizer there.
         stop();
         frames_ = 0;
-        music_ = Mix_LoadMUS(path.c_str());
+        music_ = cardhold::pass(path) ? Mix_LoadMUS(path.c_str()) : nullptr;
         if (!music_) {
             SDL_Log("Mix_LoadMUS(%s): %s", path.c_str(), Mix_GetError());
             return false;

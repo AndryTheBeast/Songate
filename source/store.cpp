@@ -216,6 +216,10 @@ void Store::load() {
         else if (k == "vizPeaks") vizPeaks = v == "1";
         else if (k == "seekWave") seekWave = v == "1";
         else if (k == "seekAnim") seekAnim = std::clamp(atoi(v.c_str()), 0, 2);
+        else if (k == "volPop") volPop = std::clamp(atoi(v.c_str()), 0, 1);
+        else if (k == "volWhere") volWhere = std::clamp(atoi(v.c_str()), 0, 2);
+        else if (k == "volNum") volNum = std::clamp(atoi(v.c_str()), 0, 1);
+        else if (k == "r4LedAccent") r4LedAccent = v == "1";
         else if (k == "canvasPulse") canvasPulse = v == "1";
         else if (k == "canvasBars") canvasBars = std::clamp(atoi(v.c_str()), 16, 128);
         else if (k == "canvasIdleAfter") canvasIdleAfter = std::clamp(float(atof(v.c_str())), 1.f, 30.f);
@@ -536,6 +540,8 @@ void Store::save() const {
             vizPeaks, coverPulse, seekWave);
 #ifdef GF_ANDROID
     appendf(f, "seekAnim=%d\n", seekAnim);   // (Android's alone: no other build has that bar, so none keeps a line for it)
+    appendf(f, "volPop=%d\nvolWhere=%d\nvolNum=%d\n", volPop, volWhere, volNum);   // (the volume is Android's own: Android's alone)
+    if (r4LedAccent) appendf(f, "r4LedAccent=1\n");   // (the HiBy R4's, and only while it is on)
 #endif
     appendf(f, "canvasPulse=%d\nhiddenTabs=%u\n", canvasPulse, hiddenTabs);
     appendf(f, "canvasBars=%d\ncanvasIdleAfter=%.2f\ncanvasVizTime=%.2f\n", canvasBars, double(canvasIdleAfter), double(canvasVizTime));

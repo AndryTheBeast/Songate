@@ -579,9 +579,8 @@ void App::drawCanvas() {
         const Id mid2 = uid("cv.mute");
         if (live && ui.item(mid2, { x, cy - 21, 42, 42 }, 21)) {
             static float before = 1;
-            if (volumeShown > 0.001f) { before = volumeShown; volumeShown = 0; }
-            else volumeShown = before > 0.01f ? before : 1;
-            player.setVolume(volumeShown);
+            if (volumeShown > 0.001f) { before = volumeShown; setVolume(0); }
+            else setVolume(before > 0.01f ? before : 1);
         }
         g.icon(volumeShown <= 0.001f ? ICON_VOL_X : ICON_VOL, x + 21, cy, 18, pal.text, ctlA);
         const float rx = x + 42 + 4, rw = volRange;
@@ -592,7 +591,7 @@ void App::drawCanvas() {
             if (const int st = ui.sliderStep(rid)) v = clampf(v + st * 0.05f, 0, 1);
             if (ui.sliderDrag(rid) >= 0) v = clampf((ui.sliderDrag(rid) - rx - 7) / (rw - 14), 0, 1);
         }
-        if (v != volumeShown) { volumeShown = v; player.setVolume(v); }
+        if (v != volumeShown) setVolume(v);
         const float tx = rx + 7 + (rw - 14) * volumeShown;
         g.roundRect(rx, cy - 2, rw, 4, 2, pal.text, 0.22f * ctlA);
         g.roundRect(rx, cy - 2, tx - rx, 4, 2, pal.text, ctlA);

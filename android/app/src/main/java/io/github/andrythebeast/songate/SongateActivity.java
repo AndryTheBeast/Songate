@@ -44,7 +44,81 @@ public class SongateActivity extends SDLActivity {
     @Override
     public boolean dispatchKeyEvent(android.view.KeyEvent event) {
         if (android.view.KeyEvent.isMediaSessionKey(event.getKeyCode()) && SongateService.mediaButton(event)) return true;
+        // The volume keys with Songate in front, while Settings › Playback › Volume keys show is "Songate": Android's music volume
+        // moved here, without Android's panel, and Songate draws its own (App::drawVolumePop). "Android": they go on to Android as
+        // before (SDL lets them through), which shows its own panel.
+        final int code = event.getKeyCode();
+        if (ownVolumeKeys && (code == android.view.KeyEvent.KEYCODE_VOLUME_UP || code == android.view.KeyEvent.KEYCODE_VOLUME_DOWN)) {
+            if (event.getAction() == android.view.KeyEvent.ACTION_DOWN) {
+                final android.media.AudioManager am = (android.media.AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                if (am != null) {
+                    try {
+                        am.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC,
+                                              code == android.view.KeyEvent.KEYCODE_VOLUME_UP ? android.media.AudioManager.ADJUST_RAISE
+                                                                                              : android.media.AudioManager.ADJUST_LOWER, 0);
+                    } catch (Throwable t) {
+                        Log.w("Songate", "volume key: " + t);
+                    }
+                }
+                reportVolume(true);
+            }
+            return true;
+        }
         return super.dispatchKeyEvent(event);
+    }
+
+    // ---------------------------------------------------------------- the volume: Android's music volume is Songate's (2.1.0)
+    // (the user, 2026-11-15: "make songate volume in android be the android volume"): Songate's slider sets it, the keys move it,
+    // and Songate's own level stays at full, so the DAC gets the whole signal.
+    private static volatile boolean ownVolumeKeys = true;
+    private static native void nativeVolume(int index, int max, boolean fromKey);
+    private static native void nativeResumed();
+    private android.content.BroadcastReceiver volumeWatch;
+
+    private static void reportVolume(boolean fromKey) {
+        final int v = volumeNow();
+        if (v < 0) return;
+        try {
+            nativeVolume(v & 0xffff, v >>> 16, fromKey);
+        } catch (UnsatisfiedLinkError e) {   // libmain not loaded yet: the app asks volumeNow itself at its start
+        }
+    }
+
+    /** The music volume now: (max << 16) | index; −1 when there is no audio service. */
+    public static int volumeNow() {
+        final Context c = HibyR4.context;
+        if (c == null) return -1;
+        final android.media.AudioManager am = (android.media.AudioManager) c.getSystemService(Context.AUDIO_SERVICE);
+        if (am == null) return -1;
+        final int max = Math.max(1, am.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC));
+        return (max << 16) | Math.max(0, Math.min(max, am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)));
+    }
+
+    /** Songate's slider: the music volume to this step, without Android's panel. */
+    public static void volumeSet(int index) {
+        final Context c = HibyR4.context;
+        if (c == null) return;
+        final android.media.AudioManager am = (android.media.AudioManager) c.getSystemService(Context.AUDIO_SERVICE);
+        if (am == null) return;
+        try {
+            am.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, index, 0);
+        } catch (Throwable t) {   // (a fixed volume: line out, or Do Not Disturb's rules)
+            Log.w("Songate", "volumeSet: " + t);
+        }
+    }
+
+    // The HiBy R4's settings (HibyR4.java), here because the app's own threads find this class alone (activityClass in
+    // platform_android.cpp: a thread the app starts has only the system's class loader)
+    public static int hibyState() { return HibyR4.state(); }
+    public static boolean hibyDevice() { return HibyR4.device; }
+    public static String hibyGet() { return HibyR4.get(); }
+    public static String hibySet(String key, String value) { return HibyR4.set(key, value); }
+    public static boolean hibyEqSet(String eq) { return HibyR4.eqSet(eq); }
+    public static boolean hibyLedLive(int rgb, int bright, boolean breath) { return HibyR4.ledLive(rgb, bright, breath); }
+
+    /** Settings › Playback › Volume keys show: Songate (true) or Android (false). */
+    public static void volumeKeysOwn(boolean own) {
+        ownVolumeKeys = own;
     }
 
     @Override
@@ -79,6 +153,8 @@ public class SongateActivity extends SDLActivity {
             System.exit(0);   // (before SDL's own onCreate: it would set up a second SDL over the first)
         }
         self = this;
+        HibyR4.context = getApplicationContext();
+        HibyR4.detect(HibyR4.context);   // (before SDL starts the app's thread: its first frame already knows)
         SongateService.attach(this);
         copyRomfs();   // before SDL starts the app's thread: the fonts are read at launch
         WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
@@ -102,6 +178,23 @@ public class SongateActivity extends SDLActivity {
             reportEdges(insets);
             return v.onApplyWindowInsets(insets);
         });
+        // The keys move the music volume even with nothing playing (not the ringer's), and Songate hears every change of it,
+        // whoever made it (the keys, Android's panel, another app, line out locking it)
+        setVolumeControlStream(android.media.AudioManager.STREAM_MUSIC);
+        volumeWatch = new android.content.BroadcastReceiver() {
+            @Override
+            public void onReceive(Context c, Intent i) {
+                reportVolume(false);
+            }
+        };
+        try {
+            final android.content.IntentFilter f = new android.content.IntentFilter("android.media.VOLUME_CHANGED_ACTION");
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(volumeWatch, f, Context.RECEIVER_EXPORTED);
+            else registerReceiver(volumeWatch, f);
+        } catch (Throwable t) {
+            Log.w("Songate", "volume watch: " + t);
+            volumeWatch = null;
+        }
     }
 
     private static native void nativeEdges(float[] boxes, float cornerRadius, int width, int height);
@@ -176,6 +269,10 @@ public class SongateActivity extends SDLActivity {
     @Override
     protected void onDestroy() {
         if (multicast != null && multicast.isHeld()) multicast.release();
+        if (volumeWatch != null) {
+            try { unregisterReceiver(volumeWatch); } catch (Throwable ignored) {}
+            volumeWatch = null;
+        }
         if (!keepNativeWhenDestroyed()) SongateService.end();   // SDL ends the app with its screen: no music left to control
         super.onDestroy();
     }
@@ -374,6 +471,11 @@ public class SongateActivity extends SDLActivity {
     protected void onResume() {
         super.onResume();
         applyHome();
+        reportVolume(false);
+        try {
+            nativeResumed();   // (the HiBy R4's settings read again: line out ends by itself when its cable comes out)
+        } catch (UnsatisfiedLinkError ignored) {
+        }
     }
 
     /** The apps a home screen shows, by name: label, then "package/activity", for each (Songate itself left out). */
@@ -560,6 +662,27 @@ public class SongateActivity extends SDLActivity {
             if (cut > 0) out.append(p, 0, cut).append('\n');
         }
         return out.toString();
+    }
+
+    /** Whether the volume holding path is mounted, as Android says, not merely there: at a boot an SD card's folder is there while
+     *  vold still finishes mounting it, and vold ends every app with a file open on it (the user's Hiby R4, 2026-11-15: Songate,
+     *  the home app, opened its music and was ended four times; the queue was lost). True when Android does not say (no such
+     *  volume known): nothing is held back then. */
+    public static boolean volumeReady(String path) {
+        final Context c = HibyR4.context;
+        if (c == null || path == null) return true;
+        try {
+            final StorageManager sm = (StorageManager) c.getSystemService(Context.STORAGE_SERVICE);
+            final StorageVolume v = sm != null ? sm.getStorageVolume(new File(path)) : null;
+            // Not known to Android: right after a boot that is a card not even announced yet (the user's Hiby R4, 2026-11-15:
+            // Songate opened the music before vold had said a word about the card, and was ended). Later, an odd place of one's
+            // own: never held back for good
+            if (v == null) return !path.startsWith("/storage/") || android.os.SystemClock.elapsedRealtime() > 120000;
+            final String st = v.getState();
+            return Environment.MEDIA_MOUNTED.equals(st) || Environment.MEDIA_MOUNTED_READ_ONLY.equals(st);
+        } catch (Throwable t) {
+            return true;
+        }
     }
 
     /** Whether each of the same volumes comes out (a card, a USB drive): "1" or "0" a line, in volumes()'s order. Songate names

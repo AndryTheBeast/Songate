@@ -1,6 +1,7 @@
 /*
  * Gatefold NX · levels.cpp
  */
+#include "cardhold.hpp"
 #include "levels.hpp"
 
 #include <SDL2/SDL.h>
@@ -18,6 +19,7 @@ namespace {
 
 std::string readFile(const std::string& path) {
     std::string out;
+    if (!cardhold::pass(path)) return out;
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return out;
     char buf[16384];

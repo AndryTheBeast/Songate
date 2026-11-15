@@ -1,6 +1,7 @@
 /*
  * Gatefold NX · waveform.cpp
  */
+#include "cardhold.hpp"
 #include "waveform.hpp"
 
 #include "cores.hpp"
@@ -110,6 +111,7 @@ void decodeOpus(const std::string& path, Sink& s) {
 }
 
 void decodeVorbis(const std::string& path, Sink& s) {
+    if (!cardhold::pass(path)) return;
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return;
     OggVorbis_File vf;
@@ -139,6 +141,7 @@ void decodeFf(const std::string& path, Sink& s) {
 }
 
 void decodeWav(const std::string& path, Sink& s) {
+    if (!cardhold::pass(path)) return;
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return;
     uint8_t hdr[12], ck[8];

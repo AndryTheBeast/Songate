@@ -2,6 +2,7 @@
  * Songate · coverio.cpp
  * See coverio.hpp.
  */
+#include "cardhold.hpp"
 #include "coverio.hpp"
 #include "platform.hpp"
 
@@ -24,6 +25,7 @@
 
 bool flacPicture(const std::string& path, std::vector<uint8_t>& out) {
     out.clear();
+    if (!cardhold::pass(path)) return false;
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return false;
     auto u32be = [](const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; };

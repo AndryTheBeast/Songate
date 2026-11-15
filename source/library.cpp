@@ -1,6 +1,7 @@
 /*
  * Gatefold NX · library.cpp
  */
+#include "cardhold.hpp"
 #include "library.hpp"
 #include "metadata.hpp"
 #include "platform.hpp"
@@ -133,7 +134,8 @@ std::vector<std::string> Library::validRoots(const std::vector<std::string>& can
 
 std::vector<std::string> Library::listFiles(const std::vector<std::string>& roots, std::vector<std::string>* lrcs) {
     std::vector<std::string> files;
-    for (const auto& r : roots) walk(r, files, 0, lrcs);
+    for (const auto& r : roots)
+        if (cardhold::pass(r)) walk(r, files, 0, lrcs);   // (its card still mounting: the screen's thread lists nothing)
     return files;
 }
 

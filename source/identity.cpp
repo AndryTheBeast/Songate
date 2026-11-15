@@ -3,6 +3,7 @@
  * See identity.hpp. normalise() is written out here rather than left to a library: both devices must get the same text from
  * the same tags, on every platform, for ever. Changing it changes every loose key.
  */
+#include "cardhold.hpp"
 #include "identity.hpp"
 
 #include <chrono>
@@ -140,6 +141,7 @@ double seconds() {
 
 std::string readAll(const std::string& p) {
     std::string out;
+    if (!cardhold::pass(p)) return out;
     FILE* f = fopen(p.c_str(), "rb");
     if (!f) return out;
     char b[65536];
@@ -178,6 +180,7 @@ std::string Identity::textHash(const std::string& s) {
 }
 
 std::string Identity::exactHash(const std::string& path, int64_t size) {
+    if (!cardhold::pass(path)) return {};
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return {};
     crypto_blake2b_ctx c;

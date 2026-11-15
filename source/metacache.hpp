@@ -34,6 +34,8 @@ struct AlbumArt {
 
 class MetaCache {
 public:
+    /** A song's cached cover file in artDir ("" none), from the cache's own map file: any thread may ask (the card mounting). */
+    static std::string cachedCoverFile(const std::string& artDir, const std::string& path);
 #ifdef GF_WINDOWED
     static constexpr int ThumbSize = 384;   // a window can be four times the console's screen
 #else

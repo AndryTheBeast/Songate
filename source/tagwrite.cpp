@@ -2,6 +2,7 @@
  * Songate · tagwrite.cpp
  * See tagwrite.hpp.
  */
+#include "cardhold.hpp"
 #include "tagwrite.hpp"
 
 #include <algorithm>
@@ -727,6 +728,7 @@ bool buildWithChanges(const std::string& song, const std::string& outPath, const
     const std::string ext = lowerExt(song);
     if (ext != "flac" && ext != "mp3" && ext != "m4a") { err = "Only MP3, M4A and FLAC are written"; return false; }
     for (const auto& [f, v] : ch.text) { (void)v; if (std::find(textFields().begin(), textFields().end(), f) == textFields().end()) { err = "Not a field Songate writes: " + f; return false; } }
+    if (!cardhold::pass(song)) { err = "The song could not be read"; return false; }
     FILE* in = fopen(song.c_str(), "rb");
     if (!in) { err = "The song could not be read"; return false; }
     FILE* out = fopen(outPath.c_str(), "wb");

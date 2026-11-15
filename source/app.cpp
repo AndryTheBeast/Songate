@@ -10,6 +10,8 @@
 #include "m3u.hpp"
 #include "plicons.inc"
 #include "net.hpp"
+#include "hibyr4.hpp"
+#include "cardhold.hpp"
 
 #include <SDL2/SDL_image.h>
 
@@ -26,6 +28,40 @@
 #endif
 
 namespace {
+
+/** The music folder can be read: there, and (Android) on a volume Android calls mounted. At a boot an SD card's folder is there
+ *  while vold still mounts it, and vold ends every app with a file open on it: Songate, the home app, was ended four times and
+ *  the queue lost (the user's Hiby R4, 2026-11-15). Until then it is left alone, as a folder not there yet (App::rootAway_). */
+bool musicRootThere(const std::string& root) {
+    if (Library::validRoots({ root }).empty()) return false;
+#if defined(GF_ANDROID) && defined(GF_DEV)
+    {   // dev builds: <config>/mock-cardwait.txt holding N: the card "mounts" N seconds after the start (a boot's, on the emulator)
+        static int waitS = -1;
+        if (waitS < 0) {
+            waitS = 0;
+            if (FILE* f = fopen((std::string(plat::configDir()) + "/mock-cardwait.txt").c_str(), "rb")) {
+                if (fscanf(f, "%d", &waitS) != 1) waitS = 0;
+                fclose(f);
+            }
+        }
+        if (waitS > 0 && SDL_GetTicks() < Uint32(waitS) * 1000) return false;
+    }
+#endif
+#ifdef GF_ANDROID
+    // Right after a boot a card can be mounted and then taken down again a few seconds later (the user's Hiby R4, 2026-11-15:
+    // vold reset the storage 13 s after the boot, unmounting the card and ending the apps with a file on it): in the first two
+    // minutes it is ready only once it has stayed mounted for 15 s
+    static double mountedSince = -1;
+    timespec ts{};
+    clock_gettime(CLOCK_BOOTTIME, &ts);
+    const double up = double(ts.tv_sec) + double(ts.tv_nsec) / 1e9;
+    if (!plat::volumeReady(root)) { mountedSince = -1; return false; }
+    if (mountedSince < 0) mountedSince = up;
+    return up > 120 || up - mountedSince >= 15;
+#else
+    return true;
+#endif
+}
 
 
 bool iless(const std::string& a, const std::string& b) { return strcasecmp(a.c_str(), b.c_str()) < 0; }
@@ -66,6 +102,7 @@ float pcWant(float sw, float sh, float d) { return std::clamp(std::min(sw / d / 
 
 bool App::init() {
     launchAt_ = profAt_ = SDL_GetPerformanceCounter();
+    cardhold::markMain();
     plat::init();
     metadataInit();
 #if defined(GF_WINDOWED) && defined(GF_DEV)
@@ -281,14 +318,32 @@ bool App::init() {
     sideP_ = store.sidebarCollapsed ? 0.f : 1.f;
     applyTheme();
     pal = target;
-    if (store.opening) openingFirst();
+#ifdef GF_ANDROID
+    bootOpening_ = plat::hibyDevice();
+#ifdef GF_DEV
+    if (FILE* f = fopen((std::string(plat::configDir()) + "/mock-r4.txt").c_str(), "rb")) { bootOpening_ = true; fclose(f); }   // (the simulated R4)
+#endif
+#endif
+    if (store.opening && !bootOpening_) openingFirst();
     else openingDone_ = true;   // Settings › Playback › Startup: straight into the app, no bells either
+    if (bootOpening_) bootFadeAt_ = -2;   // (the R4: from the boot animation's black)
     loader.start();
     prints.start();
     player.init();   // the UI still runs without audio, so a failure is not fatal
+#ifdef GF_ANDROID
+    r4::start();   // the HiBy R4's settings service, looked for on its own thread (nothing on any other device)
+    {
+        const plat::MediaVolume mv = plat::mediaVolume();   // Android's music volume is Songate's
+        volumeShown = mv.index >= 0 ? float(mv.index) / float(mv.max) : store.volume;
+        volGenSeen_ = mv.gen;
+        volKeysSeen_ = mv.keys;
+    }
+    player.setVolume(softVolume());
+#else
     player.setVolume(store.volume);
-    player.setEq(store.eq);
     volumeShown = store.volume;
+#endif
+    pushEq();
     startMark("audio");
     if (store.background) bgConnect();
     startMark("player");
@@ -341,7 +396,7 @@ bool App::init() {
 #ifdef GF_ANDROID
     storageOk_ = plat::storageAllowed();   // a Music folder is seen without access, but nothing in it: offered once it is given
     if (store.musicRoot.empty() && storageOk_) found = plat::musicFolder();
-    rootAway_ = storageOk_ && !store.musicRoot.empty() && Library::validRoots({ store.musicRoot }).empty();   // (not ready yet: looked for each second)
+    rootAway_ = storageOk_ && !store.musicRoot.empty() && !musicRootThere(store.musicRoot);   // (not ready yet: looked for each second)
     // Not there yet (the device has just started): waited for here, before anything is drawn, for up to four seconds. It comes
     // within a second or three on the user's Hiby R4, and then the music and the queue are read as at any start, behind the
     // first frame; read after it, they were a third of a second out of the opening animation (the user, 2026-11-14: "still a
@@ -351,11 +406,13 @@ bool App::init() {
         const Uint32 from = SDL_GetTicks();
         while (rootAway_ && SDL_GetTicks() - from < 4000) {
             SDL_Delay(50);
-            rootAway_ = Library::validRoots({ store.musicRoot }).empty();
+            rootAway_ = !musicRootThere(store.musicRoot);
         }
         fprintf(stderr, "the music folder: waited %u ms, %s\n", unsigned(SDL_GetTicks() - from), rootAway_ ? "not there yet" : "there");
         rootWaitedMs_ = int(SDL_GetTicks() - from);
     }
+    // still not mounted: held (cardhold.hpp), the library and the queue from Songate's own copies until it is
+    cardhold::set(rootAway_ ? store.musicRoot : std::string());
 #elif defined(GF_WINDOWED)
     if (store.musicRoot.empty()) found = plat::musicFolder();
 #else
@@ -455,7 +512,14 @@ void App::rescan(const std::vector<std::string>* given, Library* built) {
     rsMark("tags stopped");
     libEpoch++;
     if (!ready_) startMark("start");
-    const std::vector<std::string> roots = Library::validRoots(store.musicRoot.empty() ? std::vector<std::string>{} : std::vector<std::string>{ store.musicRoot });
+    std::vector<std::string> roots = Library::validRoots(store.musicRoot.empty() ? std::vector<std::string>{} : std::vector<std::string>{ store.musicRoot });
+#ifdef GF_ANDROID
+    // (not mounted yet: the list from last time is read, Songate's own; nothing on the card is opened until it is: cardhold.hpp.
+    // Its folder may not even be there while vold mounts it: the list is still read, by the chosen folder's name)
+#ifdef GF_ANDROID
+    if (rootAway_ && roots.empty() && !store.musicRoot.empty()) roots = { store.musicRoot };
+#endif
+#endif
     std::vector<std::string> files;
     bool remembered = false;
     if (given) files = *given;
@@ -501,7 +565,7 @@ void App::rescan(const std::vector<std::string>* given, Library* built) {
         store.writeFile("library.tsv", std::move(out));
     }
     libFiles_ = files;
-    if (remembered) {
+    if (remembered && !cardhold::held()) {   // (held: walked once the card is mounted, App::update)
         // The card may have changed since: walked again on a worker core, compared in update().
         if (libCheck_.joinable()) libCheck_.join();
         libCheckDone_ = false;
@@ -578,6 +642,7 @@ void App::rescan(const std::vector<std::string>* given, Library* built) {
 }
 
 void App::shutdown() {
+    cardhold::giveUp();   // (a worker waiting for the card would never end: it is told no)
     sortEnd();   // (a list in sort mode: its order saved with the rest)
 #ifdef GF_DEV
     // Dev builds: how long closing takes, step by step, in shutdown-trace.txt (the user, 2026-11-05: HOME crashed closing the
@@ -818,6 +883,10 @@ void App::persistNow(bool sessionOnly) {
 #endif
     Session s;
     const Queue& kept = tog.queueTaken ? tog.savedQueue : q;   // a session's list is never saved
+#ifdef GF_ANDROID
+    if (sessionHeld_ && kept.tracks.empty()) return;   // the saved queue not brought back yet: kept as it is (App::sessionHeld_)
+    if (!kept.tracks.empty()) sessionHeld_ = false;
+#endif
     s.name = kept.name;
     for (int t : kept.tracks) s.tracks.push_back(lib.tracks[t].path);
     s.order = kept.order;
@@ -826,11 +895,14 @@ void App::persistNow(bool sessionOnly) {
     // the track before's (the phone, 2026-11-06: True Colors restored at 4:49 of its 3:52)
     const bool same = kept.pos >= 0 && kept.pos < int(kept.order.size()) && now.track == kept.tracks[size_t(kept.order[size_t(kept.pos)])];
     s.position = player.loaded() && !tog.queueTaken && !now.loading && same && !srvq_.on ? player.position() : 0;
+    if (!player.loaded() && !cardLoad_.path.empty() && same) s.position = cardLoad_.at;   // (waiting for its card: where it was)
     store.saveSession(s);
     // the server's queue, beside it: to the card only when its list changed, or at the close (the position is RAM's until then);
     // written at every save it wore the card for nothing (the user, 2026-11-09: "writing the queue every single second is crazy")
     {
         static std::string lastList;
+        static char lastOn = 0;   // its "on" (the one playing): a change of it is written too, or the next start brought the
+                                  // server's queue back as the one playing after a song of yours had taken over (found 2026-11-15)
         static bool lastKnown = false;
         if (!lastKnown) {   // what the card holds from the last run: the launch's first save wrote the same list again
             lastKnown = true;
@@ -843,12 +915,14 @@ void App::persistNow(bool sessionOnly) {
             }
             const size_t nl = have.find('\n');
             lastList = nl == std::string::npos ? have : have.substr(nl + 1);
+            lastOn = have.empty() ? 0 : have[0];
         }
         const std::string sq = serverQueueText();
         const size_t nlAt = sq.find('\n');
         const std::string list = nlAt == std::string::npos ? sq : sq.substr(nlAt + 1);
-        if (sq.empty()) { if (!lastList.empty()) { lastList.clear(); store.removeFile("server-queue.tsv"); } }
-        else if (list != lastList || !running) { lastList = list; store.writeFile("server-queue.tsv", sq); }
+        const char on = sq.empty() ? 0 : sq[0];
+        if (sq.empty()) { if (!lastList.empty()) { lastList.clear(); lastOn = 0; store.removeFile("server-queue.tsv"); } }
+        else if (list != lastList || on != lastOn || !running) { lastList = list; lastOn = on; store.writeFile("server-queue.tsv", sq); }
     }
 }
 
@@ -862,6 +936,9 @@ void App::restoreSession() {
         keep.push_back(it == pathIndex.end() ? -1 : int(q.tracks.size()));
         if (it != pathIndex.end()) q.tracks.push_back(it->second);
     }
+#ifdef GF_ANDROID
+    sessionHeld_ = q.tracks.empty() && !s.tracks.empty();   // (none of its songs found yet: kept on the card, tried again)
+#endif
     if (q.tracks.empty()) return;
     q.name = s.name;
     const int cur = s.pos >= 0 && s.pos < int(s.order.size()) && s.order[s.pos] >= 0 && s.order[s.pos] < int(keep.size()) ? keep[s.order[s.pos]] : -1;
@@ -877,6 +954,7 @@ void App::restoreSession() {
     holdOrderForAutomix(true);   // an Automix playlist restored with Shuffle on: its own order
     if (cur < 0) return;   // the track that was playing is gone: keep the queue, start nothing
     loadTrack(q.tracks[q.order[q.pos]], true);
+    if (!cardLoad_.path.empty()) cardLoad_.at = s.position;   // (the card still mounting: from where it was, once it is)
     const double dur = now.info.duration > 0 ? now.info.duration : lib.tracks[size_t(now.track)].duration;
     if (player.loaded() && s.position > 1 && (dur <= 0 || s.position < dur - 1)) player.seek(s.position);   // (never past its end)
     savedTrack = now.track;
@@ -1806,9 +1884,10 @@ void App::update() {
 #ifdef GF_DEV
         if (rootWaitedMs_ >= 0) { logLine("Music folder: the start waited " + std::to_string(rootWaitedMs_) + " ms for it" + (rootAway_ ? ", not there yet" : "")); rootWaitedMs_ = -1; }
 #endif
-        const bool there = !Library::validRoots({ store.musicRoot }).empty();
+        const bool there = musicRootThere(store.musicRoot);
         if (rootAway_ && there) {
             rootAway_ = false;
+            cardhold::set(std::string());   // (before the rescan: its workers may read now)
             fprintf(stderr, "the music folder is there now: read\n");
             const Uint64 t0 = SDL_GetPerformanceCounter();
             rescanFromList_ = true;   // the list kept from last time now, the folder itself walked on a worker and compared after
@@ -1816,6 +1895,14 @@ void App::update() {
             rescanFromList_ = false;
             const Uint64 t1 = SDL_GetPerformanceCounter();
             if (store.resume && now.track < 0 && q.tracks.empty()) restoreSession();
+            if (!cardLoad_.path.empty()) {   // the queue's song, shown all along: opened now, and played if that was asked for
+                const CardLoad c = cardLoad_;
+                cardLoad_ = CardLoad{};
+                if (auto it = pathIndex.find(c.path); it != pathIndex.end()) {
+                    loadTrack(it->second, !c.play);
+                    if (player.loaded() && c.at > 1) player.seek(c.at);
+                }
+            }
 #ifdef GF_DEV
             {
                 const double f = 1000.0 / double(SDL_GetPerformanceFrequency());
@@ -1826,6 +1913,10 @@ void App::update() {
 #endif
         } else if (!rootAway_ && !there && lib.tracks.empty()) {
             rootAway_ = true;   // (gone while nothing of it is loaded: waited for, the same)
+            cardhold::set(store.musicRoot);
+        } else if (sessionHeld_ && there && !lib.tracks.empty() && q.tracks.empty() && now.track < 0 && store.resume) {
+            restoreSession();   // the songs may be there now (App::sessionHeld_)
+            if (!sessionHeld_) logLine("The saved queue is back (its songs were not there at the start)");
         }
     }
     // Hidden, Android has taken the GPU's surface away: a new song's cover waits to be uploaded until Songate is seen again, and only
@@ -2006,7 +2097,12 @@ void App::update() {
 
     // Saved as things change rather than on exit, which the HOME menu can skip: the volume once the
     // slider settles, the session on every track change, play/pause, and every 20 s while playing.
+#ifdef GF_ANDROID
+    syncVolume();   // (Android keeps its own volume: nothing of Songate's to save)
+    r4Tick();
+#else
     if (std::abs(volumeShown - store.volume) > 0.0005f) { store.volume = volumeShown; persistSoon(0.8f); }
+#endif
     if (now.track != savedTrack || isPlaying() != savedPlaying) {
         savedTrack = now.track;
         savedPlaying = isPlaying();
@@ -2305,6 +2401,8 @@ void App::playAt(int orderPos, double fade, const automix::Plan* mix) {
     // state is a frame old here, and on a fresh install it still said "no queue", which skipped every track.
     if (player.remote()) {
         q.failed = 0;
+    } else if (!player.loaded() && !cardLoad_.path.empty()) {
+        // its card still mounting (cardhold.hpp): not unplayable, waiting; it plays once the card is there
     } else if (!player.loaded()) {
         // Unplayable file: say so, skip it, but never loop forever over a list of broken files.
         toast("Can't play “" + baseName(lib.tracks[q.tracks[q.order[q.pos]]].path) + "”");
@@ -2596,7 +2694,7 @@ void App::writeBgPlaylists() {
 void App::setEq(const GfbgEq& e) {
     store.eq = e;
     gfEqClamp(&store.eq);
-    player.setEq(store.eq);
+    pushEq();
     eqDirty = true;
     persistSoon(1.0f);
 }
@@ -2800,10 +2898,125 @@ double App::sleepLeft() const {
     return sleepUntil > 0 ? std::max(0.0, sleepUntil - time) : 0;
 }
 
+/** The HiBy R4's start: the screen comes up out of the boot animation's black, about 0.3 s, easing out, so the boot and Songate
+ *  are one motion. Over everything, last. */
+void App::drawBootFade() {
+    if (bootFadeAt_ == -1) return;
+    const double now = SDL_GetTicks() / 1000.0;   // (the clock, not the frame's time: the first frames can be long)
+    if (bootFadeAt_ == -2) bootFadeAt_ = now;
+    const float t = float(now - bootFadeAt_) / 0.3f;
+    if (t >= 1) { bootFadeAt_ = -1; return; }
+    const float a = (1 - t) * (1 - t) * (1 - t);
+    g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, a);
+}
+
+// ---- the volume (Android: Android's own music volume) and the HiBy R4
+
+float App::softVolume() const {
+#ifdef GF_ANDROID
+    return 1.f;
+#else
+    return volumeShown;
+#endif
+}
+
+bool App::volumeFixed() const { return r4::lineOut(); }
+
+void App::setVolume(float v) {
+    v = std::clamp(v, 0.f, 1.f);
+#ifdef GF_ANDROID
+    if (volumeFixed()) return;   // (line out: the ROM holds it at full; the ROM's word is not to fight it)
+    const plat::MediaVolume mv = plat::mediaVolume();
+    const int idx = int(std::lround(v * float(mv.max)));
+    plat::mediaVolumeSet(idx);
+    volumeShown = float(idx) / float(mv.max);   // in the device's own steps
+    volGenSeen_ = plat::mediaVolume().gen;
+#else
+    volumeShown = v;
+    player.setVolume(v);
+#endif
+}
+
+void App::syncVolume() {
+#ifdef GF_ANDROID
+    // Settings › Playback › Volume keys show: Songate's pop-up (Songate takes the keys) or Android's panel
+    const int own = store.volPop == 0 ? 1 : 0;
+    if (own != volKeysOwnSent_) {
+        plat::volumeKeysOwn(own != 0);
+        volKeysOwnSent_ = own;
+    }
+    const plat::MediaVolume mv = plat::mediaVolume();
+    if (mv.gen != volGenSeen_) {
+        volGenSeen_ = mv.gen;
+        if (mv.index >= 0) volumeShown = float(mv.index) / float(mv.max);
+    }
+    if (mv.keys != volKeysSeen_) {
+        volKeysSeen_ = mv.keys;
+        if (store.volPop == 0) {
+            if (time > volPopUntil_) volPopFrom_ = time;
+            volPopUntil_ = std::max(volPopUntil_, time + 1.5);
+        }
+    }
+#endif
+}
+
+void App::pushEq() {
+    GfbgEq p = store.eq;
+    if (r4::on()) {   // the bands are the ROM's (the user's choice, session 20); bass, treble and the preamp stay Songate's
+        r4::eqSet(p);
+        for (float& b : p.bands) b = 0;
+        r4EqSent_ = true;
+    }
+    player.setEq(p);
+}
+
+void App::r4Tick() {
+    if (!r4::on()) return;
+    if (!r4EqSent_) pushEq();   // the service answered after the start: Songate's equalizer to it, once
+    std::string e;
+    if (r4::takeError(e)) toast(e);
+    // Status LED › Colour's wheel: shown on the light as it is picked (led_live, nothing saved), saved when the picker closes
+    // with the colour kept; closed without it, the light goes back to the colour it had
+    auto hexOf = [](int rgb) { char b[8]; snprintf(b, sizeof b, "%06x", rgb & 0xffffff); return std::string(b); };
+    const bool breath = r4::get("led_effect") == "breath";
+    const int bright = r4::getInt("led_bright", 60);
+    if (!r4FeatKey_.empty() && pick.field != &r4FeatPick_) {   // a feature's colour: set once the picker closes, kept
+        const std::string now = hexOf(r4FeatPick_);
+        if (now != r4::get(r4FeatKey_.c_str())) r4::set(r4FeatKey_.c_str(), now);
+        r4FeatKey_.clear();
+    }
+    if (pick.field == &r4LedPick_) {
+        if (r4LedPick_ != r4LedPickSent_) {
+            r4::ledLive(r4LedPick_, bright, breath);
+            r4LedPickSent_ = r4LedPick_;
+        }
+    } else if (r4LedPickSent_ >= 0) {
+        const std::string now = hexOf(r4LedPick_);
+        if (now != r4::get("led_color")) {
+            store.r4LedAccent = false;
+            r4::set("led_color", now);
+            persistSoon(0.3f);
+        } else {
+            r4::ledLive(r4LedPick_, bright, breath);   // (cancelled: the light as it was)
+        }
+        r4LedPickSent_ = -1;
+    }
+    // Status LED › Colour "A": Songate's accent (where the colours are going, not the fade between them), set when it changes
+    // and differs from what the ROM keeps: once a cover, never a frame
+    if (store.r4LedAccent && r4::get("led_mode") == "custom") {
+        char hex[8];
+        snprintf(hex, sizeof hex, "%02x%02x%02x", int(std::lround(target.accent.r * 255)), int(std::lround(target.accent.g * 255)),
+                 int(std::lround(target.accent.b * 255)));
+        static std::string sent;
+        if (sent != hex && r4::get("led_color") != hex) r4::set("led_color", hex);
+        sent = hex;
+    }
+}
+
 /** seconds 0: off. choice: what Settings' control shows (0 off, 1… the minutes in order). */
 void App::setSleep(double seconds, int choice) {
     sleepChoice = seconds > 0 ? choice : 0;
-    if (sleepFading) player.setVolume(volumeShown);   // turned off or moved during the fade: back up
+    if (sleepFading) player.setVolume(softVolume());   // turned off or moved during the fade: back up
     sleepFading = false;
     sleepUntil = seconds > 0 ? time + seconds : 0;
     if (player.remote()) {
@@ -2827,12 +3040,12 @@ void App::updateSleep() {
         if (left <= 0) {
             sleepUntil = 0;
             if (isPlaying()) player.togglePause();
-            if (sleepFading) player.setVolume(volumeShown);
+            if (sleepFading) player.setVolume(softVolume());
             sleepFading = false;
             sleepEnded(true);
         } else if (left <= 10 && isPlaying()) {
             sleepFading = true;
-            player.setVolume(volumeShown * float(left / 10));
+            player.setVolume(softVolume() * float(left / 10));   // (Songate's own level: Android's stays where the user left it)
         }
     }
     // Settings → Playback → Keep the console awake: no dimming or auto-sleep while Gatefold is open, until
@@ -3287,6 +3500,8 @@ void App::loadTrack(int trackIdx, bool paused, bool start, double fade, const au
     r.path = t.path;
     r.folder = t.folder;
     if (auto it = store.covers.find(t.path); it != store.covers.end()) r.myCover = it->second;
+    // its card still mounting: the cover from Songate's own cache, so Now playing has it while it waits (the user, 2026-11-15)
+    if (r.myCover.empty() && cardhold::under(t.path)) r.myCover = MetaCache::cachedCoverFile(store.path("art"), t.path);
     r.opts = paletteOpts();
     r.softRadius = backdropRadius();
     loader.request(std::move(r));
@@ -3299,6 +3514,15 @@ void App::loadTrack(int trackIdx, bool paused, bool start, double fade, const au
         player.setLevel(gain, true);
         bg.playAt(q.pos, paused, 0);
         bgs.awaitUntil = time + 1.5;
+        return;
+    }
+    if (cardhold::held() && !cardhold::pass(t.path)) {
+        // The card is still mounting: the song is shown, and opened once it is (App::update). Played: said so, and remembered
+        now.loading = false;
+        const bool play = !paused || (cardLoad_.path == t.path && cardLoad_.play);
+        cardLoad_ = CardLoad{ t.path, play, 0 };
+        if (!paused) toast("The SD card isn't ready yet: it plays as soon as it is");
+        player.setLevel(gain, true);
         return;
     }
     UPD_MARK("loadTrack");   // (the dev trace: the join's frame split, the player's load apart)

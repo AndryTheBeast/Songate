@@ -5,6 +5,7 @@ with as many tracks as before, and the queue from before with its song.
 THIS RESTARTS THE DEVICE.    python devboot.py      (SONGATE_SERIAL names the device; never the emulator by default: say it)"""
 import os
 import re
+import subprocess
 import sys
 import time
 
@@ -20,16 +21,17 @@ def check(name, ok, detail=""):
 
 
 def tracks():
-    """Library (upright): its count of tracks."""
-    tap_item('ph.nav#1')
-    time.sleep(1.5)
-    if 'lib.source[0]' in screen().items:
-        tap_item('lib.source[0]')
-        time.sleep(1.0)
-    for t in screen().texts:
-        m = re.match(r'(\d+) tracks?', t[0])
-        if m:
-            return int(m[1])
+    """Library (upright): its count of tracks. (Tried three times: right after a boot a tap can land before the page is up.)"""
+    for _ in range(3):
+        tap_item('ph.nav#1')
+        time.sleep(1.5)
+        if 'lib.source[0]' in screen().items:
+            tap_item('lib.source[0]')
+            time.sleep(1.0)
+        for t in screen().texts:
+            m = re.match(r'(\d+) tracks?', t[0])
+            if m:
+                return int(m[1])
     return -1
 
 
@@ -82,6 +84,11 @@ while time.time() - t0 < 150:
     if s.w > 0:
         if first is None:
             first = (round(time.time() - t0), s.track)
+            shots = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'docs', 'next-session', 'devboot')
+            os.makedirs(shots, exist_ok=True)
+            with open(os.path.join(shots, 'first-seen.png'), 'wb') as f:   # (the card likely still mounting: the cover from the cache)
+                f.write(subprocess.run([r'C:\Android\sdk\platform-tools\adb.exe', '-s', SERIAL, 'exec-out', 'screencap', '-p'],
+                                       capture_output=True).stdout)
         if s.track == song:
             back = round(time.time() - t0)
             break
@@ -92,7 +99,18 @@ check('the queue from before is back, its song current, by itself', back is not 
 for _ in range(3):
     clear_notices(screen())
     time.sleep(0.8)
-n1 = tracks()
+n1 = -1
+t1 = time.time()
+while n1 < 0 and time.time() - t1 < 40:   # (right after a boot the screen may not answer yet)
+    n1 = tracks()
+    if n1 < 0:
+        time.sleep(3)
+# Songate started once and was never ended: vold ends any app with a file open on a card it is (re)mounting (2026-11-15)
+starts = len(re.findall(r'Start proc \d+:' + re.escape(PKG) + '/', adb('logcat', '-d', '-b', 'all')))
+died = adb('logcat', '-d', '-b', 'events').count('am_proc_died') and len(re.findall(r'am_proc_died: \[\d+,\d+,' + re.escape(PKG), adb('logcat', '-d', '-b', 'events')))
+told = re.findall(r'vold\s*: Sending \w+ to pid \d+ \(SDLActivity', adb('logcat', '-d', '-b', 'all'))
+check('Songate started once after the boot, never ended', starts == 1 and not died, f'{starts} starts, {died} ended')
+check('vold never had to end Songate (nothing open on the card while it mounted)', not told, '; '.join(told))
 check('the library is back by itself, as many tracks as before', n1 == n0, f'{n1} of {n0}')
 saved = len([l for l in run_as('cat files/Songate/session.txt').splitlines() if l.startswith('track=')])
 check('the saved queue was not written over while the folder was away', saved == kept, f'{saved} of {kept}')

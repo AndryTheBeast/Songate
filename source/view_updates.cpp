@@ -547,8 +547,10 @@ void App::defaultSettings() {
 #ifdef GF_ANDROID
     fitPending_ = true;   // Size back to Medium: laid out again between frames
 #endif
+#ifndef GF_ANDROID   // (Android's volume is Android's own: a reset leaves it)
     volumeShown = store.volume;
     player.setVolume(volumeShown);
+#endif
     setEq(store.eq);   // Gatefold's player, and the background player's copy (sent within 0.1 s)
     if (player.remote()) {   // its own settings: game actions, fades, action playlists
         bgs.cfg = BgConfig{};

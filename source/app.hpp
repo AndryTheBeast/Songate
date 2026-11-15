@@ -781,6 +781,38 @@ private:
      *  Now playing's and the Canvas's (the user, 2026-11-07: "can you apply it to canvas too?"). Kept, not measured every frame. */
     std::string titleTrim(const std::string& text, Font f, float w);
     float volumeShown = 1;
+    // The song to open once the card is mounted (Android, cardhold.hpp; never set elsewhere): the queue's own, shown already;
+    // play: asked for meanwhile (the user, 2026-11-15: "a warning saying the card is not mounted yet", then it plays when it is)
+    struct CardLoad { std::string path; bool play = false; double at = 0; } cardLoad_;
+    /** The volume. On Android it is Android's own music volume (the user, 2026-11-15: "songate volume in android be the android
+     *  volume"): setVolume moves it in the device's steps and Songate's own level (softVolume) stays at full, so the DAC gets the
+     *  whole signal; the keys and Android's panel move it too (syncVolume). Elsewhere it is Songate's own level, as ever.
+     *  volumeFixed: the HiBy R4's line out holds it at full; nothing moves it then. */
+    float softVolume() const;
+    void setVolume(float v);
+    bool volumeFixed() const;
+    void syncVolume();       // each frame (Android): what Android says the volume is
+    void drawVolumePop();    // Songate's own pop-up for the volume keys (Settings › Playback › Volume)
+    double volPopFrom_ = -10, volPopUntil_ = -10;
+    unsigned volGenSeen_ = 0, volKeysSeen_ = 0;
+    int volKeysOwnSent_ = -1;
+    /** Songate's equalizer to the player; on the HiBy R4 the ten bands go to the ROM's equalizer instead (one equalizer there),
+     *  Songate's own keeping bass, treble and the preamp. */
+    void pushEq();
+    /** Each frame: the HiBy R4's refusals shown, the status LED following the accent, the equalizer sent once it is there. */
+    void r4Tick();
+    /** The HiBy R4 with SongateOS: its boot animation has just played Songate's opening, so Songate opens straight into the app,
+     *  silent, fading in from the boot animation's black (the ROM's boot prompt; the user hid the Opening card there). */
+    bool bootOpening_ = false;
+    double bootFadeAt_ = -1;   // −2: due at the first frame; ≥ 0: when it began; −1: none
+    void drawBootFade();
+    bool r4EqSent_ = false;
+    double r4PageReadAt_ = -10;
+    int r4LedPick_ = 0;            // Status LED › Colour's wheel: the colour picker's field (shown live while it is open)
+    int r4LedPickSent_ = -1;       // ... last shown live (−1: nothing); on close it is saved, or the light put back
+    int r4LedBright_ = -1;         // Status LED › Brightness while dragged (−1: none): live, saved on release
+    int r4FeatPick_ = 0;           // a feature's colour (Notification colour, the sample rates') in the colour picker: set on close
+    std::string r4FeatKey_;        // ... its key ("" none open)
     float coverBeat = 0;     // the cover's eased bass pulse
     double persistAt = 0;    // when the debounced save is due (0: nothing pending)
     double sessionAt = 0;    // last time the session (queue, position) was written
@@ -1127,7 +1159,7 @@ private:
     Rgb dangerInk() const { return pal.dark ? Rgb{ 0.93f, 0.45f, 0.42f } : Rgb{ 0.66f, 0.13f, 0.15f }; }
     void slider(Id id, float x, float cy, float w, float value, float* out);
     /** Upright, value 0..1 from the bottom, filled from the middle (the equalizer's bands); ←/→ while picked up go to left/right. */
-    void vslider(Id id, float cx, float top, float h, float value, float* out, Id left, Id right);
+    void vslider(Id id, float cx, float top, float h, float value, float* out, Id left, Id right, bool draw = true);   // draw false: only its input (a curve drawn by the caller)
     void openEqPresets();
     /** Your saved equalizer presets: the sound now under a name (an existing name is replaced), renamed, deleted. */
     void saveEqPreset(int into = -1);   // into: your preset k updated with the sound now, else a new one (named)
@@ -1474,6 +1506,10 @@ public:
     // the card (or any storage) ready; and a card can be taken out. Looked for once a second; when it is there the music is read
     // as at any start and the queue comes back. Until then the queue kept from last time is not written over with an empty one.
     bool rootAway_ = false;
+    // A saved queue whose songs were not found when it was read (the music not readable yet at a boot: the user's Hiby R4,
+    // 2026-11-15, "relaunched like 4 times after reboot and then forgot the queue"): held, never written over by an empty
+    // queue, and read again each second until its songs are there. Anything put in the queue meanwhile is saved as ever
+    bool sessionHeld_ = false;
     double rootCheckAt_ = 0;
     int rootWaitedMs_ = -1;   // how long the start waited for it (the dev log says, once)
     double storageCheckAt_ = 0;

@@ -223,6 +223,9 @@ const std::vector<const char*>& systemFolders();
 std::vector<std::string> rootFolders();
 /** A volume's name for people ("SD card"), when path is one of the volumes; empty for any other folder. */
 std::string volumeLabel(const std::string& path);
+/** The volume holding path is mounted, as Android says (an SD card at a boot: its folder is there before; vold ends any app with
+ *  a file open on it until it is done). True when Android does not know the path. */
+bool volumeReady(const std::string& path);
 /** Songate may read the shared volumes: All files access (Android 11 and later), the storage permission (Android 10). */
 bool storageAllowed();
 /** Android's own page (or dialog) for it; the answer is seen with storageAllowed when Songate is back in front. */
@@ -231,6 +234,26 @@ void askStorage();
  *  the rounded corners' radius. The number changes whenever Android says they did (a turn, a fold). */
 struct EdgeBox { float x, y, w, h; };
 unsigned screenEdges(std::vector<EdgeBox>& boxes, float& cornerRadius, int& width, int& height);   // width, height: the window's they are for
+/** Android's music volume, which is Songate's (2.1.0): index of max steps; gen changes with every change Songate hears of, keys
+ *  with each press of the volume keys Songate took itself (volumeKeysOwn). index −1: not known yet. */
+struct MediaVolume { int index = -1, max = 15; unsigned gen = 0, keys = 0; };
+MediaVolume mediaVolume();
+void mediaVolumeSet(int index);
+/** The volume keys with Songate in front: moved by Songate without Android's panel (true), or left to Android (false). */
+void volumeKeysOwn(bool own);
+/** Counts each return of Songate's screen to the front. */
+unsigned resumes();
+/** The HiBy R4's settings service on the user's own ROM (hibyr4.cpp's worker calls these; each is IPC, never on the screen's
+ *  thread). hibyState: 0 none, 1 there but Songate lacks its permission (installed before it), 2 ready. hibyGet: "key=value" a
+ *  line, "" on failure. hibySet: "" accepted, else why not. */
+int hibyState();
+/** The HiBy R4 with SongateOS, known before the first frame: its boot animation has just played Songate's opening (the ROM's
+ *  boot prompt, 2026-11-15), so Songate's own does not play there. False if anything fails. */
+bool hibyDevice();
+std::string hibyGet();
+std::string hibySet(const std::string& key, const std::string& value);
+bool hibyEqSet(const std::string& eq);
+bool hibyLedLive(int rgb, int bright, bool breath);
 #endif
 /** Files and bytes below a folder, the system's own fast way. False: use stat(). */
 bool measureFiles(const std::string& path, int& files, uint64_t& bytes, int cap);

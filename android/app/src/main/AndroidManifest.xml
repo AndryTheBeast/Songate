@@ -44,6 +44,13 @@
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
     </queries>
+    <!-- The HiBy R4 on the user's own ROM: its settings service (Settings › Sound & DAC, Appearance › Status LED). A normal
+         permission, granted at install; on any other device nothing answers and Songate shows none of it -->
+    <uses-permission android:name="com.andre.hibyr4.permission.HIBY_SETTINGS" />
+    <queries>
+        <package android:name="com.andre.hibyr4.service" />
+        <provider android:authorities="com.andre.hibyr4.settings" />
+    </queries>
     <application android:label="Songate"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="false"

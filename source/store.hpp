@@ -111,6 +111,12 @@ struct Store {
     // Android upright, Settings › Visualizer › Seek bar › Seek bar animation: how the bars come back after scrubbing. 0 Quick (half a
     // second, all together), 1 Smooth (longer and gentler: the default, the user's choice), 2 Wave (out from the song's place)
     int seekAnim = 1;
+    // Android, Settings › Playback › Volume (2.1.0; the volume is Android's own music volume): what the volume keys show (0 Songate's
+    // own pop-up, 1 Android's panel), where Songate's shows (0 Top, 1 Side, 2 Bottom), and the volume as 0 steps or 1 percent
+    int volPop = 0, volWhere = 1, volNum = 0;
+    // The HiBy R4 only, Appearance › Status LED › Colour "A": the light follows Songate's accent, set again with each cover
+    // (the ROM keeps the colour itself; this is Songate's own part of it). Saved only while it is on: no other device keeps a line
+    bool r4LedAccent = false;
     bool seekWave = true;         // Settings › Visualizer › Seek bar › Waveform: the song's loudness as bars; off, a plain line
     float coverPulse = 1.f;     // 1 = Gatefold's breathing
     bool canvasPulse = true;    // the pulse on the Canvas cover too

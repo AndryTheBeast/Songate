@@ -1,6 +1,7 @@
 /*
  * Gatefold NX · ffdecoder.cpp
  */
+#include "cardhold.hpp"
 #include "ffdecoder.hpp"
 
 extern "C" {
@@ -88,6 +89,7 @@ bool ffHandles(const std::string& path) {
 }
 
 bool ffReadInfo(const std::string& path, TrackInfo& out, bool wantCover, bool wantLyrics) {
+    if (!cardhold::pass(path)) return false;   // (its card still mounting)
     AVFormatContext* fmt = nullptr;
     if (avformat_open_input(&fmt, fileUrl(path).c_str(), nullptr, nullptr) != 0) return false;
     // MP4 keeps everything in the moov box, read by the open: no need for the slower stream probe.
@@ -138,6 +140,7 @@ bool FfDecoder::open(const std::string& path, int outRate, int outChannels) {
     close();
     outRate_ = outRate;
     outCh_ = outChannels;
+    if (!cardhold::pass(path)) return false;
     if (avformat_open_input(&fmt_, fileUrl(path).c_str(), nullptr, nullptr) != 0) { fmt_ = nullptr; return false; }
     if (avformat_find_stream_info(fmt_, nullptr) < 0) { close(); return false; }
     const AVCodec* codec = nullptr;

@@ -15,6 +15,7 @@
 
 #include "app.hpp"
 #include "icons.inc"
+#include "hibyr4.hpp"
 #include "plicons.inc"
 #include "appicons.inc"
 
@@ -44,7 +45,46 @@ struct Row {
     size_t nOpts = 0;
     bool fill = false;     // a choice bar: upright (narrow) it takes a line of its own, the row's whole width (sliders too: ctlW 180)
     bool dim = false;      // greyed: the label in the hint's colour (a row with nothing to switch just now)
+    int rounds = 0;        // a colour row: its rounds (30 each); upright, more than a line holds wrap onto more lines (roundAt)
+    bool roundsLead = false;   // ... its first round (A) as tall as the lines too, on the left
 };
+
+/** A colour row's rounds (n: its colours, then the wheel last). On one line as always, right-aligned. Upright (maxW, the row's own
+ *  line) when they do not fit: the wheel goes to the right, as tall as the lines, and the colours share the lines evenly in columns
+ *  to its left (the user, 2026-11-14: "a color picker circle with the diameter of the two rows"). With lead, the first round (A,
+ *  the cover's own) is as tall too, on the left (the user, 2026-11-15: "can we also make this one big"). */
+struct RoundsLayout { int lines = 1, per = 0; float wheelD = 26; bool lead = false; };
+RoundsLayout roundsLayout(int n, float maxW, bool lead = false) {
+    RoundsLayout L;
+    L.per = n;
+    if (maxW <= 0 || n * 30.f <= maxW + 4) return L;
+    L.lead = lead;
+    const int m = n - (lead ? 2 : 1);
+    for (L.lines = 2; L.lines < 8; L.lines++) {
+        L.wheelD = L.lines * 34.f - 8;
+        L.per = (m + L.lines - 1) / L.lines;
+        if (L.per * 30.f + (L.wheelD + 10) * (lead ? 2 : 1) <= maxW + 4) break;
+    }
+    return L;
+}
+/** Round i's left edge x, centre cy and size d (26, or the tall ones'). */
+struct Round { float x, cy, d; };
+Round roundAt(int i, int n, float rx, float cy, float maxW, bool lead = false) {
+    const RoundsLayout L = roundsLayout(n, maxW, lead);
+    if (L.lines == 1) return { rx - float(n - i) * 30, cy, 26 };
+    const float midY = cy + (L.lines - 1) * 17.f;
+    if (i == n - 1) return { rx - L.wheelD, midY, L.wheelD };
+    const float colsR = rx - L.wheelD - 10 + 4;   // the colours' columns end here (each round 26 in its 30)
+    if (L.lead && i == 0) return { colsR - float(L.per) * 30 - 10 - L.wheelD, midY, L.wheelD };
+    const int j = i - (L.lead ? 1 : 0), m = n - (L.lead ? 2 : 1), line = j / L.per;
+    const int inLine = line + 1 < L.lines ? L.per : m - L.per * (L.lines - 1);
+    return { colsR - float(inLine - j % L.per) * 30, cy + float(line) * 34, 26 };
+}
+/** The A round (Songate's own colour, from the cover) at size d: a faint disc with an A. */
+void drawRoundA(Gfx& g, const Palette& pal, float sx, float cy, float d) {
+    g.circle(sx + d / 2, cy, (d - 2) / 2, pal.text, 0.1f);   // the wheel's own size (12 at 26)
+    g.textC("A", { d > 40 ? css::Xl : css::Xs, Weight::Bold }, sx + d / 2, cy, pal.text2, 1, Align::Center);
+}
 // The sidebar's tabs dragged by touch (the user, 2026-11-04: "you can actually grab and bring it over to the desired sorting
 // order"): the held row follows the finger; a row it passes slides into the place it left; let go, it settles into its own.
 std::map<int, float> tabRowH;     // each tab row's height, last frame (what the finger must pass to change places)
@@ -616,6 +656,7 @@ void App::drawSettings(float x, float y, float w, float h) {
     auto oneDecimal = [](double v) { char b[16]; snprintf(b, sizeof b, "%.1f", v); return std::string(b); };
 
     std::vector<Section> sections;
+    std::vector<Card> r4LedCards;   // the HiBy R4's Status LED page (listed after Appearance)
     static float satShown, trShown;   // Saturation 0..100% and Colour transition 0..3 s, as the slider's 0..1
     static float sideOpShown;         // Sidebar opacity 50..100 %, as the slider's 0..1
     sideOpShown = (std::clamp(store.sideOpacity, 0.5f, 1.f) - 0.5f) / 0.5f;
@@ -815,36 +856,38 @@ void App::drawSettings(float x, float y, float w, float h) {
                 }
                 for (int v : { 0x16181f, 0xf4f1ea, 0x8fb4ff, 0xff5a6a, 0x4cd6a0, 0xffc857 }) choices.push_back(v);
                 const float cw = (choices.size() + 1) * 30.f;
-                return Row{ label, "", hint, cw, [this, label, key, field, choices, shown](float rx, float cy) {
+                Row r{ label, "", hint, cw, [this, label, key, field, choices, shown](float rx, float cy0) {
                                const int n = int(choices.size()) + 1;
+                               const bool lead = choices[0] < 0;
                                for (int i = 0; i < int(choices.size()); i++) {
-                                   const float sx = rx - (n - i) * 30;
+                                   const Round at = roundAt(i, n, rx, cy0, settingsCtlMax_, lead);
+                                   const float sx = at.x, cy = at.cy, d = at.d;
                                    const Id id = uid(key, i);
-                                   if (ui.item(id, { sx, cy - 13, 26, 26 }, 13)) { *field = choices[i]; applyTheme(); persistSoon(0.3f); }
+                                   if (ui.item(id, { sx, cy - d / 2, d, d }, d / 2)) { *field = choices[i]; applyTheme(); persistSoon(0.3f); }
                                    const int v = choices[i];
-                                   if (v < 0) {
-                                       g.circle(sx + 13, cy, 12, pal.text, 0.1f);
-                                       g.textC("A", { css::Xs, Weight::Bold }, sx + 13, cy, pal.text2, 1, Align::Center);
-                                   } else {
-                                       g.circle(sx + 13, cy, 12, Rgb{ ((v >> 16) & 255) / 255.f, ((v >> 8) & 255) / 255.f, (v & 255) / 255.f });
-                                   }
+                                   if (v < 0) drawRoundA(g, pal, sx, cy, d);
+                                   else g.circle(sx + 13, cy, 12, Rgb{ ((v >> 16) & 255) / 255.f, ((v >> 8) & 255) / 255.f, (v & 255) / 255.f });
                                    const bool on = *field == v, hot = ui.focused(id) && ui.showFocusRing();
-                                   if (on || hot) g.roundStroke(sx - 2, cy - 15, 30, 30, 15, on ? 2.f : 1.f, on ? pal.accent : pal.text, on ? 1.f : 0.4f);
+                                   if (on || hot) g.roundStroke(sx - 2, cy - d / 2 - 2, d + 4, d + 4, d / 2 + 2, on ? 2.f : 1.f, on ? pal.accent : pal.text, on ? 1.f : 0.4f);
                                }
                                // the picker: a colour wheel, or your own colour in the middle of it
-                               const float sx = rx - 30;
+                               const Round at = roundAt(n - 1, n, rx, cy0, settingsCtlMax_, lead);
+                               const float sx = at.x, cy = at.cy, d = at.d, k = d / 26;
                                const Id id = uid(key, 99);
-                               if (ui.item(id, { sx, cy - 13, 26, 26 }, 13))
+                               if (ui.item(id, { sx, cy - d / 2, d, d }, d / 2))
                                    openColourPicker(field, label, *field >= 0 ? Rgb{ ((*field >> 16) & 255) / 255.f, ((*field >> 8) & 255) / 255.f, (*field & 255) / 255.f } : shown);
                                const bool own = *field >= 0 && std::find(choices.begin(), choices.end(), *field) == choices.end();
-                               if (SDL_Texture* wheel = wheelTexture()) g.imageStretched(wheel, sx + 1, cy - 12, 24, 24, 0);
+                               if (SDL_Texture* wheel = wheelTexture()) g.imageStretched(wheel, sx + 1, cy - d / 2 + 1, d - 2, d - 2, 0);
                                if (own) {
-                                   g.circle(sx + 13, cy, 8.5f, { 0, 0, 0 }, 0.35f);
-                                   g.circle(sx + 13, cy, 7, Rgb{ ((*field >> 16) & 255) / 255.f, ((*field >> 8) & 255) / 255.f, (*field & 255) / 255.f });
+                                   g.circle(sx + d / 2, cy, 8.5f * k, { 0, 0, 0 }, 0.35f);
+                                   g.circle(sx + d / 2, cy, 7 * k, Rgb{ ((*field >> 16) & 255) / 255.f, ((*field >> 8) & 255) / 255.f, (*field & 255) / 255.f });
                                }
                                const bool hot = ui.focused(id) && ui.showFocusRing();
-                               if (own || hot) g.roundStroke(sx - 2, cy - 15, 30, 30, 15, own ? 2.f : 1.f, own ? pal.accent : pal.text, own ? 1.f : 0.4f);
+                               if (own || hot) g.roundStroke(sx - 2, cy - d / 2 - 2, d + 4, d + 4, d / 2 + 2, own ? 2.f : 1.f, own ? pal.accent : pal.text, own ? 1.f : 0.4f);
                            } };
+                r.rounds = int(choices.size()) + 1;
+                r.roundsLead = allowAuto;
+                return r;
             };
             customRows.push_back(chooser("Background", "Behind every page and the bars", "set.cbg", &store.customBg, true, pal.bg));
             customRows.push_back(chooser("Accent", "Buttons, sliders and what is playing", "set.cacc", &store.customAccent, false, pal.accent));
@@ -918,7 +961,8 @@ void App::drawSettings(float x, float y, float w, float h) {
 #endif
         // The opening can be turned off, and its bells with it left on (the user, 2026-11-02): the sound's row only while there is an
         // opening to ring with. Here, with how Songate looks, not in Playback (the user, 2026-11-03: "I think it makes more sense")
-        {
+        // (Not on the HiBy R4: its boot animation plays the opening; the user chose to hide the card there, 2026-11-15)
+        if (!bootOpening_) {
             std::vector<Row> opening{ toggleRow("Opening animation", "A star crosses the name as Songate opens. Any press skips it",
                                                 "set.opening", store.opening) };
             if (store.opening)
@@ -1149,6 +1193,178 @@ void App::drawSettings(float x, float y, float w, float h) {
                                     "set.bapace", { "Calm", "Normal", "Lively" }, store.batteryAnimPace, [this](int i) { store.batteryAnimPace = i; persistSoon(0.3f); }));
             cards.push_back({ "Battery states", states });
         }
+        if (r4::on()) {   // the HiBy R4's status LED (its ROM's service; hibyr4.hpp): that device only
+            std::vector<Card> ledCards;
+            std::vector<Row> led;
+            static const char* modeKey[3] = { "hiby", "off", "custom" };
+            static const char* modeHint[3] = { "HiBy's own rules, for the front light and the back", "Both lights stay off",
+                                               "Your own colour, alerts and back light" };
+            const std::string modeNow = r4::get("led_mode");
+            const int mode = modeNow == "off" ? 1 : modeNow == "custom" ? 2 : 0;
+            led.push_back(segRow("LED mode", modeHint[mode], "r4.ledmode", { "HiBy", "Off", "Custom" }, mode,
+                                 [](int i) { r4::set("led_mode", modeKey[i]); }));
+            if (mode == 2) {
+                // the colour: A (Songate's accent, set again with each cover: App::r4Tick), eleven of its own, then the wheel
+                static const std::vector<int> choices = { -1, 0xffffff, 0xff3b30, 0xff9500, 0xffcc00, 0x34c759, 0x00c7be, 0x5ac8fa, 0x00a0ff, 0xaf52de, 0xff2d55 };
+                const int colour = store.r4LedAccent ? -1 : int(strtol(r4::get("led_color").c_str(), nullptr, 16));
+                const float cw = (choices.size() + 1) * 30.f;
+                led.push_back(Row{ "Colour", "", colour < 0 ? "Follows the cover's colour" : "The light's colour", cw, [this, colour](float rx, float cy0) {
+                                      const int n = int(choices.size()) + 1;
+                                      for (int i = 0; i < int(choices.size()); i++) {
+                                          const Round at = roundAt(i, n, rx, cy0, settingsCtlMax_, true);
+                                          const float sx = at.x, cy = at.cy, d = at.d;
+                                          const Id id = uid("r4.ledcol", i);
+                                          const int v = choices[i];
+                                          if (ui.item(id, { sx, cy - d / 2, d, d }, d / 2)) {
+                                              char hex[8];
+                                              if (v < 0)
+                                                  snprintf(hex, sizeof hex, "%02x%02x%02x", int(std::lround(target.accent.r * 255)),
+                                                           int(std::lround(target.accent.g * 255)), int(std::lround(target.accent.b * 255)));
+                                              else
+                                                  snprintf(hex, sizeof hex, "%06x", v);
+                                              store.r4LedAccent = v < 0;
+                                              r4::set("led_color", hex);
+                                              persistSoon(0.3f);
+                                          }
+                                          if (v < 0) drawRoundA(g, pal, sx, cy, d);   // A: Songate's accent, as Custom's rows draw it
+                                          else g.circle(sx + 13, cy, 12, Rgb{ ((v >> 16) & 255) / 255.f, ((v >> 8) & 255) / 255.f, (v & 255) / 255.f });
+                                          const bool on = colour == v, hot = ui.focused(id) && ui.showFocusRing();
+                                          if (on || hot) g.roundStroke(sx - 2, cy - d / 2 - 2, d + 4, d + 4, d / 2 + 2, on ? 2.f : 1.f, on ? pal.accent : pal.text, on ? 1.f : 0.4f);
+                                      }
+                                      // the wheel: your own colour, on the light as you pick it (App::r4Tick)
+                                      const Round at = roundAt(n - 1, n, rx, cy0, settingsCtlMax_, true);
+                                      const float sx = at.x, cy = at.cy, d = at.d, k = d / 26;
+                                      const Id id = uid("r4.ledcol", 99);
+                                      const bool own = colour >= 0 && std::find(choices.begin(), choices.end(), colour) == choices.end();
+                                      if (ui.item(id, { sx, cy - d / 2, d, d }, d / 2)) {
+                                          r4LedPick_ = colour >= 0 ? colour : 0x00a0ff;
+                                          r4LedPickSent_ = -1;
+                                          openColourPicker(&r4LedPick_, "Status LED",
+                                                           Rgb{ ((r4LedPick_ >> 16) & 255) / 255.f, ((r4LedPick_ >> 8) & 255) / 255.f, (r4LedPick_ & 255) / 255.f });
+                                      }
+                                      if (SDL_Texture* wheel = wheelTexture()) g.imageStretched(wheel, sx + 1, cy - d / 2 + 1, d - 2, d - 2, 0);
+                                      if (own) {
+                                          g.circle(sx + d / 2, cy, 8.5f * k, { 0, 0, 0 }, 0.35f);
+                                          g.circle(sx + d / 2, cy, 7 * k, Rgb{ ((colour >> 16) & 255) / 255.f, ((colour >> 8) & 255) / 255.f, (colour & 255) / 255.f });
+                                      }
+                                      const bool hot = ui.focused(id) && ui.showFocusRing();
+                                      if (own || hot) g.roundStroke(sx - 2, cy - d / 2 - 2, d + 4, d + 4, d / 2 + 2, own ? 2.f : 1.f, own ? pal.accent : pal.text, own ? 1.f : 0.4f);
+                                  } });
+                led.back().rounds = int(choices.size()) + 1;
+                led.back().roundsLead = true;
+                // brightness: on the light as it is dragged, saved when let go
+                const int brightNow = r4LedBright_ >= 0 ? r4LedBright_ : r4::getInt("led_bright", 60);
+                led.push_back(Row{ "Brightness", std::to_string(brightNow) + "%", "", 180, [this, brightNow](float rx, float cy) {
+                                      const Id id = uid("r4.ledbright");
+                                      const float cur = brightNow / 100.f;
+                                      float nv = cur;
+                                      slider(id, rx - setSliderW(), cy, setSliderW(), cur, &nv);
+                                      const bool held = ui.sliderDrag(id) >= 0;
+                                      if (nv != cur) {
+                                          r4LedBright_ = int(std::lround(nv * 100));
+                                          r4::ledLive(int(strtol(r4::get("led_color").c_str(), nullptr, 16)), r4LedBright_, r4::get("led_effect") == "breath");
+                                      }
+                                      if (!held && r4LedBright_ >= 0) {   // let go (or a step with the D-pad): saved
+                                          r4::set("led_bright", std::to_string(r4LedBright_));
+                                          r4LedBright_ = -1;
+                                      }
+                                  } });
+                led.push_back(segRow("Effect", "", "r4.ledfx", { "Solid", "Breathing" }, r4::get("led_effect") == "breath" ? 1 : 0,
+                                     [](int i) { r4::set("led_effect", i ? "breath" : "solid"); }));
+                auto sw = [&](const char* label, const char* hint, const char* key, const char* name) {
+                    const bool on = r4::get(name) == "1";
+                    return Row{ label, "", hint, 40, [this, key, name, on](float rx, float cy) {
+                                   if (toggle(uid(key), rx - 40, cy, on)) r4::set(name, on ? "0" : "1");
+                               } };
+                };
+                led.push_back(sw("Off with screen", "The light goes out while the screen is off", "r4.ledscreen", "led_screen"));
+                ledCards.push_back({ "Status LED", led });
+                // A feature's colour (an alert's, a sample rate's): saturated ones (the LED has nothing behind it: pale looks white),
+                // the ROM's own among them, then the wheel. Set when chosen; seen when the feature lights. off: greyed, its switch off
+                auto colourRow = [&](const char* label, const char* key, const char* name, bool off) {
+                    static const std::vector<int> choices = { 0xff3b30, 0xfb695a, 0xffa020, 0xffcc00, 0x34c759, 0x00c7be, 0x4fc3ff, 0x00a0ff, 0xaf52de, 0xff3c8c };
+                    const int colour = int(strtol(r4::get(name).c_str(), nullptr, 16));
+                    const int hi = std::max({ colour >> 16 & 255, colour >> 8 & 255, colour & 255 }), lo = std::min({ colour >> 16 & 255, colour >> 8 & 255, colour & 255 });
+                    const bool pale = hi > 0 && float(hi - lo) / float(hi) < 0.5f;   // (HiBy's first amber, e9b589, is one)
+                    Row r{ label, "", pale ? "Pale colours look white on the LED" : "", (choices.size() + 1) * 30.f,
+                           [this, key, name, off, colour](float rx, float cy0) {
+                               const float a = off ? 0.35f : 1.f;
+                               const int n = int(choices.size()) + 1;
+                               for (int i = 0; i < int(choices.size()); i++) {
+                                   const Round at = roundAt(i, n, rx, cy0, settingsCtlMax_);
+                                   const float sx = at.x, cy = at.cy;
+                                   const Id id = uid(key, i);
+                                   const int v = choices[i];
+                                   if (ui.item(id, { sx, cy - 13, 26, 26 }, 13) && !off) {
+                                       char hex[8];
+                                       snprintf(hex, sizeof hex, "%06x", v);
+                                       r4::set(name, hex);
+                                   }
+                                   g.circle(sx + 13, cy, 12, Rgb{ ((v >> 16) & 255) / 255.f, ((v >> 8) & 255) / 255.f, (v & 255) / 255.f }, a);
+                                   const bool on = colour == v, hot = ui.focused(id) && ui.showFocusRing();
+                                   if (on || hot) g.roundStroke(sx - 2, cy - 15, 30, 30, 15, on ? 2.f : 1.f, on ? pal.accent : pal.text, (on ? 1.f : 0.4f) * a);
+                               }
+                               const Round at = roundAt(n - 1, n, rx, cy0, settingsCtlMax_);
+                               const float sx = at.x, cy = at.cy, d = at.d, k = d / 26;
+                               const Id id = uid(key, 99);
+                               const bool own = std::find(choices.begin(), choices.end(), colour) == choices.end();
+                               if (ui.item(id, { sx, cy - d / 2, d, d }, d / 2) && !off) {
+                                   r4FeatPick_ = colour;
+                                   r4FeatKey_ = name;
+                                   openColourPicker(&r4FeatPick_, "Status LED", Rgb{ ((colour >> 16) & 255) / 255.f, ((colour >> 8) & 255) / 255.f, (colour & 255) / 255.f });
+                               }
+                               if (SDL_Texture* wheel = wheelTexture()) g.imageStretched(wheel, sx + 1, cy - d / 2 + 1, d - 2, d - 2, 0, a);
+                               if (own) {
+                                   g.circle(sx + d / 2, cy, 8.5f * k, { 0, 0, 0 }, 0.35f * a);
+                                   g.circle(sx + d / 2, cy, 7 * k, Rgb{ ((colour >> 16) & 255) / 255.f, ((colour >> 8) & 255) / 255.f, (colour & 255) / 255.f }, a);
+                               }
+                               const bool hot = ui.focused(id) && ui.showFocusRing();
+                               if (own || hot) g.roundStroke(sx - 2, cy - d / 2 - 2, d + 4, d + 4, d / 2 + 2, own ? 2.f : 1.f, own ? pal.accent : pal.text, (own ? 1.f : 0.4f) * a);
+                           } };
+                    r.rounds = int(choices.size()) + 1;
+                    r.dim = off;
+                    return r;
+                };
+                // Alerts: they come before the colour (low battery first of all)
+                const bool lowbat = r4::get("led_lowbat") == "1", notif = r4::get("led_notif") == "1";
+                static const char* levels[6] = { "5", "10", "15", "20", "25", "30" };
+                const int lvlNow = r4::getInt("led_lowbat_level", 15);
+                int lvl = 2;
+                for (int i = 0; i < 6; i++) if (atoi(levels[i]) == lvlNow) lvl = i;
+                Row warn = segRow("Warn below", "", "r4.ledlowat", { "5", "10", "15", "20", "25", "30%" }, lvl,
+                                  [](int i) { r4::set("led_lowbat_level", levels[i]); }, lowbat ? 0u : 0x3Fu);
+                warn.dim = !lowbat;
+                ledCards.push_back({ "Alerts",
+                                     { sw("Low battery", "Breathes red below the level while not charging. It comes before everything else", "r4.ledlow", "led_lowbat"),
+                                       warn,
+                                       sw("Notifications", "Screen off: breathes in its colour for new notifications until you wake the player", "r4.lednotif", "led_notif"),
+                                       colourRow("Notification colour", "r4.lednotifcol", "led_notif_color", !notif),
+                                       sw("Charging", "HiBy's red breathing while it charges", "r4.ledcharge", "led_charge") } });
+                // While music plays
+                const bool quality = r4::get("led_quality") == "1";
+                ledCards.push_back({ "While music plays",
+                                     { sw("Audio quality colour", "The colour follows the song's sample rate. DSD lights the white LED", "r4.ledq", "led_quality"),
+                                       colourRow("Up to 48 kHz", "r4.ledqcd", "led_q_cd", !quality),
+                                       colourRow("88 to 192 kHz", "r4.ledqhi", "led_q_hires", !quality),
+                                       colourRow("Above 192 kHz", "r4.ledqul", "led_q_ultra", !quality),
+                                       sw("Bass pulse", "Screen on: the brightness follows the bass", "r4.ledbeat", "led_beat") } });
+                // Back light: white, on or off, behind the strips on the back
+                static const char* backKey[4] = { "screen", "on", "off", "music" };
+                const std::string backNow = r4::get("led_back");
+                const int back = backNow == "on" ? 1 : backNow == "off" ? 2 : backNow == "music" ? 3 : 0;
+                ledCards.push_back({ "Back light",
+                                     { segRow("On when", "The white light behind the strips on the back", "r4.back",
+                                              { "The screen is on", "Always", "Never", "Music plays" }, back, [](int i) { r4::set("led_back", backKey[i]); }),
+                                       sw("Notifications", "Screen off: on for new notifications until you wake the player", "r4.backnotif", "led_back_notif"),
+                                       sw("Charging", "Blinks slowly while charging, steady when full", "r4.backcharge", "led_back_charge"),
+                                       sw("Bass hits", "Screen on, music playing: it lights on the strongest hits", "r4.backbeat", "led_back_beat") } });
+            } else {
+                ledCards.push_back({ "Status LED", led });
+            }
+            // a page of its own, listed right after Appearance (the user, 2026-11-15: "Own page after appearance")
+            ledCards[0].kicker.clear();   // (the page's own title says it)
+            r4LedCards = std::move(ledCards);
+        }
         sections.push_back({ "Appearance", ICON_SPARKLE, cards });
     }
 
@@ -1282,7 +1498,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                              [this](float rx, float cy) {
                                  float v = volumeShown;
                                  slider(uid("set.vol"), rx - setSliderW(), cy, setSliderW(), volumeShown, &v);
-                                 if (v != volumeShown) { volumeShown = v; player.setVolume(v); }
+                                 if (v != volumeShown) setVolume(v);
                              } } } },
                 { "Volume levelling",
                   { segRow("Volume levelling", "Every song about as loud as the next. Your files are not changed",
@@ -1343,6 +1559,39 @@ void App::drawSettings(float x, float y, float w, float h) {
                            },
                            store.keepAwake ? 0u : 0x1Fu) } },
                 { GF_BG_CARD, bgRows } } });
+#ifdef GF_ANDROID
+        {   // Playback › Volume (Android; the user, 2026-11-15): the volume is Android's own music volume, in the device's steps (the
+            // HiBy R4: its Volume steps); then how the volume keys show it. Line out on the R4 holds it at full: shown, not moved
+            auto& pc = sections.back().cards;
+            Row vol = pc[0].rows.back();
+            pc[0].rows.pop_back();
+            const int maxStep = plat::mediaVolume().max;
+            const bool fixed = volumeFixed();
+            vol.value = fixed ? std::string("Fixed (line out)") : store.volNum ? pct(volumeShown) : std::to_string(int(std::lround(volumeShown * maxStep)));
+            vol.hint = "Android's own volume: the volume keys move it too";
+            if (fixed)
+                vol.control = [this](float rx, float cy) {   // the slider greyed, at full, nothing to move
+                    const float w = setSliderW(), x0 = rx - w;
+                    g.roundRect(x0, cy - 2, w, 4, 2, pal.text, 0.16f);
+                    g.roundRect(x0, cy - 2, w, 4, 2, pal.text, 0.22f);
+                    g.circle(rx - 7, cy, 7, pal.text, 0.35f);
+                };
+            std::vector<Row> rows = { vol };
+            auto shown = [this] {   // a choice just made: the pop-up as it now is, for a moment
+                if (store.volPop != 0) return;
+                volPopFrom_ = time;
+                volPopUntil_ = time + 2.5;
+            };
+            rows.push_back(segRow("Volume keys show", store.volPop ? "Android's own panel" : "Songate's own, while Songate is in front",
+                                  "set.volpop", { "Songate", "Android" }, store.volPop, [this, shown](int i) { store.volPop = i; shown(); }));
+            if (!store.volPop)
+                rows.push_back(segRow("Where", "Where it shows on the screen", "set.volwhere", { "Top", "Side", "Bottom" }, store.volWhere,
+                                      [this, shown](int i) { store.volWhere = i; shown(); }));
+            rows.push_back(segRow("Volume as", store.volNum ? "0 to 100%" : "The device's steps: 0 to " + std::to_string(maxStep) + " here",
+                                  "set.volnum", { "Steps", "Percent" }, store.volNum, [this, shown](int i) { store.volNum = i; shown(); }));
+            pc.insert(pc.begin() + 1, Card{ "Volume", rows });
+        }
+#endif
     }
 
     // Equalizer (gfeq.hpp: the same sound in Gatefold's own player and the background player)
@@ -1421,31 +1670,105 @@ void App::drawSettings(float x, float y, float w, float h) {
         if (adv) {
             // The ten bands, upright, with their value above and their frequency below
             Row bands;
-            bands.blockH = 214;
+            // The ten bands as a curve (the user chose "A, the curve", session 20, for every device): a ground with the dB lines,
+            // the curve through the points and the area to 0 dB under it; a band's value shows while it is held or picked
+            bands.blockH = 262;
             bands.block = [this](float bx, float by, float bw) {
                 static const char* names[GFEQ_BANDS] = { "31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k" };
-                const float col = bw / GFEQ_BANDS, top = by + 30, hh = 150;
+                const float padL = 34.f;   // the dB scale's room
+                const float px = bx + padL, pw = bw - padL - 8;
+                const float col = pw / GFEQ_BANDS;
+                const float top = by + 26, hh = 186.f;
+                const float y0 = top + 7, travel = hh - 14, mid = y0 + travel * 0.5f;
+                auto yOf = [&](float db) { return y0 + travel * (1 - (db + 12) / 24); };
+                {   // the ground: as the settings list's, the dB lines faint, 0 dB stronger
+                    g.roundRect(bx, by, bw, 250, 16, pal.text, 0.04f);
+                    for (int db : { 12, 6, 0, -6, -12 }) {
+                        const float ly = yOf(float(db));
+                        g.rect(px, ly - 0.5f, pw, 1, pal.text, db == 0 ? 0.22f : 0.07f);
+                        char b[8];
+                        snprintf(b, sizeof b, db > 0 ? "+%d" : "%d", db);
+                        g.textNumC(b, { css::Xs }, bx + padL - 8, ly, pal.text3, 1, Align::Right);
+                    }
+                    for (int i = 0; i < GFEQ_BANDS; i++) g.rect(px + col * (i + 0.5f) - 0.5f, top, 1, hh, pal.text, 0.05f);
+                }
+                // the values (as dragged this frame), then the curve through them
+                float val[GFEQ_BANDS];
+                for (int i = 0; i < GFEQ_BANDS; i++) val[i] = store.eq.bands[i];
                 for (int i = 0; i < GFEQ_BANDS; i++) {
-                    const float cx = bx + col * (i + 0.5f);
+                    const float cx = px + col * (i + 0.5f);
                     const Id id = uid("set.eqband", i);
                     const float cur = (store.eq.bands[i] + 12) / 24;
                     float nv = cur;
-                    vslider(id, cx, top, hh, cur, &nv, i > 0 ? uid("set.eqband", i - 1) : 0, i + 1 < GFEQ_BANDS ? uid("set.eqband", i + 1) : 0);
-                    const float v = store.eq.bands[i];
-                    char b[8];
-                    snprintf(b, sizeof b, std::fabs(v) < 0.05f ? "0" : "%+.0f", double(v));
-                    g.textC(b, { css::Xs, Weight::SemiBold }, cx, by + 12, std::fabs(v) < 0.05f ? pal.text3 : pal.accentInk, 1, Align::Center);
-                    g.textC(names[i], { css::Xs }, cx, top + hh + 18, pal.text3, 1, Align::Center);
+                    vslider(id, cx, top, hh, cur, &nv, i > 0 ? uid("set.eqband", i - 1) : 0, i + 1 < GFEQ_BANDS ? uid("set.eqband", i + 1) : 0,
+                            false);
                     if (nv != cur) {
                         GfbgEq e = store.eq;
                         e.bands[i] = std::round(nv * 24 - 12);
-                        gfEqKeepCustom(&e);   // moved by hand: Custom, kept for the preset sheet
+                        val[i] = e.bands[i];
+                        gfEqKeepCustom(&e);
                         setEq(e);
                     }
+                }
+                // Catmull-Rom through the points, flat out to the edges
+                std::vector<SDL_FPoint> pts;
+                auto at = [&](int i) { return SDL_FPoint{ px + col * (std::clamp(i, -1, GFEQ_BANDS) + 0.5f), yOf(val[std::clamp(i, 0, GFEQ_BANDS - 1)]) }; };
+                pts.push_back({ px, yOf(val[0]) });
+                for (int i = 0; i + 1 < GFEQ_BANDS; i++) {
+                    const SDL_FPoint p0 = at(i - 1), p1 = at(i), p2 = at(i + 1), p3 = at(i + 2);
+                    for (int s = 0; s < 12; s++) {
+                        const float t = s / 12.f, t2 = t * t, t3 = t2 * t;
+                        pts.push_back({ p1.x + (p2.x - p1.x) * t,
+                                        0.5f * (2 * p1.y + (-p0.y + p2.y) * t + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 +
+                                                (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3) });
+                    }
+                }
+                pts.push_back(at(GFEQ_BANDS - 1));
+                pts.push_back({ px + pw, yOf(val[GFEQ_BANDS - 1]) });
+                // the area between the curve and 0 dB, in thin strips (nothing overlaps)
+                for (size_t k = 0; k + 1 < pts.size(); k++) {
+                    const float x0 = pts[k].x, x1 = pts[k + 1].x, yy = (pts[k].y + pts[k + 1].y) / 2;
+                    g.rect(x0, std::min(yy, mid), x1 - x0, std::fabs(yy - mid), pal.accent, 0.16f);
+                }
+                g.polyline(pts, 3.f, pal.accent, 1.f);
+                // the points, and each band's value and frequency
+                for (int i = 0; i < GFEQ_BANDS; i++) {
+                    const float cx = px + col * (i + 0.5f), vy = yOf(val[i]);
+                    const Id id = uid("set.eqband", i);
+                    const bool live = ui.engaged(id), hot = live || (ui.focused(id) && ui.showFocusRing());
+                    if (hot) g.circle(cx, vy, 17, pal.accent, live ? 0.3f : 0.18f);
+                    g.circle(cx, vy + 1, 10.5f, { 0, 0, 0 }, 0.25f);
+                    g.circle(cx, vy, 9.5f, pal.text);
+                    g.circle(cx, vy, 6.5f, pal.accent);
+                    char b[8];
+                    snprintf(b, sizeof b, std::fabs(val[i]) < 0.05f ? "0" : "%+.0f", double(val[i]));
+                    // the value only while a band is held or picked, in a bubble over its point
+                    if (hot) {
+                        const float bwid = g.measureNum(b, { css::Xs, Weight::SemiBold }) + 16, byy = vy - 36;
+                        g.roundRect(cx - bwid / 2, byy - 11, bwid, 22, 11, pal.accent);
+                        g.textNumC(b, { css::Xs, Weight::SemiBold }, cx, byy, pal.onAccent, 1, Align::Center);
+                    }
+                    g.textC(names[i], { css::Xs }, cx, top + hh + 18, pal.text3, 1, Align::Center);
                 }
             };
             cards.push_back({ "Bands", { bands, dbRow("Preamp", "Everything louder or quieter; a limiter holds the peaks", "set.eqpre",
                                                       &GfbgEq::preamp, true) } });
+        }
+        if (r4::on()) {
+            // The HiBy R4: its own equalizer's Automatic preamp (the same switch as its Settings › HiBy audio › Equalizer; the ROM's
+            // prompt, 2026-11-15). Its equalizer plays the bands after Songate, so this lowers that stage by the largest boost;
+            // Songate's own preamp above is a stage of its own and stays as it is. While on, what it takes off now
+            const bool autoOn = r4::autoPreamp();
+            int boost = 0;
+            for (float b : store.eq.bands) boost = std::max(boost, int(std::lround(b)));
+            boost = std::clamp(boost, 0, 12);
+            const std::string cut = !store.eq.on ? std::string() : boost > 0 ? "−" + std::to_string(boost) + " dB" : std::string("0 dB");
+            Row autoRow{ "Automatic preamp", autoOn ? cut : std::string(), "Lowers the level by the largest boost, so boosting never clips", 40,
+                         [this, autoOn](float rx, float cy) {
+                             if (toggle(uid("r4.eqauto"), rx - 40, cy, autoOn)) r4::setAutoPreamp(!autoOn);
+                         } };
+            autoRow.focus = uid("r4.eqauto");
+            cards.back().rows.push_back(autoRow);
         }
         cards.push_back({ "", { buttonRow("Reset", "Flat, with bass, treble and the preamp at 0 dB", "set.eqreset", ICON_REFRESH, "Reset",
                                           [this] {
@@ -1456,6 +1779,116 @@ void App::drawSettings(float x, float y, float w, float h) {
                                               toast("Equalizer reset to Flat");
                                           }) } });
         sections.push_back({ "Equalizer", ICON_EQ, cards });
+    }
+    // The HiBy R4's Sound & DAC (its ROM's service, hibyr4.hpp; the user's choices, session 20): what plays through and how, the
+    // outputs, the volume's rules. That device only; Songate installed before the service: one line saying what to do
+    Section soundDac{ nullptr, ICON_HEADPHONES, {} };
+    if (r4::avail() == r4::Avail::NoPermission) {
+        soundDac.name = "Sound & DAC";
+        soundDac.cards.push_back({ "", { infoRow("Reinstall Songate to enable HiBy settings", "") } });
+    } else if (r4::on()) {
+        soundDac.name = "Sound & DAC";
+        std::vector<Card> cards;
+        static const char* gainName[2] = { "Low gain", "High gain" };
+        static const char* filterKey[3] = { "fast_rolloff", "slow_rolloff", "minimum_phase" };
+        static const char* filterName[3] = { "Fast roll-off", "Slow roll-off", "Minimum phase" };
+        const int gain = r4::get("gain") == "high" ? 1 : 0;
+        const std::string fNow = r4::get("filter");
+        const int filter = fNow == "slow_rolloff" ? 1 : fNow == "minimum_phase" ? 2 : 0;
+        const int out35 = r4::get("out35") == "lineout" ? 1 : 0, out44 = r4::get("out44") == "bal_lo" ? 1 : 0;
+        const int loGain = r4::get("lo_gain") == "low" ? 0 : 1;
+        const std::string st = r4::get("st_output");
+        const int rateHz = r4::getInt("st_rate", 0);
+        char rate[24] = "";
+        if (rateHz > 0) {
+            if (rateHz % 1000 == 0) snprintf(rate, sizeof rate, "%d kHz", rateHz / 1000);
+            else snprintf(rate, sizeof rate, "%.1f kHz", rateHz / 1000.0);
+        }
+        // the header: what plays through and where, the rate, then chips of what is set
+        const bool lineOut = (st != "Balance" && st != "BalanceLo" && st != "none" && out35) || st == "BalanceLo";
+        const std::string what = st == "none" ? "Nothing plugged in" : st == "Balance" ? "Balanced" : lineOut ? "Line out" : "Headphone";
+        const std::string where = st == "none" ? "3.5 mm or 4.4 mm" : (st == "Balance" || st == "BalanceLo") ? "4.4 mm" : "3.5 mm";
+        const std::string sub = rate[0] && st != "none" ? where + " · " + rate : where;
+        const std::string eqChip = store.eq.on ? "EQ " + eqPresetName(store.eq.preset) : std::string("EQ off");
+        const std::string gainChip = lineOut ? (loGain ? "High line level" : "Low line level") : gainName[gain];
+        const std::string filterChip = filterName[filter];
+        Row head;
+        head.blockH = 116;
+        head.block = [this, what, sub, gainChip, filterChip, eqChip](float bx, float by, float) {
+            g.roundRect(bx, by + 8, 60, 60, 16, pal.accent, 0.12f);
+            g.glow(bx + 30, by + 38, 30, pal.glow, 0.5f);
+            g.icon(ICON_HEADPHONES, bx + 30, by + 38, 32, pal.accent);
+            g.text(what, { css::Xl, Weight::Bold }, bx + 76, by + 12, pal.text);
+            g.text(sub, { css::Base }, bx + 76, by + 46, pal.text2);
+            float cx = bx;
+            for (const std::string& c : { gainChip, filterChip, eqChip }) {
+                const float cw = g.measure(c, { css::Sm, Weight::SemiBold }) + 24;
+                g.roundRect(cx, by + 84, cw, 28, 14, pal.text, 0.07f);
+                g.textC(c, { css::Sm, Weight::SemiBold }, cx + 12, by + 98, pal.text2);
+                cx += cw + 8;
+            }
+        };
+        cards.push_back({ "", { head } });
+        // Sound
+        const int balance = std::clamp(r4::getInt("balance", 0), -10, 10);
+        const std::string bal = balance == 0 ? "Centre" : (balance < 0 ? "Left " : "Right ") + std::to_string(std::abs(balance));
+        Row balRow{ "Balance", bal, "Left or right, in ten steps each way", 180, [this, balance](float rx, float cy) {
+                       const float w = setSliderW(), cur = float(balance + 10) / 20.f;
+                       g.rect(rx - w / 2 - 0.5f, cy - 9, 1, 18, pal.text, 0.28f);   // the middle, as the bands' 0 dB
+                       float nv = cur;
+                       slider(uid("r4.balance"), rx - w, cy, w, cur, &nv);
+                       const int v = int(std::lround(nv * 20 - 10));
+                       if (v != balance) r4::set("balance", std::to_string(v));   // each step while dragged: the ROM eases it
+                   } };
+        cards.push_back({ "Sound",
+                          { segRow("Gain", "High drives harder headphones", "r4.gain", { "Low", "High" }, gain,
+                                   [](int i) { r4::set("gain", i ? "high" : "low"); }),
+                            segRow("Digital filter", "The DAC's filter. The difference is very slight", "r4.filter", { "Fast", "Slow", "Minimum phase" },
+                                   filter, [](int i) { r4::set("filter", filterKey[i]); }),
+                            balRow } });
+        // Output: line out only after the question (the ROM's words); back to Headphone at once
+        auto lineOutAsk = [this](bool on35) {
+            confirm(ICON_HEADPHONES, "Output", on35 ? "3.5 mm" : "4.4 mm balanced", "Line out", "Switch to line out?",
+                    std::string("The ") + (on35 ? "3.5 mm" : "4.4 mm") + " output will play at fixed full volume and the volume keys "
+                    "won't change it. Use it only with an amplifier or powered speakers, never with headphones or earphones. It switches back to "
+                    "headphone when you unplug the cable or restart the player.",
+                    "Switch", [on35] { if (on35) r4::set("out35", "lineout"); else r4::set("out44", "bal_lo"); });
+        };
+        cards.push_back({ "Output",
+                          { segRow("3.5 mm", out35 ? "Fixed full volume, for an amplifier or powered speakers" : "Line out for an amplifier or powered speakers",
+                                   "r4.out35", { "Headphone", "Line out" }, out35,
+                                   [lineOutAsk](int i) { if (i) lineOutAsk(true); else r4::set("out35", "headphone"); }),
+                            segRow("4.4 mm balanced", "Line out here is untested", "r4.out44", { "Headphone", "Line out (untested)" }, out44,
+                                   [lineOutAsk](int i) { if (i) lineOutAsk(false); else r4::set("out44", "bal_po"); }),
+                            segRow("Line-out level", "The DAC's gain while line out is on. Gain comes back when it ends", "r4.logain", { "Low", "High" },
+                                   loGain, [](int i) { r4::set("lo_gain", i ? "high" : "low"); }) } });
+        // Controls
+        static const char* stepsKey[4] = { "15", "25", "50", "100" };
+        const int stepsNow = r4::getInt("vol_steps", 25);
+        const int steps = stepsNow >= 100 ? 3 : stepsNow >= 50 ? 2 : stepsNow >= 25 ? 1 : 0;
+        const bool fixedVol = r4::get("vol_restore") == "fixed";
+        const bool remote = r4::get("remote") != "0";
+        std::vector<Row> ctl = {
+            Row{ "Headphone remote", "", "The buttons on a headphone's cable: play, pause, skip", 40, [this, remote](float rx, float cy) {
+                    if (toggle(uid("r4.remote"), rx - 40, cy, remote)) r4::set("remote", remote ? "0" : "1");
+                } },
+            segRow("Volume steps", "How finely the volume buttons move. After a restart", "r4.steps", { "15", "25", "50", "100" }, steps,
+                   [](int i) { r4::set("vol_steps", stepsKey[i]); }),
+            segRow("Volume after a restart", fixedVol ? "Always starts at the level below" : "As you left it", "r4.volrestore",
+                   { "As it was", "Fixed" }, fixedVol ? 1 : 0, [](int i) { r4::set("vol_restore", i ? "fixed" : "last"); }) };
+        if (fixedVol) {
+            const int boot = std::clamp(r4::getInt("vol_boot", 20), 0, 100);
+            ctl.push_back(Row{ "Start volume", std::to_string(boot) + "%", "", 180, [this, boot](float rx, float cy) {
+                                  const Id id = uid("r4.bootvol");
+                                  const float cur = boot / 100.f;
+                                  float nv = cur;
+                                  slider(id, rx - setSliderW(), cy, setSliderW(), cur, &nv);
+                                  const int v = int(std::lround(nv * 100));
+                                  if (v != boot) r4::set("vol_boot", std::to_string(v));
+                              } });
+        }
+        cards.push_back({ "Controls", ctl });
+        soundDac.cards = std::move(cards);
     }
 
     // Library
@@ -2645,7 +3078,26 @@ void App::drawSettings(float x, float y, float w, float h) {
         if (hs != sections.end() && hs != sections.begin()) std::rotate(sections.begin(), hs, hs + 1);
     }
 #endif
+    // the HiBy R4's pages last (the category numbers stay as they are), listed after Equalizer
+    int r4Pages = 0;
+    if (soundDac.name) { sections.push_back(soundDac); r4Pages++; }
+    if (!r4LedCards.empty()) { sections.push_back({ "Status LED", ICON_LED, r4LedCards }); r4Pages++; }
     settingsCat = std::clamp(settingsCat, 0, int(sections.size()) - 1);
+    // the list's order: the HiBy R4's pages (kept last) shown where the user put them: Status LED right after Appearance,
+    // Sound & DAC right after Equalizer
+    std::vector<int> listed;
+    for (int i = 0; i < int(sections.size()) - r4Pages; i++) listed.push_back(i);
+    for (int k = int(sections.size()) - r4Pages; k < int(sections.size()); k++) {
+        const int after = !strcmp(sections[size_t(k)].name, "Status LED") ? int(SetAppearance) : int(SetEqualizer);
+        const auto at = std::find(listed.begin(), listed.end(), after);
+        listed.insert(at == listed.end() ? listed.end() : at + 1, k);
+    }
+    // the R4's pages read again when they open, and Sound & DAC's status (what plays, the rate) each second while it is open
+    if (r4::on() && settingsCat != settingsCatSeen_) r4::refresh();
+    if (!strcmp(sections[size_t(settingsCat)].name, "Sound & DAC") && time - r4PageReadAt_ > 1) {
+        r4PageReadAt_ = time;
+        r4::refresh();
+    }
     // Pages that read the SD card do it once when they open: Storage and reset's sizes, Updates' backups
     if (settingsCat != settingsCatSeen_) {
         settingsCatSeen_ = settingsCat;
@@ -2666,7 +3118,8 @@ void App::drawSettings(float x, float y, float w, float h) {
             { "Controls", "Buttons, the pointer" },                       { "Devices", "Pairing, listening together, AirPlay" },
             { "Last.fm", "Scrobbles and now playing" },                   { "Reset", "Settings, or everything" },
             { "Updates", "New versions, betas, going back" },             { "Support", "Reports and what they hold" },
-            { "About", "Songate, its credits, the tour" }, { "Home screen", "Songate as the home screen, the device's apps" } };
+            { "About", "Songate, its credits, the tour" }, { "Home screen", "Songate as the home screen, the device's apps" },
+            { "Sound & DAC", "Gain, filter, balance, the volume" }, { "Status LED", "Colour, alerts, the back light" } };   // (Sound & DAC: the HiBy R4 only)
         ScrollArea& la = area("settings.phone");
         const float rowH = 66, lx = x + 18, lw = w - 36;
         la.view = { x, y, w, h };
@@ -2692,7 +3145,8 @@ void App::drawSettings(float x, float y, float w, float h) {
         g.textC("Find a setting", { css::Base }, lx + 42, cy + 22, pal.text3);
         cy += 44 + 16;
         g.roundRect(lx - 8, cy, lw + 16, sections.size() * rowH, 16, pal.text, 0.04f);
-        for (int i = 0; i < int(sections.size()); i++, cy += rowH) {
+        for (int k = 0; k < int(sections.size()); k++, cy += rowH) {
+            const int i = listed[size_t(k)];
             const Id id = uid("set.cat", i);
             if (ui.item(id, { lx - 8, cy, lw + 16, rowH }, 12)) {
                 settingsCat = i;
@@ -2709,7 +3163,7 @@ void App::drawSettings(float x, float y, float w, float h) {
             g.text(sections[i].name, { css::Md, Weight::SemiBold }, lx + 58, ccy - (*line ? 21 : 10), pal.text);
             if (*line) g.text(line, { css::Sm }, lx + 58, ccy + 2, pal.text3, 1, Align::Left, int(lw - 58 - 30));
             g.icon(ICON_CHEV, lx + lw - 8, ccy, 14, pal.text3);
-            if (i + 1 < int(sections.size())) g.rect(lx + 58, cy + rowH - 1, lw - 58, 1, pal.text, 0.07f);
+            if (k + 1 < int(sections.size())) g.rect(lx + 58, cy + rowH - 1, lw - 58, 1, pal.text, 0.07f);
         }
         ui.popArea();
         settingsPaneX = 1e9f;
@@ -2747,7 +3201,8 @@ void App::drawSettings(float x, float y, float w, float h) {
     ui.pushArea(&ca);
     g.clip(lx - 8, listTop, lw + 16, y + h - listTop);
     cy -= ca.y;
-    for (int i = 0; i < int(sections.size()); i++) {
+    for (int k = 0; k < int(sections.size()); k++) {
+        const int i = listed[size_t(k)];
         const Id id = uid("set.cat", i);
         const bool on = settingsQuery.empty() && settingsCat == i;
         if (ui.item(id, { lx, cy, lw, catH }, 10, on ? DefaultFocus : 0)) {
@@ -2853,6 +3308,9 @@ void App::drawSettings(float x, float y, float w, float h) {
                 const float textH = 21 + labelH + (l.hint.empty() ? 0 : 3 + l.hint.size() * 18.f);
                 l.h = l.stacked ? textH + 28 + 40 : std::max(r.minH, textH + 28);
                 if (l.stacked && r.fill && segGrid(r.words, r.nOpts, innerW)) l.h += 42;   // its choices on two rows
+                if (l.stacked && r.rounds) {   // a colour row's rounds on as many lines as they need (roundAt)
+                    l.h += float(roundsLayout(r.rounds, innerW, r.roundsLead).lines - 1) * 34;
+                }
             }
             ch += l.h;
             laid.push_back(l);

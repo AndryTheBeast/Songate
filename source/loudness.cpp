@@ -1,6 +1,7 @@
 /*
  * Gatefold NX · loudness.cpp
  */
+#include "cardhold.hpp"
 #include "loudness.hpp"
 #include "mixan.hpp"
 
@@ -269,6 +270,7 @@ Meter::Result Meter::result() const {
 // ---------------------------------------------------------------- a whole file
 
 bool measureFile(const std::string& path, Meter::Result& out, const std::atomic<bool>* cancel, mixan::Analyzer* mix) {
+    if (!cardhold::pass(path)) return false;   // (its card still mounting)
 #ifdef GF_LOUDNESS_DECODE
     AVFormatContext* fmt = nullptr;
     const std::string url = "file:" + path;   // FFmpeg reads "sdmc:/…" as a URL otherwise

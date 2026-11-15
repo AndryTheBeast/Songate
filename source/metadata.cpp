@@ -1,6 +1,7 @@
 /*
  * Gatefold NX · metadata.cpp
  */
+#include "cardhold.hpp"
 #include "metadata.hpp"
 #include "coverio.hpp"
 
@@ -227,6 +228,7 @@ void metadataInit() {
 }
 
 bool readTrackInfo(const std::string& path, TrackInfo& out, bool wantCover, bool wantLyrics) {
+    if (!cardhold::pass(path)) return false;   // (its card still mounting)
     const std::string ext = lowerExt(path);
     if (ext == "flac") readFlac(path, out, wantCover, wantLyrics);
     else if (ext == "mp3") readMp3(path, out, wantCover, wantLyrics);
@@ -239,6 +241,7 @@ bool readTrackInfo(const std::string& path, TrackInfo& out, bool wantCover, bool
 }
 
 std::string readSidecarLyrics(const std::string& path) {
+    if (!cardhold::pass(path)) return {};
     const size_t dot = path.find_last_of('.');
     const std::string stem = dot == std::string::npos ? path : path.substr(0, dot);
     for (const char* ext : { ".lrc", ".LRC", ".txt" }) {

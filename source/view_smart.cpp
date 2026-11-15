@@ -481,13 +481,13 @@ SDL_Texture* App::hueTexture() {
  */
 SDL_Texture* App::wheelTexture() {
     if (wheelTex) return wheelTex;
-    constexpr int N = 52;
+    constexpr int N = 128;   // (sharp at the tall wheel of a wrapped colour row too, 58 points upright)
     static uint8_t px[N * N * 4];
     const float c = (N - 1) / 2.f, rad = N / 2.f - 0.5f;
     for (int j = 0; j < N; j++)
         for (int i = 0; i < N; i++) {
             const float dx = i - c, dy = j - c, d = std::sqrt(dx * dx + dy * dy);
-            const float cover = std::clamp((rad - d) / 2.f + 0.5f, 0.f, 1.f);   // 2 texels here: 1 px drawn
+            const float cover = std::clamp((rad - d) / 3.f + 0.5f, 0.f, 1.f);   // a 3-texel edge: about 1 px small, 2 px tall
             float hue = std::atan2(dx, -dy) * 57.29578f;
             if (hue < 0) hue += 360;
             const float t = std::clamp(d / (rad * 0.95f), 0.f, 1.f);
