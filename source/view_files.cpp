@@ -849,6 +849,7 @@ void App::fileSheetRows(std::vector<SheetRow>& rows) {
         }
         rows.push_back({ Row::Action, ICON_SEARCH, sheet.arg.empty() ? "Find a song…" : "Find another…", "By title, artist, album or file name", "", [this] {
                              std::string q2 = sheet.arg;
+                             if (openTextKb(sheet.arg, [this](const std::string& s) { sheet.arg = s; }, "files.find")) return;
                              if (keyboard("Find the song", q2, q2)) sheet.arg = trimmed(q2);
                          } });
         for (int t : found) {

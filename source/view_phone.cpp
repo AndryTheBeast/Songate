@@ -15,6 +15,7 @@
 #include <ctime>
 
 #include "app.hpp"
+#include "hibyr4.hpp"
 #include "icons.inc"
 #include "plicons.inc"
 #include "appicons.inc"
@@ -538,6 +539,9 @@ void App::drawPhone() {
         char b[48];
         if (in.bitsPerSample && in.codec != "MP3") { snprintf(b, sizeof b, "%d-bit", in.bitsPerSample); bs.push_back(b); }
         if (in.sampleRate) { snprintf(b, sizeof b, "%g kHz", in.sampleRate / 1000.0); bs.push_back(b); }
+        // the HiBy R4's wired output, when it runs at another rate than the song (a join kept it, the setting is off, it is
+        // changing): in the rate's chip, after an arrow (the user chose it, 2026-11-15)
+        if (in.sampleRate) bs.back() += r4OutRateNote(in.sampleRate);
         if (in.bitrateKbps) bs.push_back(std::to_string(in.bitrateKbps) + " kbps");
         // a server's song: where it plays from, as a chip of its own after them (sideways' own: pressed, the library on Server)
         const bool fromServer = srvq_.on && !extFrom.empty();
@@ -545,8 +549,13 @@ void App::drawPhone() {
         const float srvW = fromServer ? g.measureSpaced(extFrom, cf, 0.02f) + 16 + 18 : 0;
         float total = fromServer ? srvW + 6 : 0;
         for (const auto& s : bs) total += g.measureSpaced(s, cf, 0.02f) + 16 + 6;   // (as App::chip measures them)
+        // (the codec's chip, first: it sparkles while the song plays bit-perfect, App::sparkleChip)
         float bx = mid - (total - 6) / 2;
-        for (size_t i = 0; i < bs.size(); i++) bx += chip(bs[i], bx, y, i == 0) + 6;
+        for (size_t i = 0; i < bs.size(); i++) {
+            const float cw = chip(bs[i], bx, y, i == 0);
+            if (i == 0 && bitPerfectNow()) sparkleChip(bx, y, cw);
+            bx += cw + 6;
+        }
         if (fromServer) {
             const Id sid = uid("ph.server");
             if (live && ui.item(sid, { bx, y - 21, srvW, 42 }, 6)) { store.libSource = 1; libSourceChanged(); navigate(View::Library, kLibraryHome); }
@@ -810,6 +819,11 @@ void App::drawPhone() {
         // (beside the Local | Server switch the field is too short for the tabs' names: the server's own short line, never a cut one)
         const char* hint = srcW > 0 ? (store.libSource == 1 ? "Search the server" : "Search your music") : searchHint();
         g.textC(qtext.empty() ? hint : qtext, { css::Base }, kPad + 44, fy + 22, qtext.empty() ? pal.text3 : pal.text, 1, Align::Left, int(fw - 90));
+        if (skb_.open) {   // Search's keyboard is up: typing here (the caret after the words, the field lit)
+            g.roundStroke(kPad, fy, fw, 44, 12, 1.5f, pal.accent, 0.8f);
+            const float cxr = kPad + 44 + (qtext.empty() ? 0.f : std::min(g.measureF(qtext, { css::Base }), fw - 90)) + 1;
+            if (std::fmod(time - skb_.at, 1.06) < 0.62) g.rect(cxr, fy + 22 - 11, 1.5f, 22, pal.text);
+        }
         if (!qtext.empty() && iconButton(uid("ph.sclear"), ICON_X, kPad + fw - 22, fy + 22, false, 36, 16)) navigate(View::Search, -1, std::string(), false);
         if (srcW > 0) librarySource(W - kPad, fy + 22, 44);
         if (qtext.empty()) {

@@ -57,7 +57,11 @@ public class SongateService extends Service {
     private static int order;
     private static long position, duration, positionAt;
 
-    private MediaSession session;
+    // The media session: made with the service (at the first play); on the HiBy R4 from Songate's start (SongateOS, the user's
+    // choice A, 2026-11-15): active and paused with the restored song, so play on the R4's buttons, a headset or Bluetooth reaches
+    // Songate straight after a boot. Paused it holds no wakelock and no stream; the service, its notification and the music start
+    // on play only, as before
+    private static MediaSession session;
     private AudioManager audio;
     private AudioFocusRequest focus;
     private boolean resumeOnGain, noisyHeld, foreground, foregroundOnce;
@@ -73,15 +77,62 @@ public class SongateService extends Service {
     static void attach(Context activity) {
         app = activity.getApplicationContext();
         ended = false;
+        if (HibyR4.device && session == null) {
+            makeSession(app);
+            refreshSession();
+        }
+    }
+
+    /** The session, its callback (each press to the app) and, on Android 12 and later, the receiver Android keeps for the buttons. */
+    private static void makeSession(Context c) {
+        session = new MediaSession(c, "Songate");
+        session.setCallback(new MediaSession.Callback() {
+            @Override public void onPlay() { nativeCommand(PLAY, 0); }
+            @Override public void onPause() { nativeCommand(PAUSE, 0); }
+            @Override public void onSkipToNext() { nativeCommand(NEXT, 0); }
+            @Override public void onSkipToPrevious() { nativeCommand(PREVIOUS, 0); }
+            @Override public void onStop() { nativeCommand(PAUSE, 0); }
+            @Override public void onSeekTo(long ms) { nativeCommand(SEEK, ms / 1000.0); }
+            @Override public void onCustomAction(String action, android.os.Bundle extras) {
+                if (LIKE_ACTION.equals(action)) nativeCommand(LIKE, 0);
+                else if (ORDER_ACTION.equals(action)) nativeCommand(ORDER, 0);
+            }
+        });
+        Intent open = new Intent(c, SongateActivity.class).setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        session.setSessionActivity(PendingIntent.getActivity(c, 0, open, PendingIntent.FLAG_IMMUTABLE));
+        if (HibyR4.device && Build.VERSION.SDK_INT >= 31)
+            session.setMediaButtonBroadcastReceiver(new android.content.ComponentName(c, MediaButtonReceiver.class));
+        session.setActive(true);
+    }
+
+    /** What the session says, from what the app last said (main thread): the song, where it is, playing or paused. */
+    private static void refreshSession() {
+        if (session == null) return;
+        MediaMetadata.Builder md = new MediaMetadata.Builder()
+                .putString(MediaMetadata.METADATA_KEY_TITLE, title)
+                .putString(MediaMetadata.METADATA_KEY_ARTIST, artist)
+                .putString(MediaMetadata.METADATA_KEY_ALBUM, album)
+                .putLong(MediaMetadata.METADATA_KEY_DURATION, duration);
+        if (cover != null) md.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, cover);
+        session.setMetadata(md.build());
+        final long elapsed = SystemClock.elapsedRealtime() - positionAt;
+        PlaybackState.Builder ps = new PlaybackState.Builder()
+                .setActions(PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE | PlaybackState.ACTION_PLAY_PAUSE | PlaybackState.ACTION_SKIP_TO_NEXT
+                            | PlaybackState.ACTION_SKIP_TO_PREVIOUS | PlaybackState.ACTION_SEEK_TO | PlaybackState.ACTION_STOP)
+                .setState(playing ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED, position + (playing ? elapsed : 0), playing ? 1f : 0f)
+                .addCustomAction(new PlaybackState.CustomAction.Builder(LIKE_ACTION, liked ? "Remove from Liked" : "Add to Liked",
+                                                                         liked ? R.drawable.ic_heart_f : R.drawable.ic_heart).build())
+                .addCustomAction(new PlaybackState.CustomAction.Builder(ORDER_ACTION, ORDER_WORDS[order], ORDER_ICONS[order]).build());
+        session.setPlaybackState(ps.build());
     }
 
     /** A media button pressed with Songate in front (SongateActivity.dispatchKeyEvent): handed to the session, which answers it
      *  exactly as it does from anywhere else. False when there is no session (nothing has played yet): the key goes its usual way. */
     static boolean mediaButton(android.view.KeyEvent event) {
-        final SongateService s = self;
-        if (s == null || s.session == null) return false;
+        final MediaSession s = session;
+        if (s == null) return false;
         try {
-            return s.session.getController().dispatchMediaButtonEvent(event);
+            return s.getController().dispatchMediaButtonEvent(event);
         } catch (RuntimeException e) {
             return false;
         }
@@ -107,6 +158,7 @@ public class SongateService extends Service {
             album = nal;
             cover = bmp;
             if (self != null) self.refresh();
+            else refreshSession();
         });
     }
 
@@ -121,7 +173,7 @@ public class SongateService extends Service {
             } else if (self != null) {
                 if (!has) self.stopSelf();
                 else self.refresh();
-            }
+            } else refreshSession();
         });
     }
 
@@ -134,6 +186,7 @@ public class SongateService extends Service {
             liked = isLiked;
             order = Math.max(0, Math.min(3, ord));
             if (self != null) self.refresh();
+            else refreshSession();
         });
     }
 
@@ -154,6 +207,7 @@ public class SongateService extends Service {
         ended = true;
         has = playing = false;
         Runnable stop = () -> {
+            if (session != null && self == null) { session.setActive(false); session.release(); session = null; }
             if (app != null) app.stopService(new Intent(app, SongateService.class));   // its pending starts too
             else if (self != null) self.stopSelf();
         };
@@ -172,21 +226,7 @@ public class SongateService extends Service {
         NotificationChannel ch = new NotificationChannel(CHANNEL, "Playing", NotificationManager.IMPORTANCE_LOW);
         ch.setShowBadge(false);
         nm.createNotificationChannel(ch);
-        session = new MediaSession(this, "Songate");
-        session.setCallback(new MediaSession.Callback() {
-            @Override public void onPlay() { nativeCommand(PLAY, 0); }
-            @Override public void onPause() { nativeCommand(PAUSE, 0); }
-            @Override public void onSkipToNext() { nativeCommand(NEXT, 0); }
-            @Override public void onSkipToPrevious() { nativeCommand(PREVIOUS, 0); }
-            @Override public void onStop() { nativeCommand(PAUSE, 0); }
-            @Override public void onSeekTo(long ms) { nativeCommand(SEEK, ms / 1000.0); }
-            @Override public void onCustomAction(String action, android.os.Bundle extras) {
-                if (LIKE_ACTION.equals(action)) nativeCommand(LIKE, 0);
-                else if (ORDER_ACTION.equals(action)) nativeCommand(ORDER, 0);
-            }
-        });
-        Intent open = new Intent(this, SongateActivity.class).setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        session.setSessionActivity(PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_IMMUTABLE));
+        if (session == null) makeSession(getApplicationContext());
         session.setActive(true);
         focus = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                 .setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
@@ -217,8 +257,8 @@ public class SongateService extends Service {
     public void onDestroy() {
         if (noisyHeld) { unregisterReceiver(noisy); noisyHeld = false; }
         audio.abandonAudioFocusRequest(focus);
-        session.setActive(false);
-        session.release();
+        if (HibyR4.device && !ended) refreshSession();   // (the R4's stays, paused: the buttons still reach Songate)
+        else if (session != null) { session.setActive(false); session.release(); session = null; }
         stopForeground(STOP_FOREGROUND_REMOVE);
         self = null;
         super.onDestroy();
@@ -252,22 +292,7 @@ public class SongateService extends Service {
     /** Everything the controls show, from what the app last said. */
     private void refresh() {
         // the session: Android 13 and later draw the controls from it
-        MediaMetadata.Builder md = new MediaMetadata.Builder()
-                .putString(MediaMetadata.METADATA_KEY_TITLE, title)
-                .putString(MediaMetadata.METADATA_KEY_ARTIST, artist)
-                .putString(MediaMetadata.METADATA_KEY_ALBUM, album)
-                .putLong(MediaMetadata.METADATA_KEY_DURATION, duration);
-        if (cover != null) md.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, cover);
-        session.setMetadata(md.build());
-        final long elapsed = SystemClock.elapsedRealtime() - positionAt;
-        PlaybackState.Builder ps = new PlaybackState.Builder()
-                .setActions(PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE | PlaybackState.ACTION_PLAY_PAUSE | PlaybackState.ACTION_SKIP_TO_NEXT
-                            | PlaybackState.ACTION_SKIP_TO_PREVIOUS | PlaybackState.ACTION_SEEK_TO | PlaybackState.ACTION_STOP)
-                .setState(playing ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED, position + (playing ? elapsed : 0), playing ? 1f : 0f)
-                .addCustomAction(new PlaybackState.CustomAction.Builder(LIKE_ACTION, liked ? "Remove from Liked" : "Add to Liked",
-                                                                         liked ? R.drawable.ic_heart_f : R.drawable.ic_heart).build())
-                .addCustomAction(new PlaybackState.CustomAction.Builder(ORDER_ACTION, ORDER_WORDS[order], ORDER_ICONS[order]).build());
-        session.setPlaybackState(ps.build());
+        refreshSession();
 
         // audio focus and the headphones, while playing
         if (playing) {

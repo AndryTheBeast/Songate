@@ -137,6 +137,16 @@ bool App::init() {
 #ifdef GF_WINDOWED
     store.load();   // the window goes where it was left
 #ifdef GF_ANDROID
+    {   // A new user on the HiBy R4 (SongateOS; the user, 2026-11-15): no opening (nor its bells), the screen upright always
+        bool r4 = plat::hibyDevice();
+#ifdef GF_DEV
+        if (FILE* f = fopen((std::string(plat::configDir()) + "/mock-r4.txt").c_str(), "rb")) { r4 = true; fclose(f); }   // (the simulated R4)
+#endif
+        if (store.fresh && r4) {
+            store.opening = store.openingSound = false;
+            store.screenTurn = 1;   // Portrait
+        }
+    }
     if (store.screenTurn) plat::screenRotation(store.screenTurn);   // Settings › Appearance › Screen rotation, from the first frame
 #endif
     {
@@ -323,6 +333,15 @@ bool App::init() {
 #ifdef GF_DEV
     if (FILE* f = fopen((std::string(plat::configDir()) + "/mock-r4.txt").c_str(), "rb")) { bootOpening_ = true; fclose(f); }   // (the simulated R4)
 #endif
+#endif
+#ifdef GF_DEV
+    // dev builds: <config>/mock-ui.txt, the layouts being shown as options ("pills=A", "eq=B", ...), before one is chosen
+    if (FILE* f = fopen((std::string(plat::configDir()) + "/mock-ui.txt").c_str(), "rb")) {
+        char buf[512];
+        const size_t n = fread(buf, 1, sizeof buf, f);
+        mockUi_.assign(buf, n);
+        fclose(f);
+    }
 #endif
     if (store.opening && !bootOpening_) openingFirst();
     else openingDone_ = true;   // Settings › Playback › Startup: straight into the app, no bells either
@@ -1050,7 +1069,11 @@ void App::fitWindow() {
         // pixels across on that 411 dp phone, and the same size in the hand on any other, so a narrower phone shows a little less
         // across and a wider one more; never under 400 across (narrower still: it shrinks to keep 400) nor over 560 (it grows).
         // Always Standard: Size is sideways' only (the user, 2026-11-04)
-        u = dw / std::clamp(dw / (411.f / 440), kPhoneMinW, kPhoneMaxW);
+        // Size, upright's own (the user, 2026-11-15): Medium and Largest take 660 and 600 for each 720, as sideways (a floor of 340
+        // then, not 400, or a 400 dp screen such as the HiBy R4's would show no change)
+        static const float kUp[3] = { 1.f, 660.f / 720, 600.f / 720 };
+        const int up = std::clamp(store.uiSizeUp, 0, 2);
+        u = dw / std::clamp(dw / (411.f / 440) * kUp[up], up ? 340.f : kPhoneMinW, kPhoneMaxW);
     } else if (pw > ph) {
         u = console(dw, dh, 411.f / tall);
     } else {
@@ -1680,6 +1703,13 @@ void App::input() {
 
     // + opens the track menu for the focused track (or the one playing); HOME closes the app, so + no longer exits.
     const bool notice = coverNotice == 1 || appCoverNotice == 1 || lyrNotice == 1 || sleepPromptAt > 0 || tourStep >= 0;   // … and the tour   // the overlay covers' modal (drawCoverNotice), the sleep card
+    // Search's keyboard card: + searches (closes it), Y closes it, X a space, B a letter back (nothing typed: closes)
+    if (skb_.open) {
+        if (down & (plat::BtnPlus | plat::BtnY)) closeSearchKb();
+        else if (down & plat::BtnX) searchKbType(" ");
+        else if ((down & plat::BtnB) && !ui.anyEngaged()) { if (skb_.text.empty()) closeSearchKb(); else searchKbBack(); }
+        down &= ~uint64_t(plat::BtnPlus | plat::BtnY | plat::BtnX | plat::BtnB);
+    }
     if ((down & plat::BtnPlus) && !notice) {
         if (sheet.page != Sheet::Closed) closeSheet();
         else plusMenu(false);
@@ -1687,8 +1717,8 @@ void App::input() {
     // A finger held on a row (the user, 2026-10-27): what + opens. Ui focuses the row; the rows say what they hold
     // while they are drawn, and the frame after that publishes it (the …Shown values), so it opens two frames on.
     if (ui.touchHeld()) plusAfterHold = 2;
-    else if (plusAfterHold > 0 && --plusAfterHold == 0 && sheet.page == Sheet::Closed && !notice) plusMenu(true);
-    const bool modal = sheet.page != Sheet::Closed || notice || je.open || ap.open;
+    else if (plusAfterHold > 0 && --plusAfterHold == 0 && sheet.page == Sheet::Closed && !notice && !skb_.open) plusMenu(true);
+    const bool modal = sheet.page != Sheet::Closed || notice || je.open || ap.open || skb_.open;
 #ifdef GF_ANDROID
     if (!modal && (down & plat::BtnMinus)) { if (canvas) openCanvas(false); else openCanvasTurning(); }   // (upright: it turns the screen first)
 #else
@@ -2100,6 +2130,7 @@ void App::update() {
 #ifdef GF_ANDROID
     syncVolume();   // (Android keeps its own volume: nothing of Songate's to save)
     r4Tick();
+    player.setBitPerfectWanted(bitPerfectAllowed());
 #else
     if (std::abs(volumeShown - store.volume) > 0.0005f) { store.volume = volumeShown; persistSoon(0.8f); }
 #endif
@@ -2960,6 +2991,23 @@ void App::syncVolume() {
 #endif
 }
 
+bool App::bitPerfectAllowed() const {
+#ifdef GF_ANDROID
+    return r4::on() && store.bitPerfect && !store.eq.on && store.levelMode == 0 && store.crossfade <= 0 && !automixQueue() &&
+           tog.stage == Tog::Off && !sleepFading && !player.remote();
+#else
+    return false;
+#endif
+}
+
+bool App::bitPerfectNow() const {
+#ifdef GF_ANDROID
+    return bitPerfectAllowed() && player.bitPerfect() && player.loaded();
+#else
+    return false;
+#endif
+}
+
 void App::pushEq() {
     GfbgEq p = store.eq;
     if (r4::on()) {   // the bands are the ROM's (the user's choice, session 20); bass, treble and the preamp stay Songate's
@@ -3001,16 +3049,84 @@ void App::r4Tick() {
         }
         r4LedPickSent_ = -1;
     }
-    // Status LED › Colour "A": Songate's accent (where the colours are going, not the fade between them), set when it changes
-    // and differs from what the ROM keeps: once a cover, never a frame
-    if (store.r4LedAccent && r4::get("led_mode") == "custom") {
-        char hex[8];
-        snprintf(hex, sizeof hex, "%02x%02x%02x", int(std::lround(target.accent.r * 255)), int(std::lround(target.accent.g * 255)),
-                 int(std::lround(target.accent.b * 255)));
-        static std::string sent;
-        if (sent != hex && r4::get("led_color") != hex) r4::set("led_color", hex);
-        sent = hex;
+#ifdef GF_ANDROID
+    if (time - r4WiredAt_ > 1) {
+        r4WiredAt_ = time;
+        r4Wired_ = plat::wiredOut();
+#ifdef GF_DEV
+        if (r4::get("sim_wired") == "1") r4Wired_ = true;   // (the simulated R4, mock-r4.txt: headphones in)
+#endif
     }
+    // Sound & DAC › Each song at its own rate (SongateOS, 2026-11-15; the user's words B): the wired output (3.5 / 4.4 mm) follows the
+    // song. Songate opens its stream at the song's rate when a song is not joined (Player::load); when that differs from what the
+    // output runs at, out_rate is asked for: the audio service restarts (2 to 3.5 s), the song held still meanwhile, then let go
+    // once st_out_rate says it (or after 15 s, as the ROM's own wait). The song's rate if the output has it, else the nearest of its family, up to 384 kHz.
+    // Not with bit-perfect (it opens the device at the rate itself), never for Bluetooth or USB
+    if (r4RateWant_) {
+        if (time - r4RatePoll_ >= 0.25) { r4RatePoll_ = time; r4::refresh(); }
+        if (r4::getInt("st_out_rate", 0) == r4RateWant_ || time - r4RateAt_ > 15 || !store.matchRate) {
+            player.holdForRate(false);
+            SDL_Log("HiBy R4: out_rate %d %s after %.1f s, the song let go", r4RateWant_,
+                    r4::getInt("st_out_rate", 0) == r4RateWant_ ? "ready" : "NOT ready", time - r4RateAt_);
+            r4RateWant_ = 0;
+        }
+    } else if (store.matchRate && now.track >= 0 && !player.paused() && !player.bitPerfectClaimed()) {   // (claimed: no restart under it)
+        const int song = player.sampleRate(), out = r4::getInt("st_out_rate", 0);
+        // (the output's rate not known yet, or 0 while the ROM switches: read again every 2 s; on the first test the switch waited
+        // over 10 s for a read that came by chance)
+        if (out <= 0 && time - r4RatePoll_ > 2) { r4RatePoll_ = time; r4::refresh(); }
+        static const int k44[] = { 44100, 88200, 176400, 352800 }, k48[] = { 48000, 96000, 192000, 384000 };
+        const int* fam = song % 11025 == 0 ? k44 : k48;
+        int want = fam[3];
+        for (int i = 0; i < 4; i++) if (fam[i] >= song) { want = fam[i]; break; }
+        if (out > 0 && want != out && !(want == r4RateLast_ && time - r4RateLastAt_ < 30) && r4Wired_) {
+            r4::set("out_rate", std::to_string(want));
+            player.holdForRate(true);
+            r4RateWant_ = r4RateLast_ = want;
+            r4RateAt_ = r4RateLastAt_ = r4RatePoll_ = time;
+            SDL_Log("HiBy R4: out_rate %d asked (song %d, output %d)", want, song, out);
+        }
+    }
+#endif
+    // Status LED › Colour "A": Songate's accent. The light fades with the app's own colours (the user, 2026-11-16: "change
+    // smoothly when a song changes, and in automix in the automix duration"): pal's accent, which takes the Colour transition's
+    // time and, in an Automix join, the join's, shown live on the light (led_live: nothing saved, at most 25 a second); once it
+    // arrives, the cover's colour saved (led_color), once a cover, never a frame
+    if (store.r4LedAccent && r4::get("led_mode") == "custom" && pick.field != &r4LedPick_) {
+        auto hexOfRgb = [](const Rgb& c) {
+            char b[8];
+            snprintf(b, sizeof b, "%02x%02x%02x", int(std::lround(std::clamp(c.r, 0.f, 1.f) * 255)), int(std::lround(std::clamp(c.g, 0.f, 1.f) * 255)),
+                     int(std::lround(std::clamp(c.b, 0.f, 1.f) * 255)));
+            return std::string(b);
+        };
+        const std::string nowHex = hexOfRgb(pal.accent), goal = hexOfRgb(target.accent);
+        static std::string liveSent, saved;
+        static double liveAt = -1;
+        if (nowHex != liveSent && time - liveAt >= 0.04) {
+            r4::ledLive(int(strtol(nowHex.c_str(), nullptr, 16)), bright, breath);
+            liveSent = nowHex;
+            liveAt = time;
+        }
+        if (nowHex == goal && saved != goal) {
+            if (r4::get("led_color") != goal) r4::set("led_color", goal);
+            saved = goal;
+        }
+    }
+}
+
+std::string App::r4OutRateNote(int songRate) const {
+#ifdef GF_ANDROID
+    // (bit-perfect: the DAC opens at the song's own rate on an output of its own, whatever out_rate says: no arrow)
+    if (!songRate || !r4::on() || !r4Wired_ || player.bitPerfectClaimed()) return "";
+    const int out = r4::getInt("st_out_rate", 0);
+    if (out <= 0 || out == songRate) return "";
+    char o[24];
+    snprintf(o, sizeof o, " \u2192 %g kHz", out / 1000.0);
+    return o;
+#else
+    (void)songRate;
+    return "";
+#endif
 }
 
 /** seconds 0: off. choice: what Settings' control shows (0 off, 1… the minutes in order). */
@@ -4436,6 +4552,10 @@ void App::back() {
 }
 
 void App::openSearch() {
+#if !defined(GF_WINDOWED) || defined(GF_ANDROID)
+    openSearchKb();   // the console's and the phone's: Search's own keyboard card (view_sheet.cpp)
+    return;
+#endif
     char out[256] = {};
     const plat::TextResult r = plat::askText("Search", searchHint(), route.view == View::Search ? route.query.c_str() : nullptr, out, sizeof out);
     if (r == plat::TextResult::Unavailable) toast("The keyboard is not available in applet mode");

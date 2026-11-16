@@ -169,6 +169,7 @@ public:
     /** A space's advance: FreeType leaves a trailing space out of a measured width, so " " measures nothing. */
     int spaceWidth(Font f) { return measure("x x", f) - measure("xx", f); }
     int measureSpaced(const std::string& s, Font f, float spacingEm);
+    float pairKern(const std::string& a, const std::string& b, Font f);   // the font's kerning between two letters (spaced text)
     int lineHeight(Font f);
     /** Greedy word wrap; the last line is ellipsised when text remains. */
     std::vector<std::string> wrap(const std::string& s, Font f, int maxW, int maxLines);
@@ -189,7 +190,7 @@ public:
     void band(float x, float y, float w, float h, const Rgb& c, float alpha);
     /** The same band (bx, bw wide) inside a pill (x, y, w, h: round ends of h/2), shaped to it, its round ends included
      *  (Automix's sweep goes end to end: clipped to the straight middle, it began late and stopped early). */
-    void bandInPill(float x, float y, float w, float h, float bx, float bw, const Rgb& c, float alpha);
+    void bandInPill(float x, float y, float w, float h, float bx, float bw, const Rgb& c, float alpha, float rad = -1);   // rad: its corners (−1: a pill)
     /** A soft glow round a rounded box: `alpha` at its edge, nothing `spread` beyond it (`spreadX` at its sides), in one
      *  piece (Automix's halo: ten faint layers had only a few levels of alpha each, and breathed in steps). */
     void glowAround(float x, float y, float w, float h, float rad, float spread, float spreadX, const Rgb& c, float alpha);

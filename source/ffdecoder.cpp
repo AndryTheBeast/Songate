@@ -153,8 +153,12 @@ bool FfDecoder::open(const std::string& path, int outRate, int outChannels) {
     }
     AVChannelLayout outLayout;
     av_channel_layout_default(&outLayout, outCh_);
-    if (swr_alloc_set_opts2(&swr_, &outLayout, AV_SAMPLE_FMT_S16, outRate_, &dec_->ch_layout, dec_->sample_fmt, dec_->sample_rate, 0, nullptr) < 0 ||
-        swr_init(swr_) < 0) {
+    const AVSampleFormat outFmt = sizeof(FfSample) == 4 ? AV_SAMPLE_FMT_FLT : AV_SAMPLE_FMT_S16;   // (FfSample: float on Android)
+    if (swr_alloc_set_opts2(&swr_, &outLayout, outFmt, outRate_, &dec_->ch_layout, dec_->sample_fmt, dec_->sample_rate, 0, nullptr) < 0) {
+        close();
+        return false;
+    }
+    if (swr_init(swr_) < 0) {
         close();
         return false;
     }
@@ -172,6 +176,19 @@ bool FfDecoder::open(const std::string& path, int outRate, int outChannels) {
     decodeMore();
     if (!zeroKnown_) decodeMore();
     return true;
+}
+
+int FfDecoder::sourceRate() const { return dec_ ? dec_->sample_rate : 0; }
+
+int FfDecoder::sourceBits() const {
+    if (!dec_ || dec_->ch_layout.nb_channels != 2) return 0;   // (stereo files alone: bit-perfect is stereo)
+    switch (dec_->sample_fmt) {
+    case AV_SAMPLE_FMT_S16:
+    case AV_SAMPLE_FMT_S16P: return 16;
+    case AV_SAMPLE_FMT_S32:
+    case AV_SAMPLE_FMT_S32P: return dec_->bits_per_raw_sample > 16 && dec_->bits_per_raw_sample <= 32 ? dec_->bits_per_raw_sample : 32;
+    default: return 0;   // floats (MP3, AAC, Opus): a lossy file has no bits of its own to keep
+    }
 }
 
 void FfDecoder::close() {
@@ -302,12 +319,12 @@ bool FfDecoder::fillAhead(int frames) {
     return rw_.load() != before;
 }
 
-int FfDecoder::takeRing(int16_t* out, int frames) {
+int FfDecoder::takeRing(FfSample* out, int frames) {
     size_t r = rr_.load(std::memory_order_relaxed);
     const size_t n = std::min(size_t(std::max(0, frames)), rw_.load(std::memory_order_acquire) - r);
     for (size_t done = 0; done < n;) {
         const size_t at = r & (ringFrames_ - 1), k = std::min(n - done, ringFrames_ - at);
-        memcpy(out + done * size_t(outCh_), ring_.data() + at * size_t(outCh_), k * size_t(outCh_) * sizeof(int16_t));
+        memcpy(out + done * size_t(outCh_), ring_.data() + at * size_t(outCh_), k * size_t(outCh_) * sizeof(FfSample));
         done += k;
         r += k;
     }
@@ -315,7 +332,33 @@ int FfDecoder::takeRing(int16_t* out, int frames) {
     return int(n);
 }
 
+/** 16-bit: as decoded where that is the decoders' own, else from their floats (a join's stretch, the waveform, a song's print). */
 int FfDecoder::read(int16_t* out, int frames) {
+    if constexpr (sizeof(FfSample) == 2) {
+        return readS(reinterpret_cast<FfSample*>(out), frames);
+    } else {
+        thread_local std::vector<FfSample> tmp;
+        if (tmp.size() < size_t(std::max(0, frames)) * size_t(outCh_)) tmp.resize(size_t(frames) * size_t(outCh_));
+        const int got = readS(tmp.data(), frames);
+        for (size_t i = 0; i < size_t(std::max(0, got)) * size_t(outCh_); i++)
+            out[i] = int16_t(std::lrint(std::clamp(float(tmp[i]) * 32767.f, -32768.f, 32767.f)));
+        return got;
+    }
+}
+
+int FfDecoder::readF(float* out, int frames) {
+    if constexpr (sizeof(FfSample) == 4) {
+        return readS(reinterpret_cast<FfSample*>(out), frames);
+    } else {
+        thread_local std::vector<FfSample> tmp;
+        if (tmp.size() < size_t(std::max(0, frames)) * size_t(outCh_)) tmp.resize(size_t(frames) * size_t(outCh_));
+        const int got = readS(tmp.data(), frames);
+        for (size_t i = 0; i < size_t(std::max(0, got)) * size_t(outCh_); i++) out[i] = float(tmp[i]) * (1.f / 32768.f);
+        return got;
+    }
+}
+
+int FfDecoder::readS(FfSample* out, int frames) {
     if (!fmt_) return 0;
     if (!pf_) return readDirect(out, frames);
     int done = takeRing(out, frames);
@@ -333,14 +376,14 @@ int FfDecoder::read(int16_t* out, int frames) {
     return done;
 }
 
-int FfDecoder::readDirect(int16_t* out, int frames) {
+int FfDecoder::readDirect(FfSample* out, int frames) {
     if (!fmt_) return 0;
     int done = 0;
     while (done < frames) {
         if (pos_ >= fifo_.size() && !decodeMore()) break;
         const size_t avail = (fifo_.size() - pos_) / outCh_;
         const int n = int(std::min<size_t>(avail, size_t(frames - done)));
-        memcpy(out + size_t(done) * outCh_, fifo_.data() + pos_, size_t(n) * outCh_ * sizeof(int16_t));
+        memcpy(out + size_t(done) * outCh_, fifo_.data() + pos_, size_t(n) * outCh_ * sizeof(FfSample));
         pos_ += size_t(n) * outCh_;
         done += n;
     }

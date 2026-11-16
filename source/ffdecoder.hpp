@@ -30,6 +30,14 @@ bool ffReadInfo(const std::string& path, TrackInfo& out, bool wantCover, bool wa
  * analysis worker read the card hard. Now a feeder thread (core 1, just below audio: cores::Feed) keeps each playing
  * decoder's ring of decoded PCM full, and the callback only copies from it. Started and stopped by the player.
  */
+/** The decoders' PCM inside: float on Android (the native sample rate, step two: a 24-bit file reaches the device whole; the user,
+ *  2026-11-15), 16-bit elsewhere as it always was. */
+#ifdef GF_ANDROID
+using FfSample = float;
+#else
+using FfSample = int16_t;
+#endif
+
 void ffFeederStart();
 void ffFeederStop();
 unsigned ffStarved();   // reads that found the ring short and had to decode in place (the dev build's audio trace)
@@ -38,9 +46,15 @@ class FfDecoder {
 public:
     ~FfDecoder() { close(); }
     bool open(const std::string& path, int outRate, int outChannels);
+    /** The file's own sample rate (0 when not open): Android opens the device at it (Player::load). */
+    int sourceRate() const;
+    /** A lossless stereo file's own bit depth (16, 24, 32), 0 otherwise (a lossy codec decodes to floats): bit-perfect output. */
+    int sourceBits() const;
     void close();
     /** Fills up to `frames` frames; returns how many were written (fewer only at the end). */
     int read(int16_t* out, int frames);
+    /** The same as floats, -1..1 (Android: as decoded, nothing lost). */
+    int readF(float* out, int frames);
     /** To that sample exactly, as skip(exact) reaches it: a jump to the packet before, then what lies before it dropped. */
     bool seek(double seconds);
     /**
@@ -56,12 +70,13 @@ public:
 
 private:
     bool decodeMore();
-    int readDirect(int16_t* out, int frames);
-    int takeRing(int16_t* out, int frames);
+    int readS(FfSample* out, int frames);
+    int readDirect(FfSample* out, int frames);
+    int takeRing(FfSample* out, int frames);
     void fillLocked(int frames);
 
     // the read-ahead ring (prefetch): frames written and read ever; its size a power of two
-    std::vector<int16_t> ring_;
+    std::vector<FfSample> ring_;
     size_t ringFrames_ = 0;
     std::atomic<size_t> rw_{ 0 }, rr_{ 0 };
     std::atomic<bool> rEof_{ false };
@@ -75,7 +90,7 @@ private:
     AVFrame* frame_ = nullptr;
     int stream_ = -1;
     int outRate_ = 48000, outCh_ = 2;
-    std::vector<int16_t> fifo_;
+    std::vector<FfSample> fifo_;
     size_t pos_ = 0;
     bool eof_ = false;
     // An exact seek (session 11): a seek used to land on its packet's start, up to 23 ms of AAC or 26 ms of MP3 before the moment asked,

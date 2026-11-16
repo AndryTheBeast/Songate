@@ -177,7 +177,7 @@ void App::draw() {
     hoverUpNextShown = hoverUpNext;
     hoverUpNext = false;
     plHoverShown = route.view == View::Playlists ? plHover : -2;
-    ui.setModal(sheet.page != Sheet::Closed || ((coverNotice == 1 || appCoverNotice == 1 || lyrNotice == 1) && !canvas) || sleepPromptAt > 0 || tourStep >= 0 || je.open || ap.open);
+    ui.setModal(sheet.page != Sheet::Closed || ((coverNotice == 1 || appCoverNotice == 1 || lyrNotice == 1) && !canvas) || sleepPromptAt > 0 || tourStep >= 0 || je.open || ap.open || skb_.open);
     if (canvas) {
         g.holdCache(automixFocus(mixCanvasMode() == 0 ? 0 : 2).ui < 1);   // its text stays cached while an Automix join hides it (as Now playing's)
         drawCanvas();
@@ -188,6 +188,7 @@ void App::draw() {
         drawSheet();
         drawTour();
         drawSleepPrompt();
+        drawSearchKb();
         drawToast();
         if (veilA > 0.005f) g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, veilA);
         drawBootFade();
@@ -219,6 +220,7 @@ void App::draw() {
         drawSheet();
         drawTour();
         drawSleepPrompt();
+        drawSearchKb();
         drawToast();
         if (veilA > 0.005f) g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, veilA);
         drawBootFade();
@@ -339,6 +341,7 @@ void App::draw() {
     drawSheet();
     drawTour();   // over every page it shows (tour.cpp)
     drawSleepPrompt();
+    drawSearchKb();
     drawToast();
     if (veilA > 0.005f) g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, veilA);   // Dim the screen, docked
     drawBootFade();
@@ -732,6 +735,11 @@ void App::drawTitlebar() {
     const bool keyShown = sw >= 290;   // (a short field: its words whole before the key's name)
     g.textC(q.empty() ? searchHint() : q, { css::Sm }, sx + 12 + 16 + 8, cy, q.empty() ? pal.text3 : pal.text, 1, Align::Left,
             int(keyShown ? sw - 90 : sw - 48));
+    if (skb_.open) {   // Search's keyboard is up: typing here (the caret after the words, the field lit)
+        g.roundStroke(sx, sy, sw, 32, 9, 1.5f, pal.accent, 0.8f);
+        const float cxr = sx + 12 + 16 + 8 + (q.empty() ? 0.f : std::min(g.measureF(q, { css::Sm }), keyShown ? sw - 90 : sw - 48)) + 1;
+        if (std::fmod(time - skb_.at, 1.06) < 0.62) g.rect(cxr, cy - 9, 1.5f, 18, pal.text);
+    }
     // <kbd>: the button that opens search
     if (keyShown) {
     const Font kf{ css::Xs };

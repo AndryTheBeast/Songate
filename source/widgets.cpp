@@ -83,8 +83,40 @@ float App::chip(const std::string& label, float x, float cy, bool accent) {
         g.roundRect(x, cy - h / 2, w, h, 6, pal.text, 0.065f);
         g.roundStroke(x, cy - h / 2, w, h, 6, 1, pal.text, 0.09f);
     }
-    g.textSpaced(label, f, x + 8, cy, 0.02f, accent ? pal.accentInk : pal.text2);
+    const Rgb ink = accent ? pal.accentInk : pal.text2;
+    // an arrow ("44.1 kHz → 96 kHz", the HiBy R4's output): the font's sits low, so a chevron drawn on the chip's middle in its
+    // place (the user, 2026-11-15: "not centered in height"); the chip as wide as before
+    const size_t ar = label.find("\xE2\x86\x92");
+    if (ar != std::string::npos) {
+        const std::string pre = label.substr(0, ar), post = label.substr(ar + 3);
+        const float a0 = g.measureSpaced(pre, f, 0.02f), aw = g.measureSpaced(label.substr(0, ar + 3), f, 0.02f) - a0;
+        // the parts as drawn are narrower than the label measured whole: centred in the chip, the same room either side (the
+        // user, 2026-11-16: "more space to the right than to the left")
+        const float drawn = a0 + aw + g.measureSpaced(post, f, 0.02f), lx = x + (w - drawn) / 2;
+        g.textSpaced(pre, f, lx, cy, 0.02f, ink);
+        g.icon(ICON_CHEV, lx + a0 + aw / 2, cy, 11, ink);
+        g.textSpaced(post, f, lx + a0 + aw, cy, 0.02f, ink);
+        return w;
+    }
+    g.textSpaced(label, f, x + 8, cy, 0.02f, ink);
     return w;
+}
+
+/** The codec's chip while a song plays bit-perfect (the user, 2026-11-15: no word, "the flac badge ... a little sparkly animation";
+ *  "S2, with sweep"): a light across it every 3.2 s, shaped to its own corners, and three sparkles on its edges twinkling in turn,
+ *  the Automix chip's language, quieter. Drawn over a chip at x, w wide (App::chip's). */
+void App::sparkleChip(float x, float cy, float w) {
+    const float h = 22, t = float(time);
+    const float half = 12, sweep = std::fmod(t, 3.2f) / 3.2f, sx = x - half + sweep * (w + 2 * half);
+    g.bandInPill(x + 1, cy - h / 2 + 1, w - 2, h - 2, sx - half, 2 * half, { 1, 1, 1 }, 0.35f, 5);   // (the chip's own corners, 6, a pixel in)
+    const struct { float fx, fy, size, phase; } spots[3] = { { 0.98f, -0.55f, 17, 0.0f }, { 0.03f, 0.55f, 13, 0.33f }, { 0.45f, -0.68f, 11, 0.66f } };
+    const Rgb c{ pal.accentInk.r + (1 - pal.accentInk.r) * 0.65f, pal.accentInk.g + (1 - pal.accentInk.g) * 0.65f,
+                 pal.accentInk.b + (1 - pal.accentInk.b) * 0.65f };
+    for (const auto& sp : spots) {
+        const float wv = std::sin((t / 2.4f + sp.phase) * 6.2831853f);
+        const float a = wv > 0 ? wv * wv : 0;
+        if (a > 0.02f) g.sparkle(x + sp.fx * w, cy + sp.fy * h, sp.size * (0.55f + 0.45f * a), c, a);
+    }
 }
 
 /**
@@ -603,12 +635,23 @@ void App::letterRail(const char* key, float railX, float top, float h, const std
     int cur = 0;   // the section showing: the last letter whose first row is at or above the scroll
     for (int i = 0; i < int(L.size()); i++) if (rowY(L[size_t(i)].second) <= sa.y + 1) cur = i;
     auto jump = [&](int i) { sa.target = rowY(L[size_t(i)].second); sa.clamp(); };
-    // each letter an item the D-pad lands on (A glides there), the one showing in the accent
+    // each letter an item the D-pad lands on (A glides there), the one showing in the accent. A rail too short for every letter
+    // (a larger Size, a short page: they ran into each other, the user's screenshots 2026-11-15) names every k-th, a dot between;
+    // a named letter lit while the one showing (or focused) is it or one of the dots under it
+    const float lineH = g.lineHeight({ css::Xs }) * 0.9f;
+    const int every = step >= lineH ? 1 : int(std::ceil(lineH / std::max(1.f, step)));
+    int focusedAt = -1;
+    for (int i = 0; i < int(L.size()); i++)
+        if (ui.focused(uid(std::string(key) + ".az", L[size_t(i)].first)) && ui.showFocusRing()) focusedAt = i;
     for (int i = 0; i < int(L.size()); i++) {
         const float ly = top2 + i * step;
         const Id id = uid(std::string(key) + ".az", L[size_t(i)].first);
         if (ui.item(id, { railX, ly, lw, step }, 6)) jump(i);
-        const bool hot = ui.focused(id) && ui.showFocusRing(), on = i == cur;
+        if (i % every != 0) {
+            g.circle(railX + lw / 2, ly + step / 2, 1.6f, i == cur || i == focusedAt ? pal.accentInk : pal.text3);
+            continue;
+        }
+        const bool hot = focusedAt >= i && focusedAt < i + every, on = cur >= i && cur < i + every;
         g.textC(std::string(1, L[size_t(i)].first), { css::Xs, on || hot ? Weight::Bold : Weight::SemiBold }, railX + lw / 2, ly + step / 2,
                 hot ? pal.text : on ? pal.accentInk : pal.text2, 1, Align::Center);
     }

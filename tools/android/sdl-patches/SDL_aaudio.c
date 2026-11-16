@@ -70,6 +70,26 @@ static int aaudio_LoadFunctions(AAUDIO_Data *data)
    allow reopening inside its own callback, so it is only flagged here; the audio thread opens a new stream on its next write
    (aaudio_PlayDevice). Without this, every write failed at once and the audio thread span, the mixer running far ahead of time. */
 static SDL_atomic_t aaudio_outputLost;
+/* Songate, bit-perfect output: the stream's own format (AAudio's values: 1 I16, 2 FLOAT, 3 I24_PACKED, 4 I32, the last two from
+   Android 12) and, for packed 24-bit, a buffer the mixer's 32-bit samples are packed into (their top three bytes) */
+#define SG_AAUDIO_I24 3
+#define SG_AAUDIO_I32 4
+static aaudio_format_t aaudio_outFormat = AAUDIO_FORMAT_PCM_FLOAT;
+static Uint8 *aaudio_packbuf = NULL;
+static size_t aaudio_packlen = 0;
+
+/* the format asked for: the spec's, or (S32 with SONGATE_AAUDIO_I24=1) packed 24-bit */
+static aaudio_format_t aaudio_wantFormat(SDL_AudioFormat f)
+{
+    if (f == AUDIO_S16SYS) {
+        return AAUDIO_FORMAT_PCM_I16;
+    }
+    if (f == AUDIO_S32SYS) {
+        const char *e = SDL_getenv("SONGATE_AAUDIO_I24");
+        return (e && *e == '1') ? SG_AAUDIO_I24 : SG_AAUDIO_I32;
+    }
+    return AAUDIO_FORMAT_PCM_FLOAT;
+}
 static SDL_SpinLock aaudio_streamLock;   /* the output stream swapped on the audio thread while Android's pause and resume use it */
 
 void aaudio_errorCallback(AAudioStream *stream, void *userData, aaudio_result_t error);
@@ -123,15 +143,8 @@ static int aaudio_OpenDevice(_THIS, const char *devname)
         aaudio_direction_t direction = (iscapture ? AAUDIO_DIRECTION_INPUT : AAUDIO_DIRECTION_OUTPUT);
         ctx.AAudioStreamBuilder_setDirection(ctx.builder, direction);
     }
-    {
-        aaudio_format_t format = AAUDIO_FORMAT_PCM_FLOAT;
-        if (this->spec.format == AUDIO_S16SYS) {
-            format = AAUDIO_FORMAT_PCM_I16;
-        } else if (this->spec.format == AUDIO_S16SYS) {
-            format = AAUDIO_FORMAT_PCM_FLOAT;
-        }
-        ctx.AAudioStreamBuilder_setFormat(ctx.builder, format);
-    }
+    ctx.AAudioStreamBuilder_setFormat(ctx.builder, iscapture ? (this->spec.format == AUDIO_S16SYS ? AAUDIO_FORMAT_PCM_I16 : AAUDIO_FORMAT_PCM_FLOAT)
+                                                             : aaudio_wantFormat(this->spec.format));
 
     ctx.AAudioStreamBuilder_setErrorCallback(ctx.builder, aaudio_errorCallback, private);
 
@@ -153,6 +166,11 @@ static int aaudio_OpenDevice(_THIS, const char *devname)
             this->spec.format = AUDIO_S16SYS;
         } else if (fmt == AAUDIO_FORMAT_PCM_FLOAT) {
             this->spec.format = AUDIO_F32SYS;
+        } else if (fmt == SG_AAUDIO_I32 || fmt == SG_AAUDIO_I24) {
+            this->spec.format = AUDIO_S32SYS;   /* (packed 24-bit: the mixer's 32-bit, packed on the way out) */
+        }
+        if (!iscapture) {
+            aaudio_outFormat = fmt;
         }
     }
 
@@ -242,7 +260,7 @@ static SDL_bool aaudio_ReopenOutput(_THIS)
     ctx.AAudioStreamBuilder_setDeviceId(ctx.builder, AAUDIO_UNSPECIFIED);          /* the current route */
     ctx.AAudioStreamBuilder_setSampleRate(ctx.builder, this->spec.freq);
     ctx.AAudioStreamBuilder_setChannelCount(ctx.builder, this->spec.channels);
-    ctx.AAudioStreamBuilder_setFormat(ctx.builder, this->spec.format == AUDIO_S16SYS ? AAUDIO_FORMAT_PCM_I16 : AAUDIO_FORMAT_PCM_FLOAT);
+    ctx.AAudioStreamBuilder_setFormat(ctx.builder, aaudio_outFormat);   /* (as the stream it replaces: bit-perfect's too) */
     ctx.AAudioStreamBuilder_setErrorCallback(ctx.builder, aaudio_errorCallback, private);
     res = ctx.AAudioStreamBuilder_openStream(ctx.builder, &stream);
     if (res != AAUDIO_OK) {
@@ -263,7 +281,6 @@ static void aaudio_PlayDevice(_THIS)
 {
     struct SDL_PrivateAudioData *private = this->hidden;
     aaudio_result_t res;
-    int64_t timeoutNanoseconds = 1 * 1000 * 1000; /* 8 ms */
     if (SDL_AtomicGet(&aaudio_outputLost) || private->stream == NULL) {
         SDL_AtomicSet(&aaudio_outputLost, 0);
         if (!aaudio_ReopenOutput(this)) {
@@ -273,14 +290,54 @@ static void aaudio_PlayDevice(_THIS)
             return;
         }
     }
-    res = ctx.AAudioStream_write(private->stream, private->mixbuf, private->mixlen / private->frame_size, timeoutNanoseconds);
+    /* Songate: the whole buffer, waiting for room as a device does. 2.28.5 gave the write 1 ms and dropped whatever did not fit, and
+       the audio thread came straight back for more: the mixer ran ahead of what was heard, a song jumping seconds on (the user's Hiby
+       R4, 2026-11-15: "it played 2 seconds and then skipped 6 seconds"). In steps of 50 ms, never longer than twice the buffer's
+       time and half a second more (a stream that does not move: Android's pause; it is let go then) */
+    {
+        const int32_t want = private->mixlen / private->frame_size;
+        const Uint64 limit = SDL_GetTicks64() + 500 + 2000 * (Uint64)want / (Uint64)this->spec.freq;
+        int32_t done = 0;
+        const Uint8 *src = private->mixbuf;
+        size_t outFrame = (size_t)private->frame_size;
+        if (aaudio_outFormat == SG_AAUDIO_I24) {   /* the mixer's 32-bit samples, their top three bytes (little-endian) */
+            const size_t n = (size_t)want * (size_t)this->spec.channels;
+            if (aaudio_packlen < n * 3) {
+                SDL_free(aaudio_packbuf);
+                aaudio_packbuf = (Uint8 *)SDL_malloc(n * 3);
+                aaudio_packlen = aaudio_packbuf ? n * 3 : 0;
+            }
+            if (aaudio_packbuf) {
+                const Uint8 *in = private->mixbuf;
+                size_t i;
+                for (i = 0; i < n; i++) {
+                    aaudio_packbuf[i * 3] = in[i * 4 + 1];
+                    aaudio_packbuf[i * 3 + 1] = in[i * 4 + 2];
+                    aaudio_packbuf[i * 3 + 2] = in[i * 4 + 3];
+                }
+                src = aaudio_packbuf;
+                outFrame = (size_t)this->spec.channels * 3;
+            }
+        }
+        res = 0;
+        while (done < want) {
+            res = ctx.AAudioStream_write(private->stream, src + (size_t)done * outFrame, want - done,
+                                         50 * 1000 * 1000);
+            if (res < 0) {
+                break;
+            }
+            done += res;
+            if (done < want && SDL_GetTicks64() > limit) {
+                LOGI("SDL AAudio play: %d of %d frames in time, the rest dropped", (int)done, (int)want);
+                break;
+            }
+        }
+    }
     if (res == AAUDIO_ERROR_DISCONNECTED) {   /* (if the callback has not said so yet) */
         SDL_AtomicSet(&aaudio_outputLost, 1);
     }
     if (res < 0) {
         LOGI("%s : %s", __func__, ctx.AAudio_convertResultToText(res));
-    } else {
-        LOGI("SDL AAudio play: %d frames, wanted:%d frames", (int)res, private->mixlen / private->frame_size);
     }
 
 #if 0
@@ -508,6 +565,11 @@ SDL_bool aaudio_DetectBrokenPlayState(void)
     if (audioDevice == NULL || !audioDevice->hidden) {
         return SDL_FALSE;
     }
+    /* Songate: not asked. This runs on the app's thread every frame, and AAudioStream_getTimestamp is a call into Android's audio
+       service: while that restarts (the HiBy R4 changing its output rate, 2-3 s) each call waited ~0.5 s, the screen held for seconds
+       (SongateOS, 2026-11-16). The write it guarded against blocking forever no longer can: aaudio_PlayDevice gives up after twice
+       the buffer's time and half a second */
+    return SDL_FALSE;
 
     private = audioDevice->hidden;
 

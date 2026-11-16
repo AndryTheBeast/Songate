@@ -111,6 +111,8 @@ public class SongateActivity extends SDLActivity {
     // platform_android.cpp: a thread the app starts has only the system's class loader)
     public static int hibyState() { return HibyR4.state(); }
     public static boolean hibyDevice() { return HibyR4.device; }
+    public static int bitPerfectBegin(int rate, int bits) { return BitPerfect.begin(rate, bits); }
+    public static void bitPerfectEnd() { BitPerfect.end(); }
     public static String hibyGet() { return HibyR4.get(); }
     public static String hibySet(String key, String value) { return HibyR4.set(key, value); }
     public static boolean hibyEqSet(String eq) { return HibyR4.eqSet(eq); }
@@ -668,6 +670,23 @@ public class SongateActivity extends SDLActivity {
      *  vold still finishes mounting it, and vold ends every app with a file open on it (the user's Hiby R4, 2026-11-15: Songate,
      *  the home app, opened its music and was ended four times; the queue was lost). True when Android does not say (no such
      *  volume known): nothing is held back then. */
+    /** Music goes to wired headphones now (the HiBy R4's 3.5 and 4.4 mm): its output rate may follow the song. Not Bluetooth, not USB. */
+    public static boolean wiredOut() {
+        try {
+            if (self == null || android.os.Build.VERSION.SDK_INT < 33) return false;
+            android.media.AudioManager am = (android.media.AudioManager) self.getSystemService(AUDIO_SERVICE);
+            android.media.AudioAttributes aa = new android.media.AudioAttributes.Builder().setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC).build();
+            boolean wired = false;
+            for (android.media.AudioDeviceInfo d : am.getAudioDevicesForAttributes(aa)) {
+                final int t = d.getType();
+                if (t == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES || t == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET) wired = true;
+                else return false;   // (anything else in the route: not only wired)
+            }
+            return wired;
+        } catch (Throwable t) { return false; }
+    }
+
     public static boolean volumeReady(String path) {
         final Context c = HibyR4.context;
         if (c == null || path == null) return true;

@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <deque>
 #include <mutex>
+#include <thread>
 #include <cstring>
 #include <ctime>
 #include <string>
@@ -970,6 +971,25 @@ int hibyState() {
     return st;
 }
 
+// Asked of Android once a second on a thread of its own: the call goes to its audio service, which waits while the HiBy R4's
+// restarts for a new output rate (on the app's thread that held the whole screen 4-5 s: SongateOS, 2026-11-16). The first
+// call starts it; the answer is the last one in.
+static std::atomic<bool> wiredNow{ false };
+bool wiredOut() {
+    static std::once_flag started;
+    std::call_once(started, [] {
+        std::thread([] {
+            for (;;) {
+                bool on = false;
+                callStatic("wiredOut", "()Z", [&](JNIEnv* env, jclass cls, jmethodID m) { on = env->CallStaticBooleanMethod(cls, m) == JNI_TRUE; });
+                wiredNow = on;
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
+        }).detach();
+    });
+    return wiredNow;
+}
+
 bool volumeReady(const std::string& path) {
     bool ok = true;
     callStatic("volumeReady", "(Ljava/lang/String;)Z", [&](JNIEnv* env, jclass cls, jmethodID m) {
@@ -979,6 +999,24 @@ bool volumeReady(const std::string& path) {
     });
     return ok;
 }
+
+std::atomic<bool> bpLost{ false }, bpConfirmed{ false };
+
+int bitPerfectBegin(int rate, int bits) {
+    bpConfirmed = false;   // (until Android's listener says it holds: only then does the badge sparkle)
+    int code = 0;
+    callStatic("bitPerfectBegin", "(II)I", [&](JNIEnv* env, jclass cls, jmethodID m) { code = env->CallStaticIntMethod(cls, m, jint(rate), jint(bits)); });
+    if (code) bpLost = false;
+    return code;
+}
+
+bool bitPerfectConfirmed() { return bpConfirmed.load(); }
+
+void bitPerfectEnd() {
+    callStatic("bitPerfectEnd", "()V", [](JNIEnv* env, jclass cls, jmethodID m) { env->CallStaticVoidMethod(cls, m); });
+}
+
+bool bitPerfectLost() { return bpLost.load(); }
 
 bool hibyDevice() {
     static int known = -1;   // asked once
@@ -1052,6 +1090,12 @@ extern "C" JNIEXPORT void JNICALL Java_io_github_andrythebeast_songate_SongateAc
     plat::volIndex = std::clamp(int(index), 0, int(max));
     plat::volGen++;
     if (fromKey) plat::volKeys++;
+}
+
+/** BitPerfect.java's listener, on Android's main thread: Android says whether Songate's bit-perfect claim holds. */
+extern "C" JNIEXPORT void JNICALL Java_io_github_andrythebeast_songate_BitPerfect_nativeBitPerfect(JNIEnv*, jclass, jboolean on) {
+    if (!on) plat::bpLost = true;
+    plat::bpConfirmed = bool(on);
 }
 
 /** SongateActivity.onResume, on Android's UI thread. */

@@ -117,6 +117,10 @@ struct Store {
     // The HiBy R4 only, Appearance › Status LED › Colour "A": the light follows Songate's accent, set again with each cover
     // (the ROM keeps the colour itself; this is Songate's own part of it). Saved only while it is on: no other device keeps a line
     bool r4LedAccent = false;
+    // The HiBy R4, Sound & DAC › Output › Bit-perfect output (on by default; saved only when off: no other device keeps a line)
+    bool bitPerfect = true;
+    // The HiBy R4, Sound & DAC › Output › Each song at its own rate (SongateOS's out_rate; on by default, saved only when off)
+    bool matchRate = true;
     bool seekWave = true;         // Settings › Visualizer › Seek bar › Waveform: the song's loudness as bars; off, a plain line
     float coverPulse = 1.f;     // 1 = Gatefold's breathing
     bool canvasPulse = true;    // the pulse on the Canvas cover too
@@ -254,6 +258,7 @@ struct Store {
     bool syncDeletes = false;       // a song deleted on another device is deleted here too: off until you turn it on, and asked
     uint64_t syncDeleteFrom = 0;    // … only those deleted after that (~0: turned on just now, the next sync sets it)
     bool syncAuto = true;           // on link and after any change (the user, 2026-10-31); false only by hand
+    bool fresh = false;         // load() found no settings.txt: a new user (the HiBy R4's own defaults then: App::init)
     bool opening = true;        // Settings › Playback › Startup: the star and the name as Songate opens (view_opening.cpp)
     bool openingSound = true;   // … and its bells (only with the opening on)
     // Settings › Appearance › Screen edges (Android): the camera's cutouts and the screen's rounded corners (App::updateEdges)
@@ -264,7 +269,8 @@ struct Store {
     int plSource = 0;           // the Playlists page and the sidebar's list: 0 yours, 1 the server's (shown only while signed in)
     int libSource = 0;          // Library's Local | Server (the user, 2026-11-06: "two options, Local or Server")
     int serverTab = 0;          // the Server tab's view: 0 Albums, 1 Artists, 2 Genres, 3 Folders, 4 Tracks
-    int uiSize = 1;             // Settings › Appearance › Layout › Size (Android), sideways only: 0 Standard (720 tall), 1 Medium (660, the default), 2 Largest (600); upright is always Standard
+    int uiSize = 1;             // Settings › Appearance › Layout › Size (Android), sideways: 0 Standard (720 tall), 1 Medium (660, the default), 2 Largest (600)
+    int uiSizeUp = 0;           // … and upright's own (the user, 2026-11-15: "each layout has it's own layout size"): 0 Standard (the default), 1 Medium, 2 Largest
 
     void load();
     /** Queued for a background thread (store.cpp); flush() waits until everything is on the card. */

@@ -107,12 +107,15 @@ void App::drawPlaylists(float x, float y, float w, float h, bool inLibrary) {
 
     float bx = x + 28;
     bool clicked = false;
-    bx += button(uid("pls.new"), ICON_PLUS, "New playlist", bx, cy, true, &clicked, false, false, DefaultFocus) + 8;
+    // upright (the user chose "B", 2026-11-15): New playlist fills the row up to the views, all of them pills
+    const bool narrow = w < kNarrowList;
+    const float vw = 6 + 38.f * 3;
+    bx += button(uid("pls.new"), ICON_PLUS, "New playlist", bx, cy, true, &clicked, false, false, DefaultFocus, narrow ? w - 56 - vw - 10 : 0) + 8;
     if (clicked) { if (server) serverNewPlaylist({}); else openNewList(); }   // (the server's: a plain one; no Automix, smart or mood there)
     {
         // By album would be the tiles again here (a playlist is not an album): three views
         int m = store.viewPlaylists == 0 ? 2 : store.viewPlaylists;
-        viewSwitch("pls.view", x + w - 28, cy + 17, m, 1u);
+        viewSwitch("pls.view", x + w - 28, cy + 17, m, 1u, narrow ? vw : 0);
         store.viewPlaylists = m;
     }
     cy += 34 + 16;

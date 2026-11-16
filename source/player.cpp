@@ -26,7 +26,11 @@ double clockNow() { return SDL_GetTicks64() / 1000.0; }
 
 bool Player::init() {
     Mix_Init(MIX_INIT_FLAC | MIX_INIT_MP3 | MIX_INIT_OGG | MIX_INIT_OPUS);
-#ifdef GF_WINDOWED
+#if defined(GF_ANDROID)
+    // Float (the native sample rate, step two: a 24-bit file reaches Android whole), 16-bit if the device refuses it; at the song's
+    // own rate from its first song on (reopenAt)
+    if (Mix_OpenAudioDevice(48000, AUDIO_F32SYS, 2, 2048, nullptr, 0) != 0 && Mix_OpenAudioDevice(48000, AUDIO_S16SYS, 2, 2048, nullptr, 0) != 0) {
+#elif defined(GF_WINDOWED)
     // Exactly this, not what the device would rather have: the mix, its joins and its equalizer are 48 kHz 16-bit stereo; SDL converts
     if (Mix_OpenAudioDevice(48000, AUDIO_S16SYS, 2, 2048, nullptr, 0) != 0) {
 #else
@@ -41,6 +45,9 @@ bool Player::init() {
     frameBytes_ = (SDL_AUDIO_BITSIZE(fmt) / 8) * ch;
     channels_ = ch;
     float32_ = SDL_AUDIO_ISFLOAT(fmt);
+#ifdef GF_ANDROID
+    SDL_Log("SongateAudio: opened %d Hz, %s%d-bit, %d channels (the start)", rate_, float32_ ? "float " : "", int(SDL_AUDIO_BITSIZE(fmt)), ch);
+#endif
     eq_ = GfEq(float(rate_));
     fader_.init(rate_);
     outLoop_.init(rate_);
@@ -53,9 +60,82 @@ bool Player::init() {
     return true;
 }
 
+#ifdef GF_ANDROID
+/** The device closed and opened again at rate (Android: the native sample rate), its buffer kept at about the same length of time;
+ *  48 kHz again if the rate is refused. Everything that goes by the rate (the equalizer, the fades, the join's loop) follows. */
+void Player::ensureOpen() {
+    idleSince_ = -1;
+    if (!idleClosed_) return;
+    idleClosed_ = false;
+    if (!reopenAt(rate_, bpFormat_)) return;
+    if (ffActive_ || pvOn_ || streamOn_) Mix_HookMusic(&Player::ffHook, this);   // (the hook as it was)
+}
+
+bool Player::bitPerfect() const { return bpFormat_ != 0 && !plat::bitPerfectLost() && plat::bitPerfectConfirmed(); }
+
+bool Player::reopenAt(int rate, int format) {
+    Mix_HookMusicFinished(nullptr);
+    Mix_SetPostMix(nullptr, nullptr);
+    Mix_CloseAudio();
+    int samples = 2048;
+    while (samples < 16384 && double(samples) * 48000.0 < 2048.0 * rate) samples *= 2;
+    bool ok = false;
+    bpFormat_ = 0;
+    if (format) {   // bit-perfect: exactly the format claimed, nothing else (SDL's patch packs 32-bit into 24 when asked)
+        SDL_setenv("SONGATE_AAUDIO_I24", format == 24 ? "1" : "0", 1);
+        ok = Mix_OpenAudioDevice(rate, format == 16 ? AUDIO_S16SYS : AUDIO_S32SYS, 2, samples, nullptr, 0) == 0;
+        if (ok) {
+            Uint16 got = 0;
+            int r = 0, c = 0;
+            Mix_QuerySpec(&r, &got, &c);
+            ok = r == rate && c == 2 && got == (format == 16 ? AUDIO_S16SYS : AUDIO_S32SYS);
+            if (!ok) Mix_CloseAudio();
+        }
+        SDL_setenv("SONGATE_AAUDIO_I24", "0", 1);
+        if (ok) bpFormat_ = format;
+        else {
+            SDL_Log("SongateAudio: bit-perfect %d-bit %d Hz did not open (%s): the normal path", format, rate, Mix_GetError());
+            plat::bitPerfectEnd();
+        }
+    }
+    if (!ok) ok = Mix_OpenAudioDevice(rate, AUDIO_F32SYS, 2, samples, nullptr, 0) == 0;
+    if (!ok) {
+        SDL_Log("SongateAudio: %d Hz float refused (%s): 16-bit", rate, Mix_GetError());
+        ok = Mix_OpenAudioDevice(rate, AUDIO_S16SYS, 2, samples, nullptr, 0) == 0;
+    }
+    if (!ok) {
+        SDL_Log("SongateAudio: %d Hz refused (%s): 48000 Hz instead", rate, Mix_GetError());
+        ok = Mix_OpenAudioDevice(48000, AUDIO_F32SYS, 2, 2048, nullptr, 0) == 0 || Mix_OpenAudioDevice(48000, AUDIO_S16SYS, 2, 2048, nullptr, 0) == 0;
+    }
+    if (!ok) {
+        SDL_Log("SongateAudio: no audio device: %s", Mix_GetError());
+        return false;
+    }
+    Uint16 fmt = 0;
+    int ch = 2;
+    Mix_QuerySpec(&rate_, &fmt, &ch);
+    frameBytes_ = (SDL_AUDIO_BITSIZE(fmt) / 8) * ch;
+    channels_ = ch;
+    float32_ = SDL_AUDIO_ISFLOAT(fmt);
+    int32_ = !float32_ && SDL_AUDIO_BITSIZE(fmt) == 32;
+    eq_ = GfEq(float(rate_));
+    eqNew_ = true;   // (its settings again, at this rate: the hook takes them)
+    fader_.init(rate_);
+    outLoop_.init(rate_);
+    Mix_SetPostMix(&Player::postMix, this);
+    Mix_HookMusicFinished(&Player::musicFinished);
+    SDL_Log("SongateAudio: opened %d Hz, %s%d-bit, %d channels, %d frames (asked %d Hz)%s", rate_, SDL_AUDIO_ISFLOAT(fmt) ? "float " : "",
+            bpFormat_ == 24 ? 24 : int(SDL_AUDIO_BITSIZE(fmt)), ch, samples, rate, bpFormat_ ? ", bit-perfect" : "");
+    return true;
+}
+#endif
+
 void Player::shutdown() {
     bg_ = nullptr;   // the background player keeps playing: that is what it is for
     stop();
+#ifdef GF_ANDROID
+    if (bpFormat_) plat::bitPerfectEnd();   // (the output back to Android's mixer)
+#endif
     prepJoin();
     prepDec_.reset();   // (before the feeder stops: a prepared decoder reads ahead on it)
     ffFeederStop();
@@ -72,6 +152,9 @@ bool Player::load(const std::string& path, bool paused, double fade, const autom
 #ifdef GF_PREVIEW
     const auto loadT0 = std::chrono::steady_clock::now();
 #endif
+#ifdef GF_ANDROID
+    ensureOpen();
+#endif
     prepJoin();
     std::unique_ptr<FfDecoder> d;
     bool ff = false;
@@ -85,10 +168,42 @@ bool Player::load(const std::string& path, bool paused, double fade, const autom
     } else {
         prepDec_.reset();
         d = std::make_unique<FfDecoder>();
-        ff = !float32_ && channels_ == 2 && d->open(path, rate_, channels_);   // the hook writes 16-bit stereo, as asked for
+        ff = (!float32_ || sizeof(FfSample) == 4) && channels_ == 2 && d->open(path, rate_, channels_);   // the hook writes stereo in the device's format
         if (ff && mix && mix->offset > 0.001 && d->skip(mix->offset)) offset = mix->offset;   // Automix: from its first beat
         if (ff) d->prefetch(rate_ * 3, rate_ / 2);   // read ahead (ffdecoder.hpp): half a second now, the rest on the feeder
     }
+#ifdef GF_ANDROID
+    // The native sample rate (the user's ROM prompt, 2026-11-15; Android only): a song that is not joined into the last one plays at
+    // its own rate, the device opened again when that changes (never between songs of one rate: gapless and quick skips stay as
+    // they are). A crossfade or an Automix join keeps the rate open (the user: "Joins win"); so do listening together, a join's
+    // preview, a stream and the opening's bells, which all go by the open rate
+    {
+        // (a song skipped to by hand fades in 0.3 s only to spare a click: not a join, the new rate wins there too)
+        const bool joining = (fade >= 0.5 || mix) && !paused && ffActive_ && !ffPaused_ && !ffEnded_ && cur_;
+        const int src = ff ? d->sourceRate() : 0;
+        // (to 384 kHz: SongateOS's prompt, 2026-11-15; it was 192. Past it, DSD's 2.8 MHz and up: 352.8 kHz, of its own family)
+        const int want = src > 384000 ? (src % 44100 == 0 ? 352800 : 384000) : std::clamp(src, 8000, 384000);
+        const bool free = !joining && !timed && !syncOn_ && !streamOn_ && !pvOn_ && !oncePlaying_;
+        // Bit-perfect (the user's ROM prompt, 2026-11-15): a lossless song, nothing changing the sound (the app says), the output
+        // offering its rate and depth: claimed before the stream opens. Anything else: let go, the normal path
+        int format = 0;
+        if (free && src > 0) {
+            const int bits = d->sourceBits();
+            if (bpWanted_ && bits > 0 && src == want) format = plat::bitPerfectBegin(src, bits);
+            else if (bpFormat_) plat::bitPerfectEnd();
+        }
+        if (src > 0 && free && (want != rate_ || format != bpFormat_ || plat::bitPerfectLost())) {
+            stop();   // (the song before ends here, as it would below)
+            if (reopenAt(want, format)) {
+                d = std::make_unique<FfDecoder>();   // again, at the rate now open
+                offset = 0;
+                ff = d->open(path, rate_, channels_);
+                if (ff && mix && mix->offset > 0.001 && d->skip(mix->offset)) offset = mix->offset;
+                if (ff) d->prefetch(rate_ * 3, rate_ / 2);
+            }
+        }
+    }
+#endif
 #ifdef GF_PREVIEW
     if (mix)   // the PC preview checks it with this
         SDL_Log("load: %s, %.1f ms on the main thread", prepared ? "prepared ahead" : "opened here",
@@ -120,7 +235,8 @@ bool Player::load(const std::string& path, bool paused, double fade, const autom
         Mix_FreeMusic(music_);
         music_ = nullptr;
     }
-    const bool cross = fade > 0.05 && !paused && ffActive_ && !ffPaused_ && !ffEnded_ && cur_;
+    // (bit-perfect: no crossfade, not even a hand skip's 0.3 s: the next song starts as it is, the last one stops)
+    const bool cross = fade > 0.05 && !paused && ffActive_ && !ffPaused_ && !ffEnded_ && cur_ && !bpFormat_;
     std::unique_ptr<FfDecoder> old1, old2;   // closed after the lock is let go
     {
         std::lock_guard<std::mutex> g(ffLock_);
@@ -172,6 +288,9 @@ bool Player::load(const std::string& path, bool paused, double fade, const autom
 }
 
 void Player::preview(std::vector<int16_t>&& pcm) {
+#ifdef GF_ANDROID
+    ensureOpen();
+#endif
     std::vector<int16_t> old;
     {
         std::lock_guard<std::mutex> g(ffLock_);
@@ -185,6 +304,9 @@ void Player::preview(std::vector<int16_t>&& pcm) {
 }
 
 void Player::streamBegin(std::function<int(int16_t*, int)> read) {
+#ifdef GF_ANDROID
+    ensureOpen();
+#endif
     {
         std::lock_guard<std::mutex> g(ffLock_);
         stream_ = std::move(read);
@@ -237,6 +359,24 @@ void Player::stop() {
 }
 
 void Player::update() {
+#ifdef GF_ANDROID
+    // Nothing to play for 5 s (paused, stopped, nothing loaded): the device closed, so Android's mixer goes to standby and the device
+    // sleeps (the SongateOS session, 2026-11-15: a paused Songate's stream ran on silence all night; AudioMix held 9 h 26 min of a
+    // day, about 40 % of the battery). ensureOpen brings it back before anything sounds
+    if (!remote()) {
+        const bool idle = !music_ && (!ffActive_ || ffPaused_) && !pvOn_ && !streamOn_ && !oncePlaying_ && !syncOn_;
+        const double now = clockNow();
+        if (!idle) idleSince_ = -1;
+        else if (idleSince_ < 0) idleSince_ = now;
+        else if (!idleClosed_ && now - idleSince_ >= 5) {
+            Mix_HookMusicFinished(nullptr);
+            Mix_SetPostMix(nullptr, nullptr);
+            Mix_CloseAudio();
+            idleClosed_ = true;
+            SDL_Log("SongateAudio: closed after 5 s with nothing to play (Android's mixer may sleep)");
+        }
+    }
+#endif
     if (!doneSet_.load()) return;   // taking the lock every frame cost a buffer of silence whenever the callback came then
     std::unique_ptr<FfDecoder> done;
     {
@@ -247,7 +387,7 @@ void Player::update() {
 }
 
 void Player::prepare(const std::string& path, double offset) {
-    if (remote() || float32_ || channels_ != 2) return;
+    if (remote() || (float32_ && sizeof(FfSample) != 4) || channels_ != 2) return;
     prepJoin();
     prepDec_.reset();
     prepPath_ = path;
@@ -285,6 +425,9 @@ Player::Trace Player::takeTrace() {
 void Player::togglePause() {
     if (trap && trap(false, 0)) return;
     if (remote()) { bg_->toggle(clockNow()); return; }
+#ifdef GF_ANDROID
+    ensureOpen();
+#endif
     if (ffActive_) { ffPaused_ = !ffPaused_; return; }
     if (!music_) return;
     if (Mix_PausedMusic()) Mix_ResumeMusic();
@@ -343,6 +486,9 @@ void Player::SyncFit::add(double frame, double when) {
 }
 
 void Player::syncEnable(bool on) {
+#ifdef GF_ANDROID
+    if (on) ensureOpen();
+#endif
     if (syncOn_ == on) return;
     syncWait_ = syncRun_ = syncLost_ = false;
     prepExact_ = false;
@@ -405,6 +551,9 @@ void Player::syncTick(int frames, double now) {
 }
 
 void Player::playOnce(const std::vector<float>* sound) {
+#ifdef GF_ANDROID
+    ensureOpen();
+#endif
     if (rate_ != 48000 || channels_ != 2 || oncePlaying_) return;
     once_ = sound;
     onceAt_ = 0;
@@ -449,7 +598,8 @@ void Player::ffHook(void* self, unsigned char* stream, int len) {
     auto* p = static_cast<Player*>(self);
     const auto t0 = std::chrono::steady_clock::now();
     const bool syncing = p->syncOn_;
-    if (syncing) p->syncTick(len / 4, std::chrono::duration<double>(t0.time_since_epoch()).count());
+    const int fb = p->frameBytes_;   // (4: 16-bit stereo; 8: float)
+    if (syncing) p->syncTick(len / fb, std::chrono::duration<double>(t0.time_since_epoch()).count());
     memset(stream, 0, size_t(len));
     std::unique_lock<std::mutex> lk(p->ffLock_, std::try_to_lock);
     if (!lk.owns_lock()) { p->lockMiss_++; return; }   // a load or seek is being made: one buffer of silence
@@ -459,8 +609,8 @@ void Player::ffHook(void* self, unsigned char* stream, int len) {
     }
     if (p->streamOn_) {
         // as a track: the spectrum fed before the effects; levelling, the equalizer, then the volume (yours, times the iPhone's)
-        auto* out = reinterpret_cast<int16_t*>(stream);
-        const int want = std::min(len / 4, 8192), n = p->stream_(out, want);
+        auto* out = reinterpret_cast<int16_t*>(stream);   // (its 16-bit fits in the buffer either way: read before it is written over)
+        const int want = std::min(len / fb, 8192), n = p->stream_(out, want);
         float* f = p->streamMono_;
         for (int i = 0; i < n * 2; i++) f[i] = out[i] * (1.f / 32768.f);
         p->feedRing(f, n);
@@ -479,19 +629,22 @@ void Player::ffHook(void* self, unsigned char* stream, int len) {
             f[i * 2 + 1] *= vol;
         }
         p->vol_ = vol;
-        for (int i = 0; i < n * 2; i++) out[i] = int16_t(std::lrint(std::clamp(f[i] * 32767.f, -32768.f, 32767.f)));
+        if (p->float32_) for (int i = 0; i < n * 2; i++) reinterpret_cast<float*>(stream)[i] = std::clamp(f[i], -1.f, 1.f);
+        else if (p->int32_) for (int i = (n - 1) * 2 + 1; i >= 0; i--) reinterpret_cast<int32_t*>(stream)[i] = int32_t(std::clamp(double(f[i]) * 2147483648.0, -2147483648.0, 2147483647.0));
+        else for (int i = 0; i < n * 2; i++) out[i] = int16_t(std::lrint(std::clamp(f[i] * 32767.f, -32768.f, 32767.f)));
         return;
     }
     if (p->pvOn_) {   // the join editor's Listen, at the volume set (no levelling or equalizer: as the two tracks are)
         auto* out = reinterpret_cast<int16_t*>(stream);
-        const size_t at = p->pvAt_, n = std::min(size_t(len / 4), p->pv_.size() / 2 - std::min(at, p->pv_.size() / 2));
+        const size_t at = p->pvAt_, n = std::min(size_t(len / fb), p->pv_.size() / 2 - std::min(at, p->pv_.size() / 2));
         const float v = p->volume_.load();
-        for (size_t i = 0; i < n * 2; i++) out[i] = int16_t(std::lrint(p->pv_[at * 2 + i] * v));
+        if (p->float32_) for (size_t i = 0; i < n * 2; i++) reinterpret_cast<float*>(stream)[i] = p->pv_[at * 2 + i] * v * (1.f / 32768.f);
+        else if (p->int32_) for (size_t i = 0; i < n * 2; i++) reinterpret_cast<int32_t*>(stream)[i] = int32_t(std::lrint(p->pv_[at * 2 + i] * v)) * 65536;
+        else for (size_t i = 0; i < n * 2; i++) out[i] = int16_t(std::lrint(p->pv_[at * 2 + i] * v));
         p->pvAt_ = at + n;
         return;
     }
-    int16_t* const stream16 = reinterpret_cast<int16_t*>(stream);
-    int lead = 0, frameCount = len / 4, extra = 0;   // listening together: frames of silence first, and one frame taken more or fewer
+    int lead = 0, frameCount = std::min(len / fb, OutMax), extra = 0;   // listening together: frames of silence first, and one frame taken more or fewer
     if (syncing && p->syncWait_) {
         const double left = (p->syncWantT_.load() - p->syncBase_) * p->rate_;
         if (left >= frameCount) return;   // not yet
@@ -503,9 +656,9 @@ void Player::ffHook(void* self, unsigned char* stream, int len) {
         p->ffPaused_ = false;
         lead = left > 0 ? int(left) : 0;
         if (left < -1 && p->cur_) {   // late: what should have played already is passed over
-            int16_t skip[1024 * 2];
+            float skip[1024 * 2];
             for (long long late = (long long)-left; late > 0;) {
-                const int k = p->cur_->read(skip, int(std::min(late, 1024LL)));
+                const int k = p->cur_->readF(skip, int(std::min(late, 1024LL)));
                 if (k <= 0) break;
                 late -= k;
                 p->frames_ += k;
@@ -521,7 +674,7 @@ void Player::ffHook(void* self, unsigned char* stream, int len) {
             return;
         }
     }
-    if (!p->ffActive_ || p->ffPaused_) return;
+    if (!p->ffActive_ || p->ffPaused_ || p->rateHold_) return;
     if (syncing && p->syncRebase_) {
         p->syncRebase_ = false;
         p->syncT_ = p->syncBase_ + double(p->delay_) / p->rate_;
@@ -545,7 +698,7 @@ void Player::ffHook(void* self, unsigned char* stream, int len) {
         if (p->syncOwed_ >= 1) { extra = 1; p->syncOwed_ -= 1; }
         else if (p->syncOwed_ <= -1) { extra = -1; p->syncOwed_ += 1; }
     }
-    int16_t* out = extra ? p->syncBuf_ : stream16 + lead * 2;
+    float* out = p->finalF_;   // (written to the stream below: in its format, after the frame taken or given back if any)
     const int frames = extra ? frameCount + extra : frameCount - lead;
 #ifdef GF_DEV
     const long long chirpAt = p->frames_.load();
@@ -557,12 +710,13 @@ void Player::ffHook(void* self, unsigned char* stream, int len) {
         const int dd = p->out_ ? int(std::min<long long>(p->delay_, n)) : 0;
         int got = 0;
         long long used = 0;   // the track's own frames those were (fewer or more than got while its tempo is matched)
+        const bool stretching = p->stretch_.active();
         if (!p->ffEnded_ && p->cur_ && dd < n) {
-            if (p->stretch_.active()) got = p->stretch_.read([p](int16_t* b, int k) { return p->cur_->read(b, k); }, p->pcmIn_, n - dd, used);
-            else used = got = p->cur_->read(p->pcmIn_, n - dd);
+            if (stretching) got = p->stretch_.read([p](int16_t* b, int k) { return p->cur_->read(b, k); }, p->pcmIn_, n - dd, used);
+            else used = got = p->cur_->readF(p->mixIn_ + dd * 2, n - dd);   // (as decoded: Android's floats whole)
         }
         std::fill(p->mixIn_, p->mixIn_ + dd * 2, 0.f);
-        for (int i = 0; i < got * 2; i++) p->mixIn_[dd * 2 + i] = p->pcmIn_[i] * (1.f / 32768.f);
+        if (stretching) for (int i = 0; i < got * 2; i++) p->mixIn_[dd * 2 + i] = p->pcmIn_[i] * (1.f / 32768.f);
         std::fill(p->mixIn_ + (dd + got) * 2, p->mixIn_ + n * 2, 0.f);
         p->frames_ += used;
         if (dd < n && got < n - dd && !p->ffEnded_ && p->cur_ && p->cur_->atEnd()) {
@@ -599,6 +753,14 @@ void Player::ffHook(void* self, unsigned char* stream, int len) {
         // levelling, the equalizer, then the volume: last, so it works as with the EQ off (gfeq.hpp)
         float vol = p->vol_.load(), lv = p->level_.load();
         const float want = p->volume_.load(), wantLv = p->levelTarget_.load();
+        // bit-perfect: none of them, not even at 1 while a ramp settles (SongateOS, 2026-11-16: any change to a sample breaks it,
+        // MQA's decoding with it); the device's own volume does the volume. Where they were left, for the normal path after
+        if (p->bpFormat_) {
+            p->vol_ = want;
+            p->level_ = wantLv;
+            memcpy(out + at * 2, p->mixIn_, size_t(n) * 2 * sizeof(float));
+            continue;
+        }
         for (int i = 0; i < n; i++) {
             lv += (wantLv - lv) * 0.00005f;    // ~0.4 s
             p->mixIn_[i * 2] *= lv;
@@ -612,7 +774,7 @@ void Player::ffHook(void* self, unsigned char* stream, int len) {
             p->mixIn_[i * 2 + 1] *= vol;
         }
         p->vol_ = vol;
-        for (int i = 0; i < n * 2; i++) out[at * 2 + i] = int16_t(std::lrint(std::clamp(p->mixIn_[i] * 32767.f, -32768.f, 32767.f)));
+        memcpy(out + at * 2, p->mixIn_, size_t(n) * 2 * sizeof(float));
     }
 #ifdef GF_DEV
     if (p->syncChirps_) {
@@ -628,11 +790,19 @@ void Player::ffHook(void* self, unsigned char* stream, int len) {
 #else
             const double phase = 2 * Pi * (1500 * x + 1000 * x * x) * (Len - 1) / p->rate_;
 #endif
-            const int v = int(9000 * sin(phase) * (0.5 - 0.5 * cos(2 * Pi * x)));
-            for (int c = 0; c < 2; c++) out[i * 2 + c] = int16_t(std::clamp(int(out[i * 2 + c]) + v, -32768, 32767));
+            const float v = float(9000 * sin(phase) * (0.5 - 0.5 * cos(2 * Pi * x))) * (1.f / 32768.f);
+            for (int c = 0; c < 2; c++) out[i * 2 + c] += v;
         }
     }
 #endif
+    // into the stream, in the device's own format: a float device gets the floats as they are (the native rate, step two)
+    // bit-perfect: a 16-bit sample came in as n/32768 and a 24 or 32-bit one as n/2^31: times the same, the whole number again
+    const float s16 = p->bpFormat_ == 16 ? 32768.f : 32767.f;
+    auto put = [p, stream, s16](int i, float v) {
+        if (p->float32_) reinterpret_cast<float*>(stream)[i] = std::clamp(v, -1.f, 1.f);
+        else if (p->int32_) reinterpret_cast<int32_t*>(stream)[i] = int32_t(std::clamp(double(v) * 2147483648.0, -2147483648.0, 2147483647.0));
+        else reinterpret_cast<int16_t*>(stream)[i] = int16_t(std::lrint(std::clamp(v * s16, -32768.f, 32767.f)));
+    };
     if (extra) {
         // frames + or - 1 into the buffer: a cubic through the last frame before and the frames round each place, so that the join is smooth
         const double step = double(frames) / frameCount;
@@ -643,10 +813,11 @@ void Player::ffHook(void* self, unsigned char* stream, int len) {
             for (int c = 0; c < 2; c++) {
                 const float a = k > 0 ? out[(k - 1) * 2 + c] : p->syncLast_[c], b = out[k * 2 + c];
                 const float d = out[std::min(k + 1, frames - 1) * 2 + c], e = out[std::min(k + 2, frames - 1) * 2 + c];
-                const float v = b + 0.5f * u * (d - a + u * (2 * a - 5 * b + 4 * d - e + u * (3 * (b - d) + e - a)));
-                stream16[i * 2 + c] = int16_t(std::lrint(std::clamp(v, -32768.f, 32767.f)));
+                put(i * 2 + c, b + 0.5f * u * (d - a + u * (2 * a - 5 * b + 4 * d - e + u * (3 * (b - d) + e - a))));
             }
         }
+    } else {
+        for (int i = 0; i < frames * 2; i++) put(lead * 2 + i, out[i]);
     }
     if (syncing) for (int c = 0; c < 2; c++) p->syncLast_[c] = out[(frames - 1) * 2 + c];
     // the trace: how long this took, against how long the buffer plays
@@ -661,7 +832,13 @@ void Player::postMix(void* self, unsigned char* stream, int len) {
 #ifdef GF_AIRPLAY
     auto* p = static_cast<Player*>(self);
     if (AirSend* a = p->air_.load(std::memory_order_acquire); a && a->tapping()) {
-        a->feed(stream, len / p->frameBytes_, p->float32_, p->channels_, int(p->rate_));
+        if (p->int32_) {   // (bit-perfect's 32-bit: to AirPlay as floats)
+            const int fr = std::min(len / p->frameBytes_, OutMax), ch = p->channels_;
+            for (int i = 0; i < fr * ch && i < (OutMax + 2) * 2; i++) p->finalF_[i] = float(reinterpret_cast<const int32_t*>(stream)[i] / 2147483648.0);
+            a->feed(p->finalF_, fr, true, ch, int(p->rate_));
+        } else {
+            a->feed(stream, len / p->frameBytes_, p->float32_, p->channels_, int(p->rate_));
+        }
         if (a->silenceHere()) memset(stream, 0, size_t(len));
     }
 #endif
@@ -674,12 +851,15 @@ void Player::postMixInner(void* self, unsigned char* stream, int len) {
     if (!moved) { cores::moveHere(cores::Audio); moved = true; }
     auto* p = static_cast<Player*>(self);
     if (p->oncePlaying_ && p->onceStop_) { p->oncePlaying_ = false; p->onceStop_ = false; }
+    // no sound of Songate's own over a bit-perfect stream (SongateOS, 2026-11-16): it would change the samples
+    if (p->oncePlaying_ && p->bpFormat_ && p->ffActive_ && !p->ffPaused_) p->oncePlaying_ = false;
     if (p->oncePlaying_) {
         const std::vector<float>& s = *p->once_;
         const size_t n = std::min(size_t(len / p->frameBytes_) * 2, s.size() - p->onceAt_);
         const float v = p->volume_.load();
         for (size_t i = 0; i < n; i++) {
             if (p->float32_) { float& o = reinterpret_cast<float*>(stream)[i]; o = std::clamp(o + s[p->onceAt_ + i] * v, -1.f, 1.f); }
+            else if (p->int32_) { int32_t& o = reinterpret_cast<int32_t*>(stream)[i]; o = int32_t(std::clamp(double(o) + s[p->onceAt_ + i] * v * 2147483648.0, -2147483648.0, 2147483647.0)); }
             else { int16_t& o = reinterpret_cast<int16_t*>(stream)[i]; o = int16_t(std::clamp(int(o) + int(s[p->onceAt_ + i] * v * 32767.f), -32768, 32767)); }
         }
         p->onceAt_ += n;
@@ -711,6 +891,7 @@ void Player::postMixInner(void* self, unsigned char* stream, int len) {
                     if (p->bedPhase_ > 6.283185307179586) p->bedPhase_ -= 6.283185307179586;
                     for (int c = 0; c < ch; c++) {
                         if (p->float32_) { float& o = reinterpret_cast<float*>(stream)[i * ch + c]; o = std::clamp(o + v, -1.f, 1.f); }
+                        else if (p->int32_) { int32_t& o = reinterpret_cast<int32_t*>(stream)[i * ch + c]; o = int32_t(std::clamp(double(o) + v * 2147483648.0, -2147483648.0, 2147483647.0)); }
                         else { int16_t& o = reinterpret_cast<int16_t*>(stream)[i * ch + c]; o = int16_t(std::clamp(int(o) + int(v * 32767.f), -32768, 32767)); }
                     }
                 }
@@ -724,6 +905,7 @@ void Player::postMixInner(void* self, unsigned char* stream, int len) {
                 const float v = float(micm::kChirpLevel * micm::chirpAt(x, slot));
                 for (int c = 0; c < ch; c++) {
                     if (p->float32_) { float& o = reinterpret_cast<float*>(stream)[i * ch + c]; o = std::clamp(o + v, -1.f, 1.f); }
+                    else if (p->int32_) { int32_t& o = reinterpret_cast<int32_t*>(stream)[i * ch + c]; o = int32_t(std::clamp(double(o) + v * 2147483648.0, -2147483648.0, 2147483647.0)); }
                     else { int16_t& o = reinterpret_cast<int16_t*>(stream)[i * ch + c]; o = int16_t(std::clamp(int(o) + int(v * 32767.f), -32768, 32767)); }
                 }
             }
@@ -743,6 +925,9 @@ void Player::postMixInner(void* self, unsigned char* stream, int len) {
             if (p->float32_) {
                 auto* s = reinterpret_cast<float*>(stream);
                 for (int i = 0; i < n; i++) s[i] = std::clamp(s[i] * lv, -1.f, 1.f);
+            } else if (p->int32_) {
+                auto* s = reinterpret_cast<int32_t*>(stream);
+                for (int i = 0; i < n; i++) s[i] = int32_t(std::clamp(double(s[i]) * lv, -2147483648.0, 2147483647.0));
             } else {
                 auto* s = reinterpret_cast<int16_t*>(stream);
                 for (int i = 0; i < n; i++) s[i] = int16_t(std::clamp(int(std::lround(s[i] * lv)), -32768, 32767));
@@ -759,6 +944,7 @@ void Player::postMixInner(void* self, unsigned char* stream, int len) {
         float v = 0;
         for (int c = 0; c < ch; c++)
             v += p->float32_ ? reinterpret_cast<const float*>(stream)[i * ch + c]
+                 : p->int32_ ? float(reinterpret_cast<const int32_t*>(stream)[i * ch + c] / 2147483648.0)
                              : reinterpret_cast<const int16_t*>(stream)[i * ch + c] / 32768.f;
         p->ring_[w++ % Ring] = v * gain;
     }

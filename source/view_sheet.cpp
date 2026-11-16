@@ -97,6 +97,142 @@ bool App::keyboard(const char* header, const std::string& initial, std::string& 
     return true;
 }
 
+// ------------------------------------------------------------------ Search's keyboard
+
+/* Search's own keyboard (the user chose "B", 2026-11-15: "a search card with an in app keyboard (switch and Android)"): a card at
+ * the foot with the field and the keys; what is typed searches at once, the results showing above it. The console's and the
+ * phone's alike; the PC keeps its own typing card. Touch, the D-pad and A; B takes a letter back (nothing typed: closes), Y closes,
+ * + searches, X is a space. A tap above the card closes it, the results then there to touch. */
+namespace {
+const char* const KbLetters[4] = { "1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm" };
+const char* const KbSymbols[4] = { "1234567890", "-/:;()&@'\"", ".,?!#%+=*", "_$~<>[]" };
+}  // namespace
+
+void App::openSearchKb() {
+    skb_ = {};
+    skb_.open = true;
+    skb_.text = route.view == View::Search ? route.query : "";
+    skb_.pushed = route.view == View::Search;
+    skb_.at = time;
+    skb_.focusWas = ui.focusedId();
+    ui.focus(uid("skb.k", 10));   // q
+}
+
+bool App::openTextKb(const std::string& initial, std::function<void(const std::string&)> set, const char* field) {
+#if defined(GF_WINDOWED) && !defined(GF_ANDROID)
+    (void)initial; (void)set; (void)field;
+    return false;
+#else
+    openSearchKb();
+    skb_.text = initial;
+    skb_.set = std::move(set);
+    skb_.field = field;
+    return true;
+#endif
+}
+
+void App::typingMark(const char* field, float fx, float fy, float fw, float fh, float rad, float textX, const std::string& text, const Font& f, float maxW) {
+    if (!skb_.open || strcmp(skb_.field, field) != 0) return;
+    g.roundStroke(fx, fy, fw, fh, rad, 1.5f, pal.accent, 0.8f);
+    const float cx = textX + (text.empty() ? 0.f : std::min(g.measureF(text, f), maxW)) + 1;
+    if (std::fmod(time - skb_.at, 1.06) < 0.62) g.rect(cx, fy + fh / 2 - std::min(11.f, fh / 2 - 6), 1.5f, std::min(22.f, fh - 12), pal.text);
+}
+
+void App::closeSearchKb() {
+    if (!skb_.open) return;
+    skb_.open = false;
+    ui.focusDefault();
+}
+
+/** The text changed: searched at once, the Search page under the card (Back from it: the page the search began on). */
+void App::searchKbSet(const std::string& t) {
+    skb_.text = t;
+    if (skb_.set) { skb_.set(t); return; }   // another search field: it takes the words as they come
+    const Id f = ui.focusedId();
+    if (t.empty()) { if (route.view == View::Search) navigate(View::Search, -1, std::string(), false); }
+    else {
+        navigate(View::Search, -1, t, !skb_.pushed && route.view != View::Search);
+        skb_.pushed = true;
+    }
+    ui.focus(f);   // (navigate puts the focus on the page's first item: it stays on the key)
+}
+
+void App::searchKbType(const char* s) {
+    std::string in = s;
+    if (skb_.shift) {
+        for (char& c : in) c = char(toupper(static_cast<unsigned char>(c)));
+        skb_.shift = false;
+    }
+    if (skb_.text.size() + in.size() < 200) searchKbSet(skb_.text + in);
+}
+
+void App::searchKbBack() {
+    std::string t = skb_.text;
+    if (t.empty()) return;
+    size_t i = t.size() - 1;
+    while (i > 0 && (static_cast<unsigned char>(t[i]) & 0xC0) == 0x80) i--;   // a whole letter
+    t.erase(i);
+    searchKbSet(t);
+}
+
+void App::drawSearchKb() {
+    if (!skb_.open) return;
+    ui.region(Region::Modal);
+    const float a = std::clamp(float(time - skb_.at) / 0.18f, 0.f, 1.f), lift = (1 - a) * 24;
+    const float W = float(css::W), H = float(css::H);
+    // the card: the whole width, upright and sideways (the user, 2026-11-15: "on landscape stretch it to full")
+    const float cw = W, cx = 0;
+    const float side = 10, gap = 6, kw = (cw - side * 2 - gap * 9) / 10, kh = W < 600 ? 46.f : 44.f;
+    // the keys alone: what is typed shows in the page's own search bar (the user, 2026-11-15: "it should only show the keyboard
+    // and the words appear on the upper search"); the page is not dimmed (the card's top corners showed it undimmed)
+    // (a rounded card: the user chose "A" over a flat panel, 2026-11-15)
+    const float cardH = 12 + kh * 5 + gap * 4 + 16;
+    const float y0 = H - cardH + lift;
+    if (ui.item(uid("skb.away"), { 0, 0, W, H - cardH }, 0)) closeSearchKb();   // a tap above: closed, what was found there to touch
+    g.roundRect(cx, y0, cw, cardH + 30, 22, pal.surface2, a);
+    g.roundStroke(cx, y0, cw, cardH + 30, 22, 1, pal.text, 0.1f * a);
+    // (the page's bar follows the text: its × may have emptied it)
+    if (!skb_.set && route.view == View::Search && route.query != skb_.text) skb_.text = route.query;
+    float ky = y0 + 12;
+    const Font kf{ css::Md }, bf{ css::Base, Weight::SemiBold };
+    auto key = [&](int idx, float x, float y, float w, const char* label, const char* icon, bool accent, bool lit = false) {
+        const Id id = uid("skb.k", idx);
+        const bool hit = ui.item(id, { x, y - gap / 2, w, kh + gap }, 12);
+        const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
+        if (accent) g.roundRect(x, y, w, kh, 12, hot ? Rgb{ pal.accent.r * 0.88f + pal.text.r * 0.12f, pal.accent.g * 0.88f + pal.text.g * 0.12f, pal.accent.b * 0.88f + pal.text.b * 0.12f } : pal.accent, a);
+        else if (lit) { g.roundRect(x, y, w, kh, 12, pal.accent, 0.2f * a); g.roundStroke(x, y, w, kh, 12, 1, pal.accent, 0.5f * a); }
+        else g.roundRect(x, y, w, kh, 12, pal.text, (hot ? 0.16f : 0.08f) * a);
+        const Rgb ink = accent ? pal.onAccent : lit ? pal.accentInk : pal.text;
+        if (icon) g.icon(icon, x + w / 2, y + kh / 2, 18, ink, a);
+        else g.textC(label, accent ? bf : kf, x + w / 2, y + kh / 2, ink, a, Align::Center);
+        return hit;
+    };
+    const char* const* rows = skb_.symbols ? KbSymbols : KbLetters;
+    int idx = 0;
+    for (int r = 0; r < 4; r++) {
+        const int n = int(strlen(rows[r]));
+        float x = cx + side + (10 - n) * (kw + gap) / 2;
+        if (r == 3) {   // shift at the left, delete at the right
+            if (key(100, cx + side, ky, kw * 1.5f, "aA", nullptr, false, skb_.shift)) skb_.shift = !skb_.shift;
+            x = cx + side + kw * 1.5f + gap + (7 - n) * (kw + gap) / 2;
+        }
+        for (int i = 0; i < n; i++, idx++) {
+            char ch[2] = { rows[r][i], 0 };
+            if (skb_.shift && !skb_.symbols) ch[0] = char(toupper(static_cast<unsigned char>(ch[0])));
+            if (key(idx, x + i * (kw + gap), ky, kw, ch, nullptr, false)) { ch[0] = rows[r][i]; searchKbType(ch); }
+        }
+        if (r == 3) {
+            const float dx = cx + side + kw * 1.5f + gap + 7 * (kw + gap);
+            if (key(101, dx, ky, cx + cw - side - dx, nullptr, ICON_BACK, false)) searchKbBack();
+        }
+        ky += kh + gap;
+    }
+    const float bw1 = kw * 1.5f, bw3 = kw * 2.6f;
+    if (key(102, cx + side, ky, bw1, "?#!", nullptr, false, skb_.symbols)) skb_.symbols = !skb_.symbols;
+    if (key(103, cx + side + bw1 + gap, ky, cw - side * 2 - bw1 - bw3 - gap * 2, "space", nullptr, false)) searchKbType(" ");
+    if (key(104, cx + cw - side - bw3, ky, bw3, "Search", nullptr, true)) closeSearchKb();
+}
+
 void App::editTag(const char* field, const char* label) {
     std::string v;
     if (keyboard(label, sheet.draft[field], v)) sheet.draft[field] = v;

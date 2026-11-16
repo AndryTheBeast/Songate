@@ -572,16 +572,17 @@ void Gfx::band(float x, float y, float w, float h, const Rgb& c, float alpha) {
     SDL_RenderCopyF(r_, bandTex_, nullptr, &dst);
 }
 
-void Gfx::bandInPill(float x, float y, float w, float h, float bx, float bw, const Rgb& c, float alpha) {
+void Gfx::bandInPill(float x, float y, float w, float h, float bx, float bw, const Rgb& c, float alpha, float rad) {
     if (ghost_ || !bandTex_ || bw <= 0) return;
     const float x0 = std::max(bx, x), x1 = std::min(bx + bw, x + w);
     if (x1 <= x0) return;
     const SDL_Color s = sdl(c, alpha);
-    const float r = h / 2, cy = y + r;
-    // the pill's half height at px: its round ends are half circles
+    const float cy = y + h / 2;
+    const float r = rad < 0 ? h / 2 : std::min(rad, h / 2);   // (a chip's own corners: the shape's half height less them is straight)
+    // the shape's half height at px: its ends are quarter circles of r on a straight middle (a pill: half circles)
     auto half = [&](float px) {
         const float d = px < x + r ? x + r - px : px > x + w - r ? px - (x + w - r) : 0.f;
-        return std::sqrt(std::max(0.f, r * r - d * d));
+        return (h / 2 - r) + std::sqrt(std::max(0.f, r * r - d * d));
     };
     // columns across the band, each the band's texture at its own u (its soft profile) between the pill's edges, feathered
     // a pixel there (as Gfx::shape: a hard edge showed its steps round the ends)
@@ -1027,13 +1028,26 @@ int Gfx::textC(const std::string& s, Font f, float x, float cy, const Rgb& c, fl
     return text(s, f, x, cy - lineHeight(f) / 2.f, c, alpha, a, maxW);
 }
 
+/** The font's own kerning between two letters (Inter tucks "A" and "C" together): what the pair measures less the two apart.
+ *  Letters spaced out one by one lost it, and "FLAC" had a gap between A and C (the user, 2026-11-15). Measured, so cached */
+float Gfx::pairKern(const std::string& a, const std::string& b, Font f) {
+    if (a.empty() || b.empty() || a == " " || b == " ") return 0;
+    return measureF(a + b, f) - measureF(a, f) - measureF(b, f);
+}
+
 int Gfx::measureSpaced(const std::string& s, Font f, float em) {
+    // spacing under half a pixel (a chip's 0.02 em): the word whole, as the font spaces it (letter by letter, each letter's
+    // own rounding showed: "M QA", the user, 2026-11-16)
+    if (em * f.size < 0.5f) return int(std::lround(measureF(s, f)));
     float w = 0;
     int n = 0;
+    std::string prev;
     for (size_t i = 0; i < s.size();) {
         const size_t st = i;
         nextCodepoint(s, i);
-        w += measureF(s.substr(st, i - st), f);
+        const std::string ch = s.substr(st, i - st);
+        w += measureF(ch, f) + pairKern(prev, ch, f);
+        prev = ch;
         n++;
     }
     return int(std::lround(w)) + int(std::lround(em * f.size * std::max(0, n - 1)));
@@ -1042,12 +1056,19 @@ int Gfx::measureSpaced(const std::string& s, Font f, float em) {
 int Gfx::textSpaced(const std::string& s, Font f, float x, float cy, float em, const Rgb& c, float alpha, Align a) {
     const int total = measureSpaced(s, f, em);
     float px = a == Align::Center ? x - total / 2.f : a == Align::Right ? x - total : x;
+    if (em * f.size < 0.5f) {   // (as measureSpaced: the word whole)
+        textC(s, f, px, cy, c, alpha);
+        return total;
+    }
+    std::string prev;
     for (size_t i = 0; i < s.size();) {
         const size_t st = i;
         nextCodepoint(s, i);
         const std::string ch = s.substr(st, i - st);
+        px += pairKern(prev, ch, f);
         const int adv = textC(ch, f, px, cy, c, alpha);
         px += (scale_ == 1 ? float(adv) : measureF(ch, f)) + em * f.size;
+        prev = ch;
     }
     return total;
 }
@@ -1120,10 +1141,13 @@ int Gfx::textSpacedShine(const std::string& s, Font f, float x, float cy, float 
         return std::fabs(d) >= 1 ? 0.f : std::exp(-4.5f * d * d) * (1 - d * d);
     };
     float px = x;
+    std::string prev;
     for (size_t i = 0; i < s.size();) {
         const size_t st = i;
         nextCodepoint(s, i);
         const std::string ch = s.substr(st, i - st);
+        px += pairKern(prev, ch, f);   // (as textSpaced places them)
+        prev = ch;
         const float w = measureF(ch, f);
         // a letter the band touches: its own texture again, in columns whose alpha follows the band (as textScroll's fades)
         if (px + w > bx && px < bx + bw && ch != " ") {

@@ -24,6 +24,7 @@ namespace {
 constexpr float CovRowH = 60;     // .vrow.wc: --rowc 56, + 4
 constexpr float GroupH = 76;      // .vhead: --head 72, + 4
 constexpr float ColHeadH = 38;    // .list-head 30 + 8 below
+constexpr float NarrowHeadH = 14;   // upright: the line 6 down, 8 below it
 
 /** The grid's columns: tiles about 180 px wide, at least two. */
 struct Tiles { int cols; float w, cover, h; };
@@ -46,8 +47,9 @@ std::vector<App::ListEntry> App::listLayout(const std::vector<int>& tracks, floa
         for (int i = 0; i < int(tracks.size()); i += t.cols) { out.push_back({ ListEntry::TileRow, i, y, t.h }); y += t.h; }
         return out;
     }
-    out.push_back({ ListEntry::ColumnHead, -1, y, ColHeadH });
-    y += ColHeadH;
+    const float head = w < kNarrowList ? NarrowHeadH : ColHeadH;   // upright: no names, only the line (session 20: the gap under the tools)
+    out.push_back({ ListEntry::ColumnHead, -1, y, head });
+    y += head;
     int lastAlbum = -2;
     for (int i = 0; i < int(tracks.size()); i++) {
         if (mode == ListMode::Albums) {
@@ -79,13 +81,16 @@ float App::listRowY(const std::vector<ListEntry>& layout, int index) const {
 // ============================================================ pieces
 
 /** The four-icon view switch (.pl-modes), right-aligned at rx; returns its width. */
-float App::viewSwitch(const char* key, float rx, float cy, int& mode, unsigned hidden) {
+float App::viewSwitch(const char* key, float rx, float cy, int& mode, unsigned hidden, float fill) {
     static const char* icons[4] = { ICON_V_ALBUMS, ICON_V_COVERS, ICON_V_GRID, ICON_V_LIST };
     int shown = 0;
     for (int i = 0; i < 4; i++) shown += !(hidden & (1u << i));
-    const float bw = 38, h = 36, w = 6 + bw * shown, x0 = rx - w;
-    g.roundRect(x0, cy - h / 2, w, h, 12, pal.text, 0.05f);
-    g.roundStroke(x0, cy - h / 2, w, h, 12, 1, pal.text, 0.09f);
+    // fill > 0: that wide, a pill as the buttons beside it (a phone upright's tool rows: every row the same width and height)
+    const bool pill = fill > 0 || phoneUpright();   // (a phone upright: a pill always, as every control there)
+    const float bw = fill > 0 ? (fill - 6) / float(std::max(1, shown)) : 38, h = pill ? 34 : 36, w = 6 + bw * shown, x0 = rx - w;
+    const float rad = pill ? h / 2 : 12, inRad = pill ? (h - 6) / 2 : 9;
+    g.roundRect(x0, cy - h / 2, w, h, rad, pal.text, 0.05f);
+    g.roundStroke(x0, cy - h / 2, w, h, rad, 1, pal.text, 0.09f);
     // From the biggest to the smallest (the user's ask): tiles, by album, with covers, the plain list. The numbers stay
     // what they were (settings.txt), only the order shown changes.
     static const int order[4] = { int(ListMode::Grid), int(ListMode::Albums), int(ListMode::Covers), int(ListMode::List) };
@@ -102,8 +107,8 @@ float App::viewSwitch(const char* key, float rx, float cy, int& mode, unsigned h
 #endif
         if (ui.item(id, hitR, 9)) { mode = i; persistSoon(0.5f); }
         const bool on = mode == i, hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
-        if (on) g.roundRect(bx, cy - h / 2 + 3, bw, h - 6, 9, pal.text, 0.13f);
-        else if (hot) g.roundRect(bx, cy - h / 2 + 3, bw, h - 6, 9, pal.text, 0.065f);
+        if (on) g.roundRect(bx, cy - h / 2 + 3, bw, h - 6, inRad, pal.text, 0.13f);
+        else if (hot) g.roundRect(bx, cy - h / 2 + 3, bw, h - 6, inRad, pal.text, 0.065f);
         g.icon(icons[i], bx + bw / 2, cy, 17, on ? pal.text : pal.text2);
     }
     return w;
@@ -146,7 +151,7 @@ void App::coverQuad(const std::vector<int>& tracks, float x, float y, float size
 
 /** Column labels for the row modes (.list-head). */
 void App::listColumns(float x, float y, float w, ListMode mode, bool extended) {
-    if (w < kNarrowList) { g.rect(x, y + 29, w, 1, pal.text, 0.09f); return; }   // a narrow list (a phone upright): no columns to name
+    if (w < kNarrowList) { g.rect(x, y + 6, w, 1, pal.text, 0.09f); return; }   // a narrow list (a phone upright): no columns to name, the line alone
     const Font f{ css::Xs, Weight::SemiBold };
     const float pad = 30, gap = 14;
     float cx = x + pad;
@@ -302,7 +307,7 @@ float App::drawTrackBody(const char* key, const std::vector<int>& tracks, float 
     // where item i belongs (its whole place: a row with the gap under it, a tile's cell)
     auto slot = [&](int i) -> SDL_FRect {
         if (grid) return { x + 16 + (i % tl.cols) * tl.w, top + (i / tl.cols) * tl.h, tl.w, tl.h };
-        return { x + 14, top + ColHeadH + i * rowPitch, w - 28, rowPitch };
+        return { x + 14, top + (w < kNarrowList ? NarrowHeadH : ColHeadH) + i * rowPitch, w - 28, rowPitch };
     };
     if (sort) sortRun(n, 0, n - 1, *sortArea, slot, grid);
     const int floats = sort ? (tsort_.held >= 0 ? tsort_.held : tsort_.settle) : -1;

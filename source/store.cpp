@@ -162,6 +162,7 @@ void Store::load() {
     bool linesKnown = false;      // ... and one from before placed lines: Files had a line of its own above it
     bool lyricsKindKnown = false; // ... and one from before lyrics were shared: their switch starts on (the user, 2026-11-04)
     bool moodsKindKnown = false;  // ... and mood choices, the same (BETA 3)
+    { struct stat st; fresh = stat(path("settings.txt").c_str(), &st) != 0; }   // a new user
     for (const auto& l : readLines(path("settings.txt"))) {
         const size_t eq = l.find('=');
         if (eq == std::string::npos) continue;
@@ -220,6 +221,8 @@ void Store::load() {
         else if (k == "volWhere") volWhere = std::clamp(atoi(v.c_str()), 0, 2);
         else if (k == "volNum") volNum = std::clamp(atoi(v.c_str()), 0, 1);
         else if (k == "r4LedAccent") r4LedAccent = v == "1";
+        else if (k == "bitPerfect") bitPerfect = v != "0";
+        else if (k == "matchRate") matchRate = v != "0";
         else if (k == "canvasPulse") canvasPulse = v == "1";
         else if (k == "canvasBars") canvasBars = std::clamp(atoi(v.c_str()), 16, 128);
         else if (k == "canvasIdleAfter") canvasIdleAfter = std::clamp(float(atof(v.c_str())), 1.f, 30.f);
@@ -346,6 +349,7 @@ void Store::load() {
         else if (k == "edgeExtra") edgeExtra = std::clamp(float(atof(v.c_str())), 0.f, 1.f);
         else if (k == "edgeCorners") edgeCorners = v == "1";
         else if (k == "uiSize") uiSize = std::clamp(atoi(v.c_str()), 0, 2);
+        else if (k == "uiSizeUp") uiSizeUp = std::clamp(atoi(v.c_str()), 0, 2);
         else if (k == "serverTab") serverTab = std::clamp(atoi(v.c_str()), 0, 4);
         else if (k == "libSource") libSource = std::clamp(atoi(v.c_str()), 0, 1);
         else if (k == "plSource") plSource = std::clamp(atoi(v.c_str()), 0, 1);
@@ -542,6 +546,8 @@ void Store::save() const {
     appendf(f, "seekAnim=%d\n", seekAnim);   // (Android's alone: no other build has that bar, so none keeps a line for it)
     appendf(f, "volPop=%d\nvolWhere=%d\nvolNum=%d\n", volPop, volWhere, volNum);   // (the volume is Android's own: Android's alone)
     if (r4LedAccent) appendf(f, "r4LedAccent=1\n");   // (the HiBy R4's, and only while it is on)
+    if (!matchRate) appendf(f, "matchRate=0\n");     // (the HiBy R4's, and only while it is off)
+    if (!bitPerfect) appendf(f, "bitPerfect=0\n");    // (the HiBy R4's, and only while it is off)
 #endif
     appendf(f, "canvasPulse=%d\nhiddenTabs=%u\n", canvasPulse, hiddenTabs);
     appendf(f, "canvasBars=%d\ncanvasIdleAfter=%.2f\ncanvasVizTime=%.2f\n", canvasBars, double(canvasIdleAfter), double(canvasVizTime));
@@ -612,7 +618,7 @@ void Store::save() const {
     appendf(f, "updates=%d\nupdateAtStart=%d\nbetas=%d\nreports=%d\n", updates, updateAtStart, betas ? 1 : 0, reports ? 1 : 0);
     appendf(f, "lastfm=%d\nlastfmScrobble=%d\nlastfmNow=%d\nopeningSound=%d\nopening=%d\n", lastfm ? 1 : 0, lastfmScrobble ? 1 : 0, lastfmNow ? 1 : 0, openingSound ? 1 : 0,
             opening ? 1 : 0);
-    appendf(f, "edgeMode=%d\nedgeExtra=%.3f\nedgeCorners=%d\nuiSize=%d\nserverTab=%d\nlibSource=%d\nserverDlPlace=%d\nplSource=%d\n", edgeMode, edgeExtra, edgeCorners ? 1 : 0, uiSize, serverTab, libSource, serverDlPlace,
+    appendf(f, "edgeMode=%d\nedgeExtra=%.3f\nedgeCorners=%d\nuiSize=%d\nuiSizeUp=%d\nserverTab=%d\nlibSource=%d\nserverDlPlace=%d\nplSource=%d\n", edgeMode, edgeExtra, edgeCorners ? 1 : 0, uiSize, uiSizeUp, serverTab, libSource, serverDlPlace,
             plSource);
     appendf(f, "handoffFrom=%s\nairplayReceive=%d\nairplaySpeakers=%d\n", handoffFrom.c_str(), airplayReceive ? 1 : 0, airplaySpeakers ? 1 : 0);
     {

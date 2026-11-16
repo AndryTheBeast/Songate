@@ -95,8 +95,8 @@ bool simStart() {
                 { "vol_boot", "20" }, { "led_mode", "custom" }, { "led_color", "00a0ff" }, { "led_bright", "60" }, { "led_effect", "solid" },
                 { "led_charge", "1" }, { "led_screen", "0" }, { "led_back", "screen" }, { "led_back_charge", "0" }, { "led_back_notif", "0" },
                 { "led_back_beat", "0" }, { "led_notif", "0" }, { "led_notif_color", "4fc3ff" }, { "led_lowbat", "0" },
-                { "led_lowbat_level", "15" }, { "led_quality", "0" }, { "led_q_cd", "ffa020" }, { "led_q_hires", "fb695a" },
-                { "led_q_ultra", "ff3c8c" }, { "led_beat", "0" }, { "st_output", "Headphone" }, { "st_rate", "96000" }, { "st_led", "custom" }, { "eq", "1,1,0,8,0,0,0,0,0,0,0,0,0,0" } };
+                { "led_lowbat_level", "15" }, { "led_quality", "0" }, { "led_q_cd", "ff9030" }, { "led_q_hires", "ff3c30" },
+                { "led_q_ultra", "ff3c8c" }, { "led_beat", "0" }, { "st_output", "Headphone" }, { "st_rate", "96000" }, { "out_rate", "96000" }, { "st_out_rate", "96000" }, { "btn_wake", "0" }, { "st_quality", "none" }, { "st_led", "custom" }, { "eq", "1,1,0,8,0,0,0,0,0,0,0,0,0,0" } };
     char line[256];
     while (fgets(line, sizeof line, f)) {
         std::string l = line;

@@ -78,20 +78,27 @@ void App::drawAlbumGrid(float x, float y, float w, float h, float headBottom, bo
     int amode = store.viewAlbums;
     // (on Library's row their centre is the 34 px buttons' of its other tabs, 17 under the row's top: at 16 the switch sat a pixel
     // above Songs', Genres' and Folders'; the user, 2026-11-10)
-    const float tcy = toolsRow ? headBottom - 46 + 17 : headBottom - 30;
-    const float vsw = lib.albums.empty() ? 0.f : viewSwitch("alb.view", x + w - 28, tcy, amode, 1u) + 8;
+    // (upright, as Songs': pills, the sort filling the row to the views; the user chose "B", 2026-11-15)
+    const bool pills = w < kNarrowList && toolsRow;
+    const float tcy = pills ? headBottom - 16 - 17 : toolsRow ? headBottom - 46 + 17 : headBottom - 30;
+    float vsw = 0;
+    if (!lib.albums.empty()) {
+        if (pills) vsw = viewSwitch("alb.view", x + w - 28, tcy, amode, 1u, 6 + 38 * 3) + 10;
+        else vsw = viewSwitch("alb.view", x + w - 28, tcy, amode, 1u) + 8;
+    }
     if (amode != store.viewAlbums) { store.viewAlbums = amode; persistSoon(0.3f); }
-    const float sw = g.measure(sorts[librarySort], sf) + 20 + 26, sx = x + w - 28 - vsw - sw, sy = tcy - 16;
+    const float sh = pills ? 34 : 32, srad = pills ? 17 : 8;
+    const float sw = pills ? w - 56 - vsw : g.measure(sorts[librarySort], sf) + 20 + 26, sx = x + w - 28 - vsw - sw, sy = tcy - sh / 2;
     const Id sid = uid("lib.sort");
-    if (ui.item(sid, { sx, sy, sw, 32 }, 8)) {
+    if (ui.item(sid, { sx, sy, sw, sh }, srad)) {
         librarySort = (librarySort + 1) % 4;
         rebuildIndex();
     }
     const bool hot = ui.focused(sid) && ui.showFocusRing();
-    g.roundRect(sx, sy, sw, 32, 8, pal.text, hot ? 0.11f : 0.065f);
-    g.roundStroke(sx, sy, sw, 32, 8, 1, pal.text, 0.15f);
-    g.textC(sorts[librarySort], sf, sx + 10, sy + 16, pal.text);
-    g.icon(ICON_CHEV, sx + sw - 16, sy + 16, 14, pal.text3);
+    g.roundRect(sx, sy, sw, sh, srad, pal.text, hot ? 0.11f : 0.065f);
+    g.roundStroke(sx, sy, sw, sh, srad, 1, pal.text, 0.15f);
+    g.textC(sorts[librarySort], sf, sx + (pills ? 16 : 10), sy + sh / 2, pal.text);
+    g.icon(ICON_CHEV, sx + sw - (pills ? 20 : 16), sy + sh / 2, 14, pal.text3);
     const bool reading = meta.taggedCount() < int(lib.tracks.size());
     if (reading) {
         const int pct = lib.tracks.empty() ? 100 : meta.taggedCount() * 100 / int(lib.tracks.size());
@@ -231,18 +238,19 @@ void App::drawArtists(float x, float y, float w, float h, bool genre, bool inLib
         };
         float bx = x + 28;
         bool c = false;
-        bx += button(uid("gen.play"), ICON_PLAY, "Play", bx, headBottom, true, &c, false, false, DefaultFocus) + 8;
+        // upright (the user chose "B", 2026-11-15; as a folder's page): Play and Shuffle fill the row up to the views, Add all the
+        // row under them
+        const float vw = 6 + 38.f * 3, pw = narrow ? (w - 56 - vw - 20) / 2 : 0;
+        bx += button(uid("gen.play"), ICON_PLAY, "Play", bx, headBottom, true, &c, false, false, DefaultFocus, pw) + (narrow ? 10 : 8);
         if (c) if (const std::vector<int> all = everything(); !all.empty()) playTracks(all, 0, "Genres");
         c = false;
-        bx += button(uid("gen.shuffle"), ICON_SHUFFLE, "Shuffle", bx, headBottom, false, &c) + 8;
+        bx += button(uid("gen.shuffle"), ICON_SHUFFLE, "Shuffle", bx, headBottom, false, &c, false, false, 0, pw) + (narrow ? 10 : 8);
         if (c) if (const std::vector<int> all = everything(); !all.empty()) playTracks(all, 0, "Genres", true);
         c = false;
-        bx += button(uid("gen.addall"), ICON_PLUS, narrow ? "Add all" : "Add all as playlists", bx, headBottom, false, &c) + 8;
+        viewSwitch("gen.view", x + w - 28, headBottom + 17, gmode, 1u, narrow ? vw : 0);   // (By album would be the tiles again: three views, as Folders')
+        if (narrow) { headBottom += 34 + 10; bx = x + 28; }
+        button(uid("gen.addall"), ICON_PLUS, narrow ? "Add all" : "Add all as playlists", bx, headBottom, false, &c, false, false, 0, narrow ? w - 56 : 0);
         if (c) addGenresAsPlaylists();
-        // narrow (a phone upright): the three buttons reach under the views (Add all sat under them): the views on a line of their own
-        const bool viewsBelow = narrow && bx > x + w - 28 - (6 + 38.f * 3) - 4;
-        if (viewsBelow) headBottom += 34 + 10;
-        viewSwitch("gen.view", x + w - 28, headBottom + 17, gmode, 1u);   // (By album would be the tiles again: three views, as Folders')
         if (gmode != store.viewGenres) { store.viewGenres = gmode; persistSoon(0.3f); }
         headBottom += 34 + 16;
     }
@@ -359,9 +367,9 @@ void App::drawArtist(float x, float y, float w, float h, bool genre) {
 
     // narrow (a phone upright): the picture on top, the name, its line and Play and Shuffle under it
     const bool narrow = w < kNarrowList;
-    const float ncs = std::min(w - 60, 240.f);
+    const float ncs = std::min(w - 56, 240.f);
     // (narrow: the name on up to two lines, as an album's title)
-    const std::vector<std::string> nameLines = narrow ? g.wrap(ar.name, { css::Xxl, Weight::Bold }, int(w - 60), 2) : std::vector<std::string>{ ar.name };
+    const std::vector<std::string> nameLines = narrow ? g.wrap(ar.name, { css::Xxl, Weight::Bold }, int(w - 56), 2) : std::vector<std::string>{ ar.name };
     // wide: a playlist page's head (the user, 2026-11-09: "the genres header could be smaller like how playlists does it"):
     // the 120 cover, the kicker, name and line beside it, Play and Shuffle on the cover's last line
     const float heroH = narrow ? 22 + ncs + 18 + 24 + nameLines.size() * 38 + 8 + 22 + 16 + 34 + 12 : 18 + 120 + 14;
@@ -398,12 +406,16 @@ void App::drawArtist(float x, float y, float w, float h, bool genre) {
     const float albumRowH = amode == int(ListMode::List) ? 48.f : 60.f;
     // the #-to-Z rail (Settings › Appearance › Letter rail: Genres for a genre's page, Artists for an artist's) down the tab's list:
     // the albums when their sort has letters, the artists, the songs in their order (not on tiles)
-    const bool rail = railOn(genre ? 4u : 2u) && (tab == 0 ? (genreAlbums && !albs.empty() && genreSort <= 1)
+    // (none inside a genre: the user, 2026-11-15, "there should not be letter rails inside a genre")
+    const bool rail = !genre && railOn(2u) && (tab == 0 ? (genreAlbums && !albs.empty() && genreSort <= 1)
                                                   : tab == 1 ? !inGenre->empty()
                                                              : (!ar.tracks.empty() && store.viewGenre != int(ListMode::Grid)));
     const float lw = rail ? w - kRailW : w;
     const GridLayout gl = gridFor(x, lw);
-    const float switchH = 56 + (narrow && (tab == 2 || genreAlbums) ? 46.f : 0.f);   // the switch's row (upright, on Songs and a genre's Albums: the views under it)
+    // the switch's row (upright, on Songs and a genre's Albums: the views under it); upright its rows 10 apart and 16 above the list,
+    // as every other page's (the user, 2026-11-15: "more spacing than on genres or folder")
+    const bool row2 = narrow && (tab == 2 || genreAlbums);
+    const float switchH = narrow ? 15 + 17 + (row2 ? 44.f : 0.f) + 16 : 56 + (row2 ? 46.f : 0.f);
     const int gridItems = tab == 1 ? int(inGenre->size()) : int(albs.size());
     const int rows = (gridItems + gl.cols - 1) / gl.cols;
     const float gridH = (tab == 2 || gridItems == 0) ? 0 : 10 + (tab == 0 && !albumTiles ? gridItems * albumRowH : rows * gl.tileH);
@@ -423,7 +435,7 @@ void App::drawArtist(float x, float y, float w, float h, bool genre) {
 
     std::string meta2 = fmtTotal(ar.tracks);
     if (!ar.albums.empty()) meta2 = std::to_string(ar.albums.size()) + (ar.albums.size() == 1 ? " album · " : " albums · ") + meta2;
-    const float tx = narrow ? x + 30 : cx + cs + 22, tw = w - (tx - x) - (narrow ? 30 : 28);
+    const float tx = narrow ? x + 28 : cx + cs + 22, tw = w - (tx - x) - 28;   // (upright: 28, the tiles' and every page's margin)
     float ty = narrow ? cyTop + cs + 18 : cyTop + cs - 34;   // (wide: the actions' line, the cover's last)
     if (narrow) {
         kicker(genre ? "Genre" : "Artist", tx, ty + 8, pal.text3);
@@ -439,9 +451,16 @@ void App::drawArtist(float x, float y, float w, float h, bool genre) {
     }
     float bx = tx;
     bool clicked = false;
-    bx += button(uid("ar.play"), ICON_PLAY, "Play", bx, ty, true, &clicked, false, false, DefaultFocus) + 8;
+    // upright (the user chose "B", 2026-11-15): Play and Shuffle fill the row (a genre's: up to its Add as playlist), a gap of 10
+    float pw = 0;
+    if (narrow) {
+        const bool inPl = genre && store.playlistByPath("smart:genre:" + ar.name) >= 0;
+        const float addW = genre ? 16 + 24 + g.measure(inPl ? "In playlists" : "Add as playlist", { css::Sm, Weight::SemiBold }) + 16 + 10 : 0.f;
+        pw = (tw - addW - 10) / 2;
+    }
+    bx += button(uid("ar.play"), ICON_PLAY, "Play", bx, ty, true, &clicked, false, false, DefaultFocus, pw) + (narrow ? 10 : 8);
     if (clicked) playTracks(ar.tracks, 0, ar.name);
-    bx += button(uid("ar.shuffle"), ICON_SHUFFLE, "Shuffle", bx, ty, false, &clicked) + 8;
+    bx += button(uid("ar.shuffle"), ICON_SHUFFLE, "Shuffle", bx, ty, false, &clicked, false, false, 0, pw) + (narrow ? 10 : 8);
     if (clicked) playTracks(ar.tracks, 0, ar.name, true);
     if (genre) genrePlaylistButton(ar.name, bx, ty);   // as a folder's Add as playlist
 
@@ -449,35 +468,45 @@ void App::drawArtist(float x, float y, float w, float h, bool genre) {
     float gy = oy + heroH + 10;
     {
         // .seg as in Library (Albums | Tracks | Folders): what this page holds, one view at a time
-        const float sy = oy + heroH + 22;
+        const float sy = oy + heroH + (narrow ? 15 : 22);   // (upright: 10 under Play and Shuffle)
         std::string count;
         if (tab == 0) count = std::to_string(ar.albums.size()) + (ar.albums.size() == 1 ? " album" : " albums");
         else if (tab == 1) count = std::to_string(inGenre->size()) + (inGenre->size() == 1 ? " artist" : " artists");
         else count = std::to_string(ar.tracks.size()) + (ar.tracks.size() == 1 ? " track" : " tracks");
-        g.textC(count, { css::Lg, Weight::Bold }, x + 30, sy, pal.text);
-        // On Songs the four list views (as in Library → Songs) take the right edge and the switch sits left of them
-        float rx = x + w - 30;
+        if (!narrow) g.textC(count, { css::Lg, Weight::Bold }, x + 28, sy, pal.text);
+        // On Songs the four list views (as in Library → Songs) take the right edge and the switch sits left of them; upright (the
+        // user chose "B", 2026-11-15): the switch fills its row, and under it the views (Songs) or the sort filling up to them (Albums)
+        float rx = x + w - 28;
         if (tab == 2) {
             int mode = store.viewGenre;
             if (!narrow) rx -= viewSwitch(genre ? "gen.view" : "ar.view", rx, sy, mode) + 10;
-            else viewSwitch(genre ? "gen.view" : "ar.view", rx, sy + 46, mode);
+            else viewSwitch(genre ? "gen.view" : "ar.view", rx, sy + 44, mode, 0, w - 56);
             store.viewGenre = mode;
         }
         if (genreAlbums && !albs.empty()) {   // a genre's Albums: the three views and the sort, as the Albums page's head (upright: under the switch)
             int m = amode;
-            const float vy = narrow ? sy + 46 : sy;
-            float vx = narrow ? x + w - 30 : rx;
-            vx -= viewSwitch("gen.aview", vx, vy, m, 1u) + 10;
+            const float vy = narrow ? sy + 44 : sy;
+            float vx = narrow ? x + w - 28 : rx;
+            const float vw = 6 + 38.f * 3;
+            vx -= viewSwitch("gen.aview", vx, vy, m, 1u, narrow ? vw : 0) + 10;
             if (m != amode) { store.viewAlbums = m; persistSoon(0.3f); }
             bool c = false;
-            vx -= sortButton("gen.sort", kAlbumSorts[genreSort], vx, vy, &c) + 10;
+            if (narrow) {   // the sort, a pill filling the row up to the views
+                const float sw = vx - (x + 28);
+                const Id sid = uid("gen.sort");
+                if (ui.item(sid, { x + 28, vy - 17, sw, 34 }, 17)) c = true;
+                g.roundRect(x + 28, vy - 17, sw, 34, 17, pal.text, ui.focused(sid) && ui.showFocusRing() ? 0.11f : 0.065f);
+                g.roundStroke(x + 28, vy - 17, sw, 34, 17, 1, pal.text, 0.15f);
+                g.textC(kAlbumSorts[genreSort], { css::Sm }, x + 28 + 16, vy, pal.text);
+                g.icon(ICON_CHEV, x + 28 + sw - 20, vy, 14, pal.text3);
+            } else vx -= sortButton("gen.sort", kAlbumSorts[genreSort], vx, vy, &c) + 10;
             if (c) genreSort = (genreSort + 1) % 3;
             if (!narrow) rx = vx;
         }
         int picked = -1;
         const std::vector<std::string> names = genre ? std::vector<std::string>{ "Albums", "Artists", "Songs" } : std::vector<std::string>{ "Albums", "Songs" };
         const int shown = genre ? tab : (tab == 2 ? 1 : 0);
-        segmented(uid(genre ? "gen.tab" : "ar.tab"), rx, sy, names, shown, &picked, ar.albums.empty() ? 1u : 0u);
+        segmented(uid(genre ? "gen.tab" : "ar.tab"), rx, sy, names, shown, &picked, ar.albums.empty() ? 1u : 0u, narrow ? w - 56 : 0, narrow ? 2 : 0, narrow ? 34 : 36);
         if (picked >= 0 && picked != shown) chosen = genre ? picked : (picked == 1 ? 2 : 0);
         gy = oy + heroH + switchH;
     }
@@ -540,14 +569,17 @@ void App::drawArtist(float x, float y, float w, float h, bool genre) {
 
 float App::sortButton(const char* key, const std::string& label, float rx, float cy, bool* clicked) {
     const Font sf{ css::Sm };
-    const float sw = g.measure(label, sf) + 20 + 26, sx = rx - sw, sy = cy - 16;
+    // (a phone upright: a pill, as every control there; the user chose "B", 2026-11-15)
+    const bool pill = phoneUpright();
+    const float sh = pill ? 34 : 32, rad = pill ? 17 : 8;
+    const float sw = g.measure(label, sf) + 20 + 26 + (pill ? 8 : 0), sx = rx - sw, sy = cy - sh / 2;
     const Id sid = uid(key);
-    if (ui.item(sid, { sx, sy, sw, 32 }, 8)) *clicked = true;
+    if (ui.item(sid, { sx, sy, sw, sh }, rad)) *clicked = true;
     const bool hot = ui.focused(sid) && ui.showFocusRing();
-    g.roundRect(sx, sy, sw, 32, 8, pal.text, hot ? 0.11f : 0.065f);
-    g.roundStroke(sx, sy, sw, 32, 8, 1, pal.text, 0.15f);
-    g.textC(label, sf, sx + 10, cy, pal.text);
-    g.icon(ICON_CHEV, sx + sw - 16, cy, 14, pal.text3);
+    g.roundRect(sx, sy, sw, sh, rad, pal.text, hot ? 0.11f : 0.065f);
+    g.roundStroke(sx, sy, sw, sh, rad, 1, pal.text, 0.15f);
+    g.textC(label, sf, sx + (pill ? 16 : 10), cy, pal.text);
+    g.icon(ICON_CHEV, sx + sw - (pill ? 20 : 16), cy, 14, pal.text3);
     return sw;
 }
 

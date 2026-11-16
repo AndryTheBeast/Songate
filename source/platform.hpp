@@ -226,6 +226,8 @@ std::string volumeLabel(const std::string& path);
 /** The volume holding path is mounted, as Android says (an SD card at a boot: its folder is there before; vold ends any app with
  *  a file open on it until it is done). True when Android does not know the path. */
 bool volumeReady(const std::string& path);
+/** Android: music goes to wired headphones alone now (not Bluetooth, not USB) */
+bool wiredOut();
 /** Songate may read the shared volumes: All files access (Android 11 and later), the storage permission (Android 10). */
 bool storageAllowed();
 /** Android's own page (or dialog) for it; the answer is seen with storageAllowed when Songate is back in front. */
@@ -250,6 +252,14 @@ int hibyState();
 /** The HiBy R4 with SongateOS, known before the first frame: its boot animation has just played Songate's opening (the ROM's
  *  boot prompt, 2026-11-15), so Songate's own does not play there. False if anything fails. */
 bool hibyDevice();
+/** Bit-perfect output (Android 14+; BitPerfect.java): claimed for a song of this rate and bit depth on the output media plays to:
+ *  16, 24 (packed) or 32 as the stream must be opened, 0 when not offered. bitPerfectEnd lets it go; bitPerfectLost says Android
+ *  took it away since (the device unplugged, another app). */
+int bitPerfectBegin(int rate, int bits);
+void bitPerfectEnd();
+bool bitPerfectLost();
+/** Android's listener has said the claim holds (the badge sparkles only then: the SongateOS session's advice, 2026-11-15). */
+bool bitPerfectConfirmed();
 std::string hibyGet();
 std::string hibySet(const std::string& key, const std::string& value);
 bool hibyEqSet(const std::string& eq);

@@ -41,6 +41,20 @@ public:
      * that many seconds (the track playing fades out meanwhile); otherwise it cuts, as before.
      */
     bool load(const std::string& path, bool paused = false, double fade = 0, const automix::Plan* mix = nullptr);
+#ifdef GF_ANDROID
+    /** The device again at this rate (the native sample rate: load); format: 0 float (the normal path), or bit-perfect's 16, 24
+     *  (packed: S32 to SDL, its patch packs it) or 32. */
+    bool reopenAt(int rate, int format = 0);
+    /** The device again after an idle close (update), at the rate and format it had; before anything that sounds. */
+    void ensureOpen();
+    double idleSince_ = -1;   // since when nothing has had to play (the device closes after 5 s of it: Android's mixer may sleep)
+    bool idleClosed_ = false;
+    /** Bit-perfect output may be used for the next song (the app: its setting on, the HiBy R4, nothing changing the sound). */
+    void setBitPerfectWanted(bool on) { bpWanted_ = on; }
+    /** The song plays bit-perfect now: claimed, opened in its format, Android has not taken it away. */
+    bool bitPerfect() const;
+    bool bitPerfectClaimed() const { return bpFormat_ != 0; }   // (asked for, before Android confirms it)
+#endif
     void stop();
     void togglePause();
     void seek(double seconds);
@@ -134,6 +148,9 @@ public:
 
     bool loaded() const;
     bool paused() const;
+    /** The HiBy R4: the song held where it is, silence out, while the wired output changes its rate (the audio service restarts) */
+    void holdForRate(bool on) { rateHold_ = on; }
+    bool heldForRate() const { return rateHold_; }
     double position() const;
     int sampleRate() const { return remote() ? 48000 : rate_; }
 
@@ -209,8 +226,10 @@ private:
     std::atomic<float> streamGain_{ 1.f }, streamLevel_{ 1.f };
     float streamLv_ = 1.f;   // the audio thread's eased copy
     float streamMono_[8192 * 2] = {};
-    int16_t syncBuf_[(4096 + 2) * 2] = {};
-    int16_t syncLast_[2] = {};
+    // the music as it leaves the hook, before the device's own format (Android's float, else 16-bit), up to 16384 frames (192 kHz)
+    static constexpr int OutMax = 16384;
+    float finalF_[(OutMax + 2) * 2] = {};
+    float syncLast_[2] = {};
 
     BgClient* bg_ = nullptr;
     unsigned seeks_ = 0;
@@ -234,6 +253,7 @@ private:
     std::atomic<unsigned> worstUs_{ 0 }, late_{ 0 }, lockMiss_{ 0 };   // the trace
     std::mutex ffLock_;   // the audio callback decodes; load, seek and stop come from the UI thread
     std::atomic<bool> ffActive_{ false }, ffPaused_{ false }, ffEnded_{ false };
+    std::atomic<bool> rateHold_{ false };
     long long fadeLen_ = 0, fadeAt_ = 0;   // frames: the crossfade's length and how far it is (ffLock_)
     long long delay_ = 0;                  // frames of the outgoing track still to play before the incoming one starts (Automix)
     float outLevel_ = 1;                   // the outgoing track's levelling gain, kept through the fade
@@ -262,6 +282,9 @@ private:
     unsigned lastRead_ = 0;
     int channels_ = 2;
     bool float32_ = false;
+    bool int32_ = false;   // a 32-bit integer device (bit-perfect: 24 and 32-bit songs)
+    std::atomic<bool> bpWanted_{ false };
+    int bpFormat_ = 0;      // the open device's bit-perfect format (0: the normal path)
     const std::vector<float>* once_ = nullptr;
     size_t onceAt_ = 0;
     std::atomic<bool> oncePlaying_{ false }, onceStop_{ false };   // (the audio thread ends it, so `sound` is never freed under it)

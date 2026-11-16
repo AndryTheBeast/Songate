@@ -166,6 +166,8 @@ void App::drawTrackList(float x, float y, float w, float h) {
         compact = narrow || tx + need > x + w - 28 - viewsW - 16 - (tabs && !tabsLine ? segW + 12 : 0);
     }
     // A secondary action: labelled, or (compact) round with its icon only
+    // (upright, the user chose "B", 2026-11-15: the round actions share the row under Play and Shuffle in equal widths, a gap of 10)
+    float lowW = 34, lowGap = 8;
     auto action = [&](const char* key, const char* icon, const char* label, bool toggled = false, bool danger = false) {
         if (!compact) {
             bool c = false;
@@ -175,15 +177,15 @@ void App::drawTrackList(float x, float y, float w, float h) {
         const Id id = uid(key);
         hint(id, label);   // round with its icon only: its name when focused (App::drawHint)
 #ifdef GF_ANDROID
-        const bool c = ui.item(id, { bx - 4, by - 4, 42, 42 }, 21);   // a finger: 42, as the icon buttons (drawn the same)
+        const bool c = ui.item(id, { bx - 4, by - 4, lowW + 8, 42 }, 21);   // a finger: 42, as the icon buttons (drawn the same)
 #else
-        const bool c = ui.item(id, { bx, by, 34, 34 }, 17);
+        const bool c = ui.item(id, { bx, by, lowW, 34 }, 17);
 #endif
         const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
-        g.roundRect(bx, by, 34, 34, 17, toggled ? pal.accent : pal.text, toggled ? 0.18f : hot ? 0.11f : 0.065f);
-        g.roundStroke(bx, by, 34, 34, 17, 1, toggled ? pal.accent : pal.text, toggled ? 0.5f : 0.15f);
-        g.icon(icon, bx + 17, by + 17, 16, danger ? dangerInk() : toggled ? pal.accentInk : pal.text);
-        bx += 34 + 8;
+        g.roundRect(bx, by, lowW, 34, 17, toggled ? pal.accent : pal.text, toggled ? 0.18f : hot ? 0.11f : 0.065f);
+        g.roundStroke(bx, by, lowW, 34, 17, 1, toggled ? pal.accent : pal.text, toggled ? 0.5f : 0.15f);
+        g.icon(icon, bx + lowW / 2, by + 17, 16, danger ? dangerInk() : toggled ? pal.accentInk : pal.text);
+        bx += lowW + lowGap;
         return c;
     };
     std::vector<int> playList = tracks;
@@ -192,11 +194,19 @@ void App::drawTrackList(float x, float y, float w, float h) {
         for (const auto& hh : searchLyrics_) if (auto ix = pathIndex.find(hh.path); ix != pathIndex.end()) playList.push_back(ix->second);
         playName = "Lyrics: " + route.query;
     }
+    // upright: Play and Shuffle fill their row up to the views (Search, with none, the whole row)
+    const bool viewsUp = narrow && v != View::Search && !(tabs && stab != 0);
+    const float vwUp = 6 + 38.f * (mixable ? 3 : 4);
+    float pw = 0;
+    if (narrow && playRow) {
+        const int k = noShuffle ? 1 : 2;
+        pw = (w - 56 - (viewsUp ? vwUp + 10 : 0) - 10 * (k - 1)) / k;
+    }
     if (playRow) {
-        bx += button(uid("pl.play"), ICON_PLAY, "Play", bx, by, true, &clicked, false, false, DefaultFocus) + 8;
+        bx += button(uid("pl.play"), ICON_PLAY, "Play", bx, by, true, &clicked, false, false, DefaultFocus, pw) + (narrow ? 10 : 8);
         if (clicked && !playList.empty()) { if (v == View::Queue) playAt(0); else playTracks(playList, 0, playName); }
         if (!noShuffle) {
-            bx += button(uid("pl.shuffle"), ICON_SHUFFLE, "Shuffle", bx, by, false, &clicked) + 8;
+            bx += button(uid("pl.shuffle"), ICON_SHUFFLE, "Shuffle", bx, by, false, &clicked, false, false, 0, pw) + (narrow ? 10 : 8);
             if (clicked && !playList.empty()) playTracks(playList, 0, playName, true);
         }
     }
@@ -213,12 +223,12 @@ void App::drawTrackList(float x, float y, float w, float h) {
         if (v == View::List && subsonic.view().state == Subsonic::SignedIn &&
             (ref < 0 || (ref < int(store.playlists.size()) && store.playlists[size_t(ref)].own() && !store.playlists[size_t(ref)].automix))) n += 1;
         if (ownPage) n += 2;   // its icon, Delete
-        const float vw0 = 6 + 38.f * (mixable ? 3 : 4);
-        if (cx + n * 42.f + 4 + vw0 <= x + w - 28) {
-            actionsLow = true;
-            bx = cx;
-            by = by1 + 34 + 10 + 1;   // (34 high, their middle on the views')
-        }
+        // (the user chose "B", 2026-11-15: the views beside Play and Shuffle, the actions alone on the row under, filling it)
+        actionsLow = true;
+        bx = cx;
+        by = by1 + 34 + 10;
+        lowGap = 10;
+        lowW = std::max(34.f, (w - 56 - lowGap * float(n - 1)) / float(std::max(1, n)));
     }
     if (v == View::Queue) {
         clicked = action("pl.jump", ICON_DISC, "Current song");
@@ -272,12 +282,12 @@ void App::drawTrackList(float x, float y, float w, float h) {
     if (ownPage) {
         const Id iid = uid("pl.icon");
         hint(iid, "The playlist's icon");
-        if (ui.item(iid, { bx, by, 34, 34 }, 17)) openPlaylistIcons(ref);
+        if (ui.item(iid, { bx, by, lowW, 34 }, 17)) openPlaylistIcons(ref);
         const bool hot = ui.pressed(iid) || (ui.focused(iid) && ui.showFocusRing());
-        g.roundRect(bx, by, 34, 34, 17, pal.accent, hot ? 0.24f : 0.14f);
-        g.roundStroke(bx, by, 34, 34, 17, 1, pal.accent, 0.45f);
-        g.icon(playlistIcon(ref), bx + 17, by + 17, 18, pal.accentInk);
-        bx += 34 + 8;
+        g.roundRect(bx, by, lowW, 34, 17, pal.accent, hot ? 0.24f : 0.14f);
+        g.roundStroke(bx, by, lowW, 34, 17, 1, pal.accent, 0.45f);
+        g.icon(playlistIcon(ref), bx + lowW / 2, by + 17, 18, pal.accentInk);
+        bx += lowW + lowGap;
     }
 
     // Delete, always the last of the actions (asked first on every playlist, folder ones too)
@@ -315,8 +325,13 @@ void App::drawTrackList(float x, float y, float w, float h) {
     } else {
         int m = int(setMode);
         const float vw = 6 + 38.f * (mixable ? 3 : 4);
-        plViewsOwnLine_ = actionsLow || (narrow && bx + vw > x + w - 28);
-        segRight -= viewSwitch("pl.view", x + w - 28, plViewsOwnLine_ ? by1 + 34 + 10 + 18 : by1 + 17, m, mixable ? 1u << int(ListMode::Grid) : 0u) + 12;
+        if (narrow) {   // upright (the user chose "B"): beside Play and Shuffle, a pill as they are; the actions' row under (a second line)
+            plViewsOwnLine_ = actionsLow;
+            segRight -= viewSwitch("pl.view", x + w - 28, by1 + 17, m, mixable ? 1u << int(ListMode::Grid) : 0u, vw) + 12;
+        } else {
+            plViewsOwnLine_ = actionsLow || (narrow && bx + vw > x + w - 28);
+            segRight -= viewSwitch("pl.view", x + w - 28, plViewsOwnLine_ ? by1 + 34 + 10 + 18 : by1 + 17, m, mixable ? 1u << int(ListMode::Grid) : 0u) + 12;
+        }
         if (m != int(setMode)) store.viewPlaylist = m;
     }
     if (tabs && !narrow) {   // Songs · Albums · Artists · Genres · Playlists · Lyrics, in one place whatever the tab's views (none, three or four)
@@ -325,7 +340,7 @@ void App::drawTrackList(float x, float y, float w, float h) {
         // (36 high, as the views' switch beside it and Library's tabs: 34 was thinner than both; the user, 2026-11-11)
         if (tabsLine) segmented(uid("pl.stab"), cx + segW, cyTop + 120 + 12 + 17, kSearchTabs, stab, &picked, 0, 0, 0, 36);   // (searchTabsOwnLine)
         else
-        segmented(uid("pl.stab"), segRight, by1 + 17, kSearchTabs, stab, &picked, 0, 0, 0, 36);
+        segmented(uid("pl.stab"), segRight, by1 + 17, kSearchTabs, stab, &picked, 0, searchTabsRoom(w), 0, 36);   // (tighter where the room is short)
         if (picked >= 0 && picked != stab) { searchTab_ = picked; sa.target = sa.y = 0; }
     }
 
@@ -530,10 +545,10 @@ void App::drawAlbum(float x, float y, float w, float h) {
     // narrow (a phone upright): the cover on top, the title, its line and the actions under it (Play and Shuffle named, the rest
     // round with their icons)
     const bool narrow = w < kNarrowList;
-    const float ncs = std::min(w - 60, 240.f);
+    const float ncs = std::min(w - 56, 240.f);
     const Font h1{ narrow ? css::Xxl : 46, narrow ? Weight::Bold : Weight::ExtraBold };
     const float lineH = narrow ? 38.f : 48.f;
-    const std::vector<std::string> lines = g.wrap(al.title, h1, int(narrow ? w - 60 : w - (x + 30 + 220 + 28 - x) - 30), 2);
+    const std::vector<std::string> lines = g.wrap(al.title, h1, int(narrow ? w - 56 : w - (x + 30 + 220 + 28 - x) - 30), 2);
     const float heroH = narrow ? 22 + ncs + 18 + 24 + lines.size() * lineH + 8 + 22 + 16 + 34 + 18 : 26 + 220 + 22;
     sa.view = { x, y, w, h };
     sa.content = heroH + 30 + 8 + al.tracks.size() * RowH + 24;
@@ -546,7 +561,7 @@ void App::drawAlbum(float x, float y, float w, float h) {
     coverBox(al.tracks[0], cx, cyTop, narrow ? ncs : 220, 12);
 
     // h1 + .album-meta + .album-actions, bottom-aligned with the cover (narrow: under it)
-    const float tx = narrow ? x + 30 : cx + 220 + 28, tw = w - (tx - x) - 30;
+    const float tx = narrow ? x + 28 : cx + 220 + 28, tw = w - (tx - x) - (narrow ? 28 : 30);   // (upright: 28, every page's margin)
     float ty = narrow ? cyTop + ncs + 18 : cyTop + 220 - 34 - 16 - 22 - 8 - lines.size() * 48 - 6 - 18;
     kicker("Album", tx, ty + 8, pal.text3);
     ty += 18 + 6;
@@ -561,9 +576,13 @@ void App::drawAlbum(float x, float y, float w, float h) {
     float bx = tx;
     bool clicked = false;
     const std::string name = al.title;
-    bx += button(uid("al.play"), ICON_PLAY, "Play", bx, ty, true, &clicked, false, false, DefaultFocus) + 8;
+    // upright (the user chose "B", 2026-11-15): Play and Shuffle fill the row up to the round ones, a gap of 10
+    const std::string& gs0 = lib.tracks[al.tracks[0]].genre;
+    const int rounds = 2 + (gs0.empty() || gs0[0] == ';' ? 0 : 1);
+    const float pw = narrow ? (tw - rounds * (34 + 10.f) - 10) / 2 : 0, gp = narrow ? 10.f : 8.f;
+    bx += button(uid("al.play"), ICON_PLAY, "Play", bx, ty, true, &clicked, false, false, DefaultFocus, pw) + gp;
     if (clicked) playTracks(al.tracks, 0, name);
-    bx += button(uid("al.shuffle"), ICON_SHUFFLE, "Shuffle", bx, ty, false, &clicked) + 8;
+    bx += button(uid("al.shuffle"), ICON_SHUFFLE, "Shuffle", bx, ty, false, &clicked, false, false, 0, pw) + gp;
     if (clicked) playTracks(al.tracks, 0, name, true);
     // the rest: named, or (narrow) round with the icon only, their names as hints
     auto more = [&](const char* key, const char* icon, const std::string& label) {
@@ -574,7 +593,7 @@ void App::drawAlbum(float x, float y, float w, float h) {
         g.roundRect(bx, ty, 34, 34, 17, pal.text, ui.pressed(id) || (ui.focused(id) && ui.showFocusRing()) ? 0.11f : 0.065f);
         g.roundStroke(bx, ty, 34, 34, 17, 1, pal.text, 0.15f);
         g.icon(icon, bx + 17, ty + 17, 16, pal.text);
-        bx += 34 + 8;
+        bx += 34 + 10;
         return c;
     };
     if (more("al.artist", ICON_MIC, "Artist")) openArtist(al.artist);
@@ -634,6 +653,44 @@ void App::drawFolders(float x, float y, float w, float h) {
     float bx = x + 28;
     bool clicked = false;
     const std::string name = isRoot ? "Music" : node.name;
+    // upright (the user chose "B", 2026-11-15): every control a pill filling its row, Play and Shuffle up to the views, the folder's
+    // own actions on the next row in equal widths; too narrow for that (2), the views take a row of their own under them (1)
+    const int pills = w >= kNarrowList ? 0 : (w - 56 - (6 + 38.f * (ownTracks ? 4 : 3)) - 20) / 2 < 110 ? 1 : 2;
+    if (pills) {
+        const int pl = store.playlistByPath(node.path);
+        const float W = w - 56, vw = 6 + 38.f * (ownTracks ? 4 : 3);
+        const float pw = pills == 1 ? (W - 10) / 2 : (W - vw - 20) / 2;
+        button(uid("fo.play"), ICON_PLAY, "Play", x + 28, cy, true, &clicked, false, false, DefaultFocus, pw);
+        if (clicked) if (const std::vector<int> all = lib.tracksUnder(f); !all.empty()) playTracks(all, 0, name);
+        button(uid("fo.shuffle"), ICON_SHUFFLE, "Shuffle", x + 28 + pw + 10, cy, false, &clicked, false, false, 0, pw);
+        if (clicked) if (const std::vector<int> all = lib.tracksUnder(f); !all.empty()) playTracks(all, 0, name, true);
+        int m = shownMode;
+        if (pills == 2) viewSwitch("fo.view", x + w - 28, cy + 17, m, ownTracks ? 0u : 1u, vw);
+        cy += 34 + 10;
+        // the folder's own actions: one row, each the same width
+        struct Act { const char* key; const char* icon; std::string label; bool on; };
+        std::vector<Act> acts;
+        if (!isRoot) acts.push_back({ "fo.up", ICON_BACK, "Up", false });
+        acts.push_back({ "fo.addpl", pl >= 0 ? ICON_LIST : ICON_PLUS, pl >= 0 ? "In playlists" : "Add as playlist", pl >= 0 });
+        if (!node.children.empty()) acts.push_back({ "fo.addall", ICON_PLUS, "Add all", false });
+        const float aw = (W - 10 * float(acts.size() - 1)) / float(acts.size());
+        for (size_t i = 0; i < acts.size(); i++) {
+            bool c = false;
+            button(uid(acts[i].key), acts[i].icon, acts[i].label, x + 28 + float(i) * (aw + 10), cy, false, &c, acts[i].on, false, 0, aw);
+            if (!c) continue;
+            if (std::string(acts[i].key) == "fo.up") { navigate(View::Folders, node.parent, {}, false); ui.focus(uid("fo.dir", f)); }
+            else if (std::string(acts[i].key) == "fo.addall") addSubfoldersAsPlaylists(f);
+            else if (pl >= 0) confirmRemoveFolderPlaylist(pl, total);
+            else {
+                const std::string as = store.freePlaylistName(name);
+                store.playlists.push_back({ as, node.path, {} });
+                toast("Added “" + as + "” to playlists");
+                store.save();
+            }
+        }
+        if (pills == 1) { cy += 34 + 10; viewSwitch("fo.view", x + w - 28, cy + 17, m, ownTracks ? 0u : 1u, W); }
+        if (m != shownMode) store.viewFolders = m;
+    } else {
     // (everything below it is gathered at the press: every frame, it walked the folder's whole tree)
     bx += button(uid("fo.play"), ICON_PLAY, "Play", bx, cy, true, &clicked, false, false, DefaultFocus) + 8;
     if (clicked) if (const std::vector<int> all = lib.tracksUnder(f); !all.empty()) playTracks(all, 0, name);
@@ -671,6 +728,7 @@ void App::drawFolders(float x, float y, float w, float h) {
         if (narrow && bx + vw > x + w - 28) { cy += 34 + 10; }   // upright: on a line of its own where the buttons leave no room
         viewSwitch("fo.view", x + w - 28, cy + 17, m, ownTracks ? 0u : 1u);
         if (m != shownMode) store.viewFolders = m;   // a folder without tracks leaves a chosen "by album" as it is
+    }
     }
     cy += 34 + 16;
 

@@ -228,7 +228,10 @@ void App::drawAlbums(float x, float y, float w, float h) {
     const int loose = looseTracks();
     std::string sub = std::to_string(lib.albums.size()) + " albums · " + std::to_string(lib.tracks.size()) + " tracks";
     if (loose && meta.taggedCount() >= int(lib.tracks.size())) sub += " · " + std::to_string(loose) + " without an album tag";
-    drawAlbumGrid(x, y, w, h, viewHead("Library", "Albums", sub, x, y, w));
+    const float hb = viewHead("Library", "Albums", sub, x, y, w);
+    // upright: the sort and the views on a row of their own under the head, as Songs' tools (the user chose "B", 2026-11-15)
+    const bool pills = w < kNarrowList;
+    drawAlbumGrid(x, y, w, h, pills ? hb + 2 + 34 + 16 : hb, pills);
 }
 
 /** Local | Server (while signed in to a server): the whole app's library, in the title bar (the user, 2026-11-06: "always there",
@@ -305,56 +308,66 @@ void App::drawTracksTab(float x, float y, float w, float h, float top) {
     bool clicked = false;
     float bx = x + 28;
     const float by = top;
-    bx += button(uid("trk.play"), ICON_PLAY, "Play", bx, by, true, &clicked, false, false, DefaultFocus) + 8;
-    if (clicked && !list.empty()) playTracks(list, 0, "Library");
-    bx += button(uid("trk.shuffle"), ICON_SHUFFLE, "Shuffle", bx, by, false, &clicked) + 8;
-    if (clicked && !list.empty()) playTracks(list, 0, "Library", true);
-    // narrow (a phone upright): the filter, sort and direction on a line of their own under Play and Shuffle; the views right of
-    // Play and Shuffle where they fit, else on a line of their own (the user, 2026-11-06: "Tracks do not have views in android portrait")
     const bool narrow = w < kNarrowList;
+    // narrow (a phone upright; the user chose "B", 2026-11-15: "make the pills fill the rows"): every control a pill, one gap of
+    // 10; Play and Shuffle share the first row up to the views, the filter, sort and direction fill the second. Too narrow for
+    // that, the views take a row of their own and Play and Shuffle halve theirs
+    const bool pills = narrow;
+    const float vwN = 6 + 38 * 4;
+    const bool viewsLow = narrow && (w - 56 - vwN - 20) / 2 < 110;
+    const float pw = !narrow ? 0 : viewsLow ? (w - 56 - 10) / 2 : (w - 56 - vwN - 20) / 2;
+    bx += button(uid("trk.play"), ICON_PLAY, "Play", bx, by, true, &clicked, false, false, DefaultFocus, pw) + (pills ? 10 : 8);
+    if (clicked && !list.empty()) playTracks(list, 0, "Library");
+    bx += button(uid("trk.shuffle"), ICON_SHUFFLE, "Shuffle", bx, by, false, &clicked, false, false, 0, pw) + (pills ? 10 : 8);
+    if (clicked && !list.empty()) playTracks(list, 0, "Library", true);
     float ty = narrow ? by + 34 + 10 : by;
     const float fx0 = narrow ? x + 28 : bx;
     float rx = x + w - 28;
+    const float pr = 17, gap = pills ? 10 : 8;
     {
         int mode = store.viewTracks;
         if (!narrow) rx -= viewSwitch("trk.view", rx, by + 17, mode) + 8;
+        else if (!viewsLow) viewSwitch("trk.view", x + w - 28, by + 17, mode, 0, vwN);
         else {
-            const float vy = bx + 6 + 38 * 4 <= x + w - 28 ? by : by + 34 + 10;
-            if (vy > by) ty += 34 + 10;
-            viewSwitch("trk.view", x + w - 28, vy + 17, mode);
+            viewSwitch("trk.view", x + w - 28, ty + 17, mode, 0, w - 56);
+            ty += 34 + 10;
         }
         store.viewTracks = mode;
     }
     // direction
     const Id did = uid("trk.dir");
-    if (ui.item(did, { rx - 36, ty, 36, 34 }, 9)) { store.tracksDesc = !store.tracksDesc; persistSoon(0.5f); }
-    g.roundRect(rx - 36, ty, 36, 34, 9, pal.text, ui.focused(did) && ui.showFocusRing() ? 0.11f : 0.065f);
-    g.icon(store.tracksDesc ? ICON_SORT_UP : ICON_SORT_DOWN, rx - 18, ty + 17, 17, pal.text2);
-    rx -= 36 + 8;
+    const float dw = pills ? 34 : 36;
+    if (ui.item(did, { rx - dw, ty, dw, 34 }, pills ? pr : 9)) { store.tracksDesc = !store.tracksDesc; persistSoon(0.5f); }
+    g.roundRect(rx - dw, ty, dw, 34, pills ? pr : 9, pal.text, ui.focused(did) && ui.showFocusRing() ? 0.11f : 0.065f);
+    if (pills) g.roundStroke(rx - dw, ty, dw, 34, pr, 1, pal.text, 0.15f);
+    g.icon(store.tracksDesc ? ICON_SORT_UP : ICON_SORT_DOWN, rx - dw / 2, ty + 17, 17, pal.text2);
+    rx -= dw + gap;
     // sort: a select that cycles, as the album grid's
     const Font sf{ css::Sm };
-    const float sw = g.measure(SortNames[store.tracksSort], sf) + 20 + 26;
+    const float sw = g.measure(SortNames[store.tracksSort], sf) + 20 + 26 + (pills ? 8 : 0);
     const Id sid = uid("trk.sort");
-    if (ui.item(sid, { rx - sw, ty, sw, 34 }, 8)) { store.tracksSort = (store.tracksSort + 1) % 6; persistSoon(0.5f); }
-    g.roundRect(rx - sw, ty, sw, 34, 8, pal.text, ui.focused(sid) && ui.showFocusRing() ? 0.11f : 0.065f);
-    g.roundStroke(rx - sw, ty, sw, 34, 8, 1, pal.text, 0.15f);
-    g.textC(SortNames[store.tracksSort], sf, rx - sw + 10, ty + 17, pal.text);
-    g.icon(ICON_CHEV, rx - 16, ty + 17, 14, pal.text3);
-    rx -= sw + 8;
+    if (ui.item(sid, { rx - sw, ty, sw, 34 }, pills ? pr : 8)) { store.tracksSort = (store.tracksSort + 1) % 6; persistSoon(0.5f); }
+    g.roundRect(rx - sw, ty, sw, 34, pills ? pr : 8, pal.text, ui.focused(sid) && ui.showFocusRing() ? 0.11f : 0.065f);
+    g.roundStroke(rx - sw, ty, sw, 34, pills ? pr : 8, 1, pal.text, 0.15f);
+    g.textC(SortNames[store.tracksSort], sf, rx - sw + (pills ? 16 : 10), ty + 17, pal.text);
+    g.icon(ICON_CHEV, rx - (pills ? 20 : 16), ty + 17, 14, pal.text3);
+    rx -= sw + gap;
     // filter: the console keyboard (Gatefold filters as you type; here, as you finish)
     static const char* const FilterBy[] = { "Filter artists…", "Filter titles…", "Filter albums…", "Filter years…", "Filter genres…", "Filter titles…" };
     const std::string ft = tracksFilter.empty() ? FilterBy[std::clamp(store.tracksSort, 0, 5)] : tracksFilter;
-    const float fw = narrow ? std::max(80.f, rx - fx0 - 8) : std::min(220.f, std::max(120.f, rx - fx0 - 8));
+    const float fw = pills ? rx - fx0 : narrow ? std::max(80.f, rx - fx0 - 8) : std::min(220.f, std::max(120.f, rx - fx0 - 8));
     const Id fid = uid("trk.filter");
-    if (ui.item(fid, { rx - fw, ty, fw, 34 }, 8)) {
+    if (ui.item(fid, { rx - fw, ty, fw, 34 }, pills ? pr : 8)) {
         std::string q = tracksFilter;
         static const char* const Header[] = { "Filter by artist", "Filter by title", "Filter by album", "Filter by year", "Filter by genre", "Filter by title" };
-        if (keyboard(Header[std::clamp(store.tracksSort, 0, 5)], tracksFilter, q)) tracksFilter = q;
+        if (!openTextKb(tracksFilter, [this](const std::string& s) { tracksFilter = s; }, "trk.filter") &&
+            keyboard(Header[std::clamp(store.tracksSort, 0, 5)], tracksFilter, q)) tracksFilter = q;
     }
-    g.roundRect(rx - fw, ty, fw, 34, 8, pal.text, ui.focused(fid) && ui.showFocusRing() ? 0.11f : 0.065f);
-    g.roundStroke(rx - fw, ty, fw, 34, 8, 1, pal.text, 0.15f);
-    g.icon(ICON_SEARCH, rx - fw + 16, ty + 17, 14, pal.text3);
-    g.textC(ft, sf, rx - fw + 30, ty + 17, tracksFilter.empty() ? pal.text3 : pal.text, 1, Align::Left, int(fw - 40));
+    g.roundRect(rx - fw, ty, fw, 34, pills ? pr : 8, pal.text, ui.focused(fid) && ui.showFocusRing() ? 0.11f : 0.065f);
+    g.roundStroke(rx - fw, ty, fw, 34, pills ? pr : 8, 1, pal.text, 0.15f);
+    g.icon(ICON_SEARCH, rx - fw + (pills ? 20 : 16), ty + 17, 14, pal.text3);
+    g.textC(ft, sf, rx - fw + (pills ? 36 : 30), ty + 17, tracksFilter.empty() ? pal.text3 : pal.text, 1, Align::Left, int(fw - 46));
+    typingMark("trk.filter", rx - fw, ty, fw, 34, pills ? pr : 8, rx - fw + (pills ? 36 : 30), tracksFilter, sf, fw - 46);
 
     // the list, with the letter index down the right edge when the sort has letters
     const float lt = ty + 34 + 14;

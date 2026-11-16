@@ -88,7 +88,7 @@ void App::drawNow(float x, float y, float w, float h) {
         if (!in.codec.empty()) bs.push_back(in.codec);
         char b[48];
         if (in.bitsPerSample && in.codec != "MP3") { snprintf(b, sizeof b, "%d-bit", in.bitsPerSample); bs.push_back(b); }
-        if (in.sampleRate) { snprintf(b, sizeof b, "%g kHz", in.sampleRate / 1000.0); bs.push_back(b); }
+        if (in.sampleRate) { snprintf(b, sizeof b, "%g kHz", in.sampleRate / 1000.0); bs.push_back(b + r4OutRateNote(in.sampleRate)); }   // (the R4's output, when not the song's)
         if (in.bitrateKbps) bs.push_back(std::to_string(in.bitrateKbps) + " kbps");
         return bs;
     };
@@ -153,7 +153,11 @@ void App::drawNow(float x, float y, float w, float h) {
         auto badgeRow = [&](bool old) {   // (in a Simple join, the outgoing song's give way to the next one's)
             const std::vector<std::string> bs = old ? badgesOf(mixOld.info) : badges;
             float bx = ix;
-            for (size_t i = 0; i < bs.size(); i++) bx += chip(bs[i], bx, cy + 11, i == 0) + 6;
+            for (size_t i = 0; i < bs.size(); i++) {   // (the codec's chip sparkles while the song plays bit-perfect: App::sparkleChip)
+                const float cw = chip(bs[i], bx, cy + 11, i == 0);
+                if (i == 0 && bitPerfectNow()) sparkleChip(bx, cy + 11, cw);
+                bx += cw + 6;
+            }
             // The first genre, as a chip that opens its page (a server track's: the server's genre); a server's track, then where from
             const int tr = old ? mixOld.track : now.track;
             const bool server = srvq_.on && !old;

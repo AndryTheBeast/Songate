@@ -47,6 +47,9 @@
     <!-- The HiBy R4 on the user's own ROM: its settings service (Settings › Sound & DAC, Appearance › Status LED). A normal
          permission, granted at install; on any other device nothing answers and Songate shows none of it -->
     <uses-permission android:name="com.andre.hibyr4.permission.HIBY_SETTINGS" />
+    <!-- Bit-perfect (BitPerfect.java): setPreferredMixerAttributes needs it, a USB DAC's as the HiBy R4's wired outputs'
+         (refused without it: SongateOS, 2026-11-16). A normal permission, granted at install -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <queries>
         <package android:name="com.andre.hibyr4.service" />
         <provider android:authorities="com.andre.hibyr4.settings" />
@@ -87,6 +90,10 @@
             android:authorities="io.github.andrythebeast.songate.apk"
             android:exported="false"
             android:grantUriPermissions="true" />
+        <!-- the HiBy R4: the media buttons' receiver Android keeps (SongateService.makeSession) -->
+        <receiver android:name=".MediaButtonReceiver" android:exported="true">
+            <intent-filter><action android:name="android.intent.action.MEDIA_BUTTON" /></intent-filter>
+        </receiver>
         <service android:name=".SongateService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />

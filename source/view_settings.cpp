@@ -124,7 +124,8 @@ float App::segmented(Id id, float rx, float cy, const std::vector<std::string>& 
     }
     const float room = maxW > 0 && opts.size() ? std::clamp((maxW - 6 - words) / opts.size(), 12.f, fill ? 1e4f : 26.f) : 26.f;   // fill: exactly maxW
     const float w = 6 + words + room * opts.size();
-    const float h = hgt, x0 = rx - w, ro = 12 * h / 36, ri = 9 * (h - 6) / 30;   // (32 high: the search box's corners)
+    // (32 high: the search box's corners; a phone upright: a pill, as every control there, the user chose "B", 2026-11-15)
+    const float h = hgt, x0 = rx - w, ro = phoneUpright() ? h / 2 : 12 * h / 36, ri = phoneUpright() ? (h - 6) / 2 : 9 * (h - 6) / 30;
     g.roundRect(x0, cy - h / 2, w, h, ro, pal.text, 0.05f);
     g.roundStroke(x0, cy - h / 2, w, h, ro, 1, pal.text, 0.09f);
     float x = x0 + 3;
@@ -255,6 +256,9 @@ void App::openEqualizer() {
 }
 
 void App::openFindSetting() {
+    // the console's and the phone's keys: what it finds shows as the words come
+    if (openTextKb(settingsQuery, [this](const std::string& s) { settingsQuery = s; area("settings.pane").target = area("settings.pane").y = 0; }, "settings"))
+        return;
     char out[128] = {};
     const plat::TextResult r = plat::askText("Settings", "Find a setting", settingsQuery.c_str(), out, sizeof out);
     if (r == plat::TextResult::Unavailable) toast("The keyboard is not available in applet mode");
@@ -929,14 +933,17 @@ void App::drawSettings(float x, float y, float w, float h) {
                                            [this](int i) { store.screenTurn = i; plat::screenRotation(i); }));
         // Size, sideways only (the user, 2026-11-04: "in portrait the default is standard but there will not be options to choose. in
         // landscape yes"): upright is always Standard, its row not shown there
-        if (!css::Phone)
+        // (both ways up, each its own: the user, 2026-11-15, "each layout has it's own layout size"; upright had none till then)
+        {
+            int& sz = css::Phone ? store.uiSizeUp : store.uiSize;
+            const char* hint = sz == 1 ? "A little larger, for a phone held close" : sz == 2 ? "Larger still: less fits on each page"
+                             : css::Phone ? "As drawn for a phone held upright" : "As on the Switch and the PC";
             cards[layoutCard].rows.insert(cards[layoutCard].rows.begin(),
-                                     segRow("Size", store.uiSize == 0 ? "As on the Switch and the PC" : store.uiSize == 1 ? "A little larger, for a phone held close"
-                                                                                                           : "Larger still: less fits on each page",
-                                            "set.uisize", { "Standard", "Medium", "Largest" }, store.uiSize, [this](int i) {
-                                                store.uiSize = i;
+                                     segRow("Size", hint, "set.uisize", { "Standard", "Medium", "Largest" }, sz, [this](int i) {
+                                                (css::Phone ? store.uiSizeUp : store.uiSize) = i;
                                                 fitPending_ = true;   // laid out again between frames
                                             }));
+        }
         // The camera's cutouts and the rounded corners, whatever the phone or tablet has (the user, 2026-11-03: "works on every android
         // or tablet ... give users lots of customisation options"): App::updateEdges
         {
@@ -1282,7 +1289,9 @@ void App::drawSettings(float x, float y, float w, float h) {
                 // A feature's colour (an alert's, a sample rate's): saturated ones (the LED has nothing behind it: pale looks white),
                 // the ROM's own among them, then the wheel. Set when chosen; seen when the feature lights. off: greyed, its switch off
                 auto colourRow = [&](const char* label, const char* key, const char* name, bool off) {
-                    static const std::vector<int> choices = { 0xff3b30, 0xfb695a, 0xffa020, 0xffcc00, 0x34c759, 0x00c7be, 0x4fc3ff, 0x00a0ff, 0xaf52de, 0xff3c8c };
+                    // (Songate's coral and amber as the LED shows them: ff3c30 and ff9030, the user's picks on the device, SongateOS 2026-11-15;
+                    // the red that was beside the coral, ff3b30, is the same light: one swatch)
+                    static const std::vector<int> choices = { 0xff3c30, 0xff9030, 0xffcc00, 0x34c759, 0x00c7be, 0x4fc3ff, 0x00a0ff, 0xaf52de, 0xff3c8c };
                     const int colour = int(strtol(r4::get(name).c_str(), nullptr, 16));
                     const int hi = std::max({ colour >> 16 & 255, colour >> 8 & 255, colour & 255 }), lo = std::min({ colour >> 16 & 255, colour >> 8 & 255, colour & 255 });
                     const bool pale = hi > 0 && float(hi - lo) / float(hi) < 0.5f;   // (HiBy's first amber, e9b589, is one)
@@ -1672,17 +1681,54 @@ void App::drawSettings(float x, float y, float w, float h) {
             Row bands;
             // The ten bands as a curve (the user chose "A, the curve", session 20, for every device): a ground with the dB lines,
             // the curve through the points and the area to 0 dB under it; a band's value shows while it is held or picked
-            bands.blockH = 262;
+            // Each band's value always shown, in a pill over the curve; held, it is typed (the user chose "A", 2026-11-15: "db info on
+            // each EQ slider", "hold the db number" to write it)
+            constexpr float valH = 32;   // the values' row
+            bands.blockH = 262 + valH;
             bands.block = [this](float bx, float by, float bw) {
                 static const char* names[GFEQ_BANDS] = { "31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k" };
                 const float padL = 34.f;   // the dB scale's room
                 const float px = bx + padL, pw = bw - padL - 8;
                 const float col = pw / GFEQ_BANDS;
-                const float top = by + 26, hh = 186.f;
+                const float top = by + 26 + valH, hh = 186.f;
                 const float y0 = top + 7, travel = hh - 14, mid = y0 + travel * 0.5f;
                 auto yOf = [&](float db) { return y0 + travel * (1 - (db + 12) / 24); };
+                {   // the values, always shown; held, typed
+                    const float vcy = by + 26;
+                    g.textC("dB", { css::Xs }, bx + padL - 8, vcy, pal.text3, 1, Align::Right);
+                    for (int i = 0; i < GFEQ_BANDS; i++) {
+                        const float cx = px + col * (i + 0.5f), cw = std::min(col - 6, 46.f);
+                        const Id vid = uid("set.eqval", i);
+                        ui.item(vid, { cx - cw / 2, vcy - 13, cw, 26 }, 13, Hold);
+                        const bool hot = ui.pressed(vid) || (ui.focused(vid) && ui.showFocusRing());
+                        const float v = store.eq.bands[i];
+                        g.roundRect(cx - cw / 2, vcy - 13, cw, 26, 13, std::fabs(v) < 0.05f ? pal.text : pal.accent, hot ? 0.2f : std::fabs(v) < 0.05f ? 0.06f : 0.14f);
+                        char b[8];
+                        snprintf(b, sizeof b, std::fabs(v) < 0.05f ? "0" : "%+.0f", double(v));
+                        g.textNumC(b, { css::Xs, Weight::SemiBold }, cx, vcy, std::fabs(v) < 0.05f ? pal.text2 : pal.accentInk, 1, Align::Center);
+                        if (ui.longPressed(vid)) {
+                            std::string out;
+                            char hdr[40];
+                            const size_t nl = strlen(names[i]);
+                            if (names[i][nl - 1] == 'k') snprintf(hdr, sizeof hdr, "%.*s kHz, in dB (−12 to +12)", int(nl - 1), names[i]);
+                            else snprintf(hdr, sizeof hdr, "%s Hz, in dB (−12 to +12)", names[i]);
+                            if (keyboard(hdr, b[0] == '+' ? b + 1 : b, out)) {
+                                const char* s = out.c_str();
+                                while (*s == ' ' || *s == '+') s++;
+                                char* end = nullptr;
+                                const double d = strtod(s, &end);
+                                if (end != s) {
+                                    GfbgEq e = store.eq;
+                                    e.bands[i] = float(std::clamp(std::round(d), -12.0, 12.0));
+                                    gfEqKeepCustom(&e);
+                                    setEq(e);
+                                }
+                            }
+                        }
+                    }
+                }
                 {   // the ground: as the settings list's, the dB lines faint, 0 dB stronger
-                    g.roundRect(bx, by, bw, 250, 16, pal.text, 0.04f);
+                    g.roundRect(bx, by, bw, 250 + valH, 16, pal.text, 0.04f);
                     for (int db : { 12, 6, 0, -6, -12 }) {
                         const float ly = yOf(float(db));
                         g.rect(px, ly - 0.5f, pw, 1, pal.text, db == 0 ? 0.22f : 0.07f);
@@ -1801,14 +1847,19 @@ void App::drawSettings(float x, float y, float w, float h) {
         const int rateHz = r4::getInt("st_rate", 0);
         char rate[24] = "";
         if (rateHz > 0) {
-            if (rateHz % 1000 == 0) snprintf(rate, sizeof rate, "%d kHz", rateHz / 1000);
+            if (rateHz >= 1000000) snprintf(rate, sizeof rate, "%.1f MHz", rateHz / 1000000.0);   // (DSD: 2.8 MHz)
+            else if (rateHz % 1000 == 0) snprintf(rate, sizeof rate, "%d kHz", rateHz / 1000);
             else snprintf(rate, sizeof rate, "%.1f kHz", rateHz / 1000.0);
         }
         // the header: what plays through and where, the rate, then chips of what is set
         const bool lineOut = (st != "Balance" && st != "BalanceLo" && st != "none" && out35) || st == "BalanceLo";
         const std::string what = st == "none" ? "Nothing plugged in" : st == "Balance" ? "Balanced" : lineOut ? "Line out" : "Headphone";
         const std::string where = st == "none" ? "3.5 mm or 4.4 mm" : (st == "Balance" || st == "BalanceLo") ? "4.4 mm" : "3.5 mm";
-        const std::string sub = rate[0] && st != "none" ? where + " · " + rate : where;
+        // (what HiBy's driver decodes, when it adds something: MQA, MQA Studio, MQB, DSD; as SongateOS's own header says it)
+        const std::string q = r4::get("st_quality");
+        const char* qName = q == "mqastudio" ? "MQA Studio" : q == "mqa" ? "MQA" : q == "mqb" ? "MQB" : q == "dsd" ? "DSD" : nullptr;
+        std::string sub = rate[0] && st != "none" ? where + " · " + rate : where;
+        if (qName && rate[0] && st != "none") sub += std::string(" · ") + qName;
         const std::string eqChip = store.eq.on ? "EQ " + eqPresetName(store.eq.preset) : std::string("EQ off");
         const std::string gainChip = lineOut ? (loGain ? "High line level" : "Low line level") : gainName[gain];
         const std::string filterChip = filterName[filter];
@@ -1862,6 +1913,17 @@ void App::drawSettings(float x, float y, float w, float h) {
                                    [lineOutAsk](int i) { if (i) lineOutAsk(false); else r4::set("out44", "bal_po"); }),
                             segRow("Line-out level", "The DAC's gain while line out is on. Gain comes back when it ends", "r4.logain", { "Low", "High" },
                                    loGain, [](int i) { r4::set("lo_gain", i ? "high" : "low"); }) } });
+        // Each song at its own rate (SongateOS's out_rate; the user's words B, 2026-11-15): first in Output
+        cards.back().rows.insert(cards.back().rows.begin(),
+                                 toggleRow("Each song at its own rate",
+                                           "The 3.5 mm and 4.4 mm outputs play each song at its own rate, with a pause of two or three seconds when it changes",
+                                           "r4.outrate", store.matchRate));
+        // Bit-perfect output (the user's ROM prompt and choices, 2026-11-15): each song to the DAC untouched when the output offers
+        // its rate and depth (a USB DAC today, SongateOS's own outputs later), while nothing changes the sound
+        cards.back().rows.push_back(toggleRow("Bit-perfect output",
+                                              "Each song straight to the DAC, unchanged, while the equalizer, levelling and crossfades are off. "
+                                              "Its format's badge sparkles",
+                                              "r4.bitperfect", store.bitPerfect));
         // Controls
         static const char* stepsKey[4] = { "15", "25", "50", "100" };
         const int stepsNow = r4::getInt("vol_steps", 25);
@@ -1872,6 +1934,9 @@ void App::drawSettings(float x, float y, float w, float h) {
             Row{ "Headphone remote", "", "The buttons on a headphone's cable: play, pause, skip", 40, [this, remote](float rx, float cy) {
                     if (toggle(uid("r4.remote"), rx - 40, cy, remote)) r4::set("remote", remote ? "0" : "1");
                 } },
+            // SongateOS's btn_wake (the user approved, 2026-11-15): beside Headphone remote, the ROM's title
+            Row{ "Media buttons wake the screen", "", "Play and pause turn the screen on, as HiBy's own player did. After a restart", 40,
+                 [this](float rx, float cy) { const bool on = r4::get("btn_wake") == "1"; if (toggle(uid("r4.btnwake"), rx - 40, cy, on)) r4::set("btn_wake", on ? "0" : "1"); } },
             segRow("Volume steps", "How finely the volume buttons move. After a restart", "r4.steps", { "15", "25", "50", "100" }, steps,
                    [](int i) { r4::set("vol_steps", stepsKey[i]); }),
             segRow("Volume after a restart", fixedVol ? "Always starts at the level below" : "As you left it", "r4.volrestore",
@@ -3143,6 +3208,7 @@ void App::drawSettings(float x, float y, float w, float h) {
         g.roundStroke(lx, cy, lw, 44, 12, 1, pal.text, 0.12f);
         g.icon(ICON_SEARCH, lx + 22, cy + 22, 18, pal.text3);
         g.textC("Find a setting", { css::Base }, lx + 42, cy + 22, pal.text3);
+        typingMark("settings", lx, cy, lw, 44, 12, lx + 42, std::string(), { css::Base }, lw - 60);
         cy += 44 + 16;
         g.roundRect(lx - 8, cy, lw + 16, sections.size() * rowH, 16, pal.text, 0.04f);
         for (int k = 0; k < int(sections.size()); k++, cy += rowH) {
@@ -3188,6 +3254,7 @@ void App::drawSettings(float x, float y, float w, float h) {
         g.icon(ICON_SEARCH, lx + 20, cy + 19, 16, pal.text3);
         g.textC(settingsQuery.empty() ? "Find a setting" : settingsQuery, { css::Base }, lx + 38, cy + 19, settingsQuery.empty() ? pal.text3 : pal.text,
                 1, Align::Left, int(lw - 50));
+        typingMark("settings", lx, cy, lw, 38, 10, lx + 38, settingsQuery, { css::Base }, lw - 50);
         cy += 38 + 12;
     }
     // Eleven categories and more sit a little closer; past what fits (Support, a dev build's Debug: About went under the
@@ -3262,6 +3329,8 @@ void App::drawSettings(float x, float y, float w, float h) {
     g.roundRect(px, py, 44, 44, 12, pal.accent, 0.16f);
     g.icon(icon, px + 22, py + 22, 22, pal.accentInk);
     g.textC(title, { 30, Weight::ExtraBold }, px + 44 + 16, py + 22, pal.text, 1, Align::Left, int(pw - 60));
+    if (!settingsQuery.empty() && skb_.open && !strcmp(skb_.field, "settings") && std::fmod(time - skb_.at, 1.06) < 0.62)   // typing: the caret in the title
+        g.rect(px + 44 + 16 + std::min(g.measureF(title, { 30, Weight::ExtraBold }), pw - 60) + 2, py + 22 - 15, 2, 30, pal.text);
     py += 44 + 20;
     if (cards.empty()) {
         g.text("Nothing matches. Press the search field to try other words.", { css::Base }, px, py + 8, pal.text3, 1, Align::Left, int(pw));

@@ -792,6 +792,12 @@ private:
     void setVolume(float v);
     bool volumeFixed() const;
     void syncVolume();       // each frame (Android): what Android says the volume is
+    /** Bit-perfect output may be used (the HiBy R4, its setting on, nothing changing the sound: the equalizer, levelling, a
+     *  crossfade or Automix, listening together, the sleep timer's fade); told to the player each frame. */
+    bool bitPerfectAllowed() const;
+    /** It is playing so now: the codec's badge sparkles (Now playing; the user chose "S2, with sweep", 2026-11-15). */
+    bool bitPerfectNow() const;
+    void sparkleChip(float x, float cy, float w);
     void drawVolumePop();    // Songate's own pop-up for the volume keys (Settings › Playback › Volume)
     double volPopFrom_ = -10, volPopUntil_ = -10;
     unsigned volGenSeen_ = 0, volKeysSeen_ = 0;
@@ -801,9 +807,33 @@ private:
     void pushEq();
     /** Each frame: the HiBy R4's refusals shown, the status LED following the accent, the equalizer sent once it is there. */
     void r4Tick();
+    // The HiBy R4's output rate following the song (SongateOS's out_rate): the rate asked, when, and the last asked (a refusal is not asked again at once)
+    int r4RateWant_ = 0, r4RateLast_ = 0;
+    double r4RateAt_ = 0, r4RatePoll_ = 0, r4RateLastAt_ = -100;
+    bool r4Wired_ = false;        // music goes to the wired outputs alone (asked of Android once a second: r4Tick)
+    double r4WiredAt_ = -10;
+    /** The R4's wired output's rate when it is not the song's: " → 96 kHz" for the rate's chip, else "" */
+    std::string r4OutRateNote(int songRate) const;
     /** The HiBy R4 with SongateOS: its boot animation has just played Songate's opening, so Songate opens straight into the app,
      *  silent, fading in from the boot animation's black (the ROM's boot prompt; the user hid the Opening card there). */
     bool bootOpening_ = false;
+    std::string mockUi_;   // dev builds: mock-ui.txt's options being shown (empty: the app as it is)
+    // Search's own keyboard card, the console's and the phone's (view_sheet.cpp): what is typed searches at once
+    // (any search field: set takes each change, field names the one typed in; neither: Search's own)
+    struct SearchKb { bool open = false, symbols = false, shift = false, pushed = false; std::string text; double at = 0; Id focusWas = 0;
+                      std::function<void(const std::string&)> set; const char* field = "search"; };
+    SearchKb skb_;
+    void openSearchKb();
+    /** The console's and the phone's typing for a search field (false on the PC: it has its own card, keyboard() then) */
+    bool openTextKb(const std::string& initial, std::function<void(const std::string&)> set, const char* field);
+    /** While the keyboard types into `field`: the field lit, the caret after its words (textX: where they begin) */
+    void typingMark(const char* field, float fx, float fy, float fw, float fh, float rad, float textX, const std::string& text, const Font& f, float maxW);
+    void closeSearchKb();
+    void searchKbSet(const std::string& t);
+    void searchKbType(const char* s);
+    void searchKbBack();
+    void drawSearchKb();
+    bool mockUi(const char* kv) const { return mockUi_.find(kv) != std::string::npos; }
     double bootFadeAt_ = -1;   // −2: due at the first frame; ≥ 0: when it began; −1: none
     void drawBootFade();
     bool r4EqSent_ = false;
@@ -1287,7 +1317,7 @@ private:
     int bodyGrab = -1;    // drawTrackBody: the index drawn picked up (the queue's Move), −1 when none
     int bodyCols = 1;     // drawTrackBody: tiles in a row last drawn (1 in the row views)
     ScrollArea* bodySortArea = nullptr;   // drawTrackBody, drawServerBody: set, the list is in sort mode (by touch) and this is its scroll area
-    float viewSwitch(const char* key, float rx, float cy, int& mode, unsigned hidden = 0);   // hidden: bit i, view i left out
+    float viewSwitch(const char* key, float rx, float cy, int& mode, unsigned hidden = 0, float fill = 0);   // hidden: bit i, view i left out; fill: that wide, a pill
     /** The #-to-Z rail down a list's right edge (railX: its left edge; top, h: the list's view): the letters present, the
      *  section showing lit; a tap or A glides there; a finger slid along it scrubs, the letter under it in a bubble (the user,
      *  2026-11-08: the small letters were poor to tap). rowY(row): that row's y in the area's content. */
@@ -1419,14 +1449,21 @@ public:
     /** Search's filter tabs on a wide page that is not wide enough for them beside Play, Shuffle and New search (a folded-open
      *  sidebar in a short window, a small phone sideways, a tablet upright): on a line of their own under the head, from the
      *  cover's side. They ran under the buttons there. */
+    /** The room the tabs have on Play and Shuffle's row: the cover and its margins, Play and Shuffle, the views and the margin taken. */
+    float searchTabsRoom(float w) {
+        const Font sf{ css::Sm, Weight::SemiBold };
+        float used = 28 + 120 + 22 + 12 + 12 + (6 + 38.f * 4) + 28;
+        for (const char* b : { "Play", "Shuffle" }) used += 16 + 24 + g.measure(b, sf) + 16 + 8;
+        return w - used;
+    }
+    /** The tabs on a line of their own only when they do not fit on that row even drawn tighter (14 round each word, not 26: the
+     *  user, 2026-11-15, on the HiBy R4 sideways, "it should be like this": on Play's row, left of the views). */
     bool searchTabsOwnLine(float w, const std::vector<std::string>& names) {
         if (w < kNarrowList) return false;
         const Font sf{ css::Sm, Weight::SemiBold };
-        // the cover and its margins; Play, Shuffle and New search at its smallest (round); the control; the views and the right margin
-        float need = 28 + 120 + 22 + (34 + 8) - 8 + 6 + 12 + (6 + 38.f * 4) + 28;
-        for (const auto& t : names) need += g.measure(t, sf) + 26;
-        for (const char* b : { "Play", "Shuffle" }) need += 16 + 24 + g.measure(b, sf) + 16 + 8;
-        return need > w;
+        float need = 6;
+        for (const auto& t : names) need += g.measure(t, sf) + 14;
+        return need > searchTabsRoom(w);
     }
     static constexpr float kSearchTabsLineH = 46;
     /** Where the background work's card is, for the toasts that point at it: above Settings in the sidebar; a phone upright has it

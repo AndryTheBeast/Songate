@@ -46,7 +46,8 @@ void App::openingScene(double t, float alpha) {
                (0.3f + 0.35f * swell) * eased((run - 0.75f) / 0.25f), shine, alpha, big, run);   // (its blur only behind letters that are there)
     // The dust: each mote lights as the star passes its place, drifts up and twinkles out
     for (int i = 0; i < kDust; i++) {
-        const float u = noise(i), born = float(kCross) * std::acos(1 - 2 * std::clamp(u, 0.f, 1.f)) / 3.14159f, life = 0.8f + 0.7f * noise(i + 100);
+        // (one slot per mote across the name, jittered: noise(i) alone leaned left, its 56 values averaging 0.42; SongateOS 2026-11-15)
+        const float u = std::clamp(((i * 15) % kDust + 0.5f + 0.8f * (noise(i) - 0.5f)) / float(kDust), 0.f, 1.f), born = float(kCross) * std::acos(1 - 2 * std::clamp(u, 0.f, 1.f)) / 3.14159f, life = 0.8f + 0.7f * noise(i + 100);
         const float k = (float(t) - born) / life;
         if (k <= 0 || k >= 1) continue;
         const float px = x + w * (u * 1.06f - 0.03f) + (noise(i + 200) - 0.5f) * 20 * k;

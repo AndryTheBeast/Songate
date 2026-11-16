@@ -1882,12 +1882,14 @@ void App::drawServer(float x, float y, float w, float h, bool inLibrary) {
             if (ui.item(fid, { rx - fw, ty, fw, 34 }, 8)) {
                 std::string q = srvFilter_;
                 static const char* const Header[] = { "Filter by artist", "Filter by title", "Filter by album", "Filter by year", "Filter by genre", "Filter by title" };
-                if (keyboard(Header[so], srvFilter_, q)) srvFilter_ = q;
+                if (!openTextKb(srvFilter_, [this](const std::string& s) { srvFilter_ = s; }, "srv.filter") && keyboard(Header[so], srvFilter_, q))
+                    srvFilter_ = q;
             }
             g.roundRect(rx - fw, ty, fw, 34, 8, pal.text, ui.focused(fid) && ui.showFocusRing() ? 0.11f : 0.065f);
             g.roundStroke(rx - fw, ty, fw, 34, 8, 1, pal.text, 0.15f);
             g.icon(ICON_SEARCH, rx - fw + 16, ty + 17, 14, pal.text3);
             g.textC(ft, sf, rx - fw + 30, ty + 17, srvFilter_.empty() ? pal.text3 : pal.text, 1, Align::Left, int(fw - 40));
+            typingMark("srv.filter", rx - fw, ty, fw, 34, 8, rx - fw + 30, srvFilter_, sf, fw - 40);
 
             const float lt = ty + 34 + 14;
             const bool index = !srvTracks_.letters.empty() && store.viewTracks != int(ListMode::Grid) && railOn(16u);
@@ -2523,7 +2525,7 @@ void App::drawServerSearch(float x, float y, float w, float h) {
             for (const auto& t : names) sw += g.measure(t, { css::Sm, Weight::SemiBold }) + 26;
             segmented(uid("pl.stab"), cx + sw, cyTop + 120 + 12 + 17, names, tab, &picked, 0, 0, 0, 36);
         } else
-        segmented(uid("pl.stab"), segRight, by + 17, names, tab, &picked, 0, 0, 0, 36);
+        segmented(uid("pl.stab"), segRight, by + 17, names, tab, &picked, 0, searchTabsRoom(w), 0, 36);   // (tighter where the room is short)
         if (picked >= 0 && picked != tab) { searchTab_ = picked; sa.target = sa.y = 0; }
     }
 
