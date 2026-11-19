@@ -198,9 +198,9 @@ bool mergeStrays(std::string& log) {
         std::string a, b;
         if (!readFile(from, a)) return false;
         bool ok = true;
-        if (n == "bg-session.tmp") {
-            // half of a write: nothing to keep
-        } else if (n == "bg-plays.txt" || n == "bg-scrobbles.txt") {
+        if (n == "bg-session.tmp" || n == "bg-scrobbles.txt") {
+            // half of a write, or the plays an old background player kept for Last.fm (taken out): nothing to keep
+        } else if (n == "bg-plays.txt") {
             // logs: the lines songate-nx's lacks are added (the app reads them and empties them)
             readFile(to, b);
             std::set<std::string> have;

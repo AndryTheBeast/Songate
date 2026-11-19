@@ -38,6 +38,8 @@ import android.view.Surface;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
@@ -323,6 +325,11 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         return new SDLSurface(context);
     }
 
+    /** Songate: true while the activity must wait (SongateActivity: before the first unlock) */
+    protected boolean holdStart() {
+        return false;
+    }
+
     // Setup
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -335,6 +342,13 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
             Thread.currentThread().setName("SDLActivity");
         } catch (Exception e) {
             Log.v(TAG, "modify thread properties failed " + e.toString());
+        }
+
+        // Songate: held before the first unlock (the device's storage not readable yet): nothing of SDL starts, and its lifecycle
+        // steps do nothing (the broken-libraries flag, which they all check); the activity starts again once Android unlocks
+        if (holdStart()) {
+            mBrokenLibraries = true;
+            return;
         }
 
         // Load shared libraries
@@ -491,6 +505,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     protected void onResume() {
         Log.v(TAG, "onResume()");
         super.onResume();
+        if (mFullscreenModeActive) hideSystemBars(getWindow());   // (Songate: a wake, back from another app: the bars hidden at once)
 
         if (mHIDDeviceManager != null) {
             mHIDDeviceManager.setFrozen(false);
@@ -559,6 +574,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
 
         mHasFocus = hasFocus;
         if (hasFocus) {
+           if (mFullscreenModeActive) hideSystemBars(getWindow());   // (Songate: at once, not after SDL's delay)
            mNextNativeState = NativeState.RESUMED;
            SDLActivity.getMotionListener().reclaimRelativeMouseModeIfNeeded();
 
@@ -809,17 +825,14 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
                         Window window = ((Activity) context).getWindow();
                         if (window != null) {
                             if ((msg.obj instanceof Integer) && ((Integer) msg.obj != 0)) {
-                                int flags = View.SYSTEM_UI_FLAG_FULLSCREEN |
-                                        View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
-                                        View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY |
-                                        View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
-                                        View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
-                                        View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.INVISIBLE;
-                                window.getDecorView().setSystemUiVisibility(flags);
-                                window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
-                                window.clearFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
+                                hideSystemBars(window);
                                 SDLActivity.mFullscreenModeActive = true;
                             } else {
+                                if (Build.VERSION.SDK_INT >= 30) {   // (Songate: the insets controller's way, as hideSystemBars)
+                                    window.setDecorFitsSystemWindows(true);
+                                    WindowInsetsController c = window.getInsetsController();
+                                    if (c != null) c.show(WindowInsets.Type.systemBars());
+                                }
                                 int flags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_VISIBLE;
                                 window.getDecorView().setSystemUiVisibility(flags);
                                 window.addFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
@@ -1657,18 +1670,36 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     private final Runnable rehideSystemUi = new Runnable() {
         @Override
         public void run() {
-            if (Build.VERSION.SDK_INT >= 19 /* Android 4.4 (KITKAT) */) {
-                int flags = View.SYSTEM_UI_FLAG_FULLSCREEN |
-                        View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
-                        View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY |
-                        View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
-                        View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
-                        View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.INVISIBLE;
-
-                SDLActivity.this.getWindow().getDecorView().setSystemUiVisibility(flags);
-            }
+            hideSystemBars(SDLActivity.this.getWindow());
         }
     };
+
+    /** Songate: the status bar and the navigation (the gesture pill) hidden. Android 11 on, through the window's insets controller:
+     *  the hidden state belongs to the window and outlives the screen going off and on. The legacy flags (setSystemUiVisibility),
+     *  which Android drops at a screen off, brought the bars back for about a second at each wake until SDL hid them again (the
+     *  user's HiBy R4, 2026-11-17; the SongateOS session's finding). A swipe from the edge still shows them for a moment. */
+    static void hideSystemBars(Window window) {
+        if (window == null) return;
+        if (Build.VERSION.SDK_INT >= 30) {
+            window.setDecorFitsSystemWindows(false);
+            WindowInsetsController c = window.getInsetsController();
+            if (c != null) {
+                c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                c.hide(WindowInsets.Type.systemBars());
+            }
+            window.clearFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
+            return;
+        }
+        int flags = View.SYSTEM_UI_FLAG_FULLSCREEN |
+                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY |
+                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
+                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.INVISIBLE;
+        window.getDecorView().setSystemUiVisibility(flags);
+        window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        window.clearFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
+    }
 
     public void onSystemUiVisibilityChange(int visibility) {
         if (SDLActivity.mFullscreenModeActive && ((visibility & View.SYSTEM_UI_FLAG_FULLSCREEN) == 0 || (visibility & View.SYSTEM_UI_FLAG_HIDE_NAVIGATION) == 0)) {

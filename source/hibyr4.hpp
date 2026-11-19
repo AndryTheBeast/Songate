@@ -33,6 +33,9 @@ void eqSet(const GfbgEq& e);
 /** The ROM's equalizer's Automatic preamp (its eq value's field 1; the same switch as Settings › HiBy audio › Equalizer):
  *  on, it lowers its input by the largest band boost so a boost never clips. Songate's own preamp is a stage of its own. */
 bool autoPreamp();
+/** The ROM's equalizer is on (its eq value's field 0, as the service has it; false while not known): it may be switched on outside
+ *  Songate (Android's Settings › HiBy audio › Equalizer), and it changes the sound as Songate's does */
+bool eqOn();
 void setAutoPreamp(bool on);
 /** The LED's custom colour shown at once while dragging (at most 25 a second), nothing saved: set() led_color on release. */
 void ledLive(int rgb, int bright, bool breath);

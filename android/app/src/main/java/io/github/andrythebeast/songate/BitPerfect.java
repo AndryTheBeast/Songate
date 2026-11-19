@@ -72,6 +72,20 @@ final class BitPerfect {
         return 0;
     }
 
+    /** Media still plays to the device it is claimed on: false once it has moved (Bluetooth connected, the wired output's claim left
+     *  set: Android's listener says nothing then; the user's R4, 2026-11-17: still "bit-perfect" over Bluetooth). */
+    static synchronized boolean routed() {
+        if (claimed == null || Build.VERSION.SDK_INT < 34 || HibyR4.context == null) return false;
+        try {
+            final AudioManager am = HibyR4.context.getSystemService(AudioManager.class);
+            if (am == null) return false;
+            final List<AudioDeviceInfo> devices = am.getAudioDevicesForAttributes(attrs());
+            return devices != null && !devices.isEmpty() && devices.get(0).getId() == claimed.getId();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
     /** Lets it go: the device back to Android's mixer for Songate too. */
     static synchronized void end() {
         if (claimed == null || Build.VERSION.SDK_INT < 34 || HibyR4.context == null) { claimed = null; return; }
@@ -92,6 +106,11 @@ final class BitPerfect {
         am.addOnPreferredMixerAttributesChangedListener(HibyR4.context.getMainExecutor(), (a, dev, mixer) -> {
             final boolean on = mixer != null && mixer.getMixerBehavior() == AudioMixerAttributes.MIXER_BEHAVIOR_BIT_PERFECT;
             Log.i("Songate", "SongateAudio: Android says bit-perfect " + (on ? "on" : "off") + " for " + (dev != null ? dev.getProductName() : "?"));
+            // only the device it is claimed on now: one let go (the 4.4 mm's route when the 3.5 mm went in mid-song) says "off" after
+            // the new claim, which marked the song off though it played bit-perfect (the user's R4, 2026-11-19)
+            synchronized (BitPerfect.class) {
+                if (dev != null && (claimed == null || claimed.getId() != dev.getId())) return;
+            }
             try {
                 nativeBitPerfect(on);
             } catch (UnsatisfiedLinkError ignored) {

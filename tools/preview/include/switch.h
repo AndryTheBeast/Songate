@@ -15,6 +15,7 @@ typedef u32 Result;
 
 enum {
     HidNpadButton_A = 1u << 0, HidNpadButton_B = 1u << 1, HidNpadButton_X = 1u << 2, HidNpadButton_Y = 1u << 3,
+    HidNpadButton_StickL = 1u << 4, HidNpadButton_StickR = 1u << 5,
     HidNpadButton_L = 1u << 6, HidNpadButton_R = 1u << 7, HidNpadButton_ZL = 1u << 8, HidNpadButton_ZR = 1u << 9,
     HidNpadButton_Plus = 1u << 10, HidNpadButton_Minus = 1u << 11, HidNpadButton_Left = 1u << 12, HidNpadButton_Up = 1u << 13,
     HidNpadButton_Right = 1u << 14, HidNpadButton_Down = 1u << 15, HidNpadButton_StickLLeft = 1u << 16, HidNpadButton_StickLUp = 1u << 17,

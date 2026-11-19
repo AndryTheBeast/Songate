@@ -22,6 +22,7 @@ extern std::atomic<bool> gStorageStop;   // view_storage.cpp: set as Songate clo
 #include "automix.hpp"
 #include "bgclient.hpp"
 #include "gfx.hpp"
+#include "lrcwords.hpp"
 #include "connect.hpp"
 #include "filecopy.hpp"
 #include "together.hpp"
@@ -31,7 +32,6 @@ extern std::atomic<bool> gStorageStop;   // view_storage.cpp: set as Songate clo
 #include "airsend.hpp"
 #include "syncer.hpp"
 #include "identity.hpp"
-#include "lastfm.hpp"
 #include "subsonic.hpp"
 #include "levels.hpp"
 #include "mood.hpp"
@@ -81,8 +81,10 @@ enum class View { Now, Queue, Artists, Artist, Genres, Genre, Library, Album, Fo
 
 /** Gatefold 1.4.2's four list views (.pl-modes): by album, with covers, as tiles, as a plain list. */
 enum class ListMode { Albums = 0, Covers = 1, Grid = 2, List = 3 };
+/** What Songate's keyboard card types: a search, a name, a dB value (the number pad upright), a 6-digit code (the same pad) */
+enum class KbKind : uint8_t { Search, Text, Number, Code, Long, Minutes };   // (Long: sentences, the field wraps them; Number: a dB value; Minutes: 1 to 999)
 
-struct LyricLine { double t; std::string text; };
+struct LyricLine { double t; std::string text; std::vector<LyricWord> words; };   // words: word-synced (lrcwords.hpp), else none
 
 /** An artist or a genre: its name, the albums under it and every track, albums or not. */
 struct Artist {
@@ -198,6 +200,11 @@ private:
     // ---------------- palette
     Palette pal = paletteDefault();
     Palette target = paletteDefault();
+    // a new song's cover: the colours from palFrom_ to target on the cover's own fade (now.fade, coverEase), while palWithCover_
+    Palette palFrom_ = paletteDefault();
+    bool palWithCover_ = false;
+    /** The covers' crossfade curve (Gatefold's var(--ease)): the cover, the blurred cover behind and the colours all follow it */
+    static float coverEase(float t);
     Palette coverPal = paletteDefault();   // the playing cover's own colours, whatever the theme
     std::vector<uint8_t> coverPx;          // its 64×64 sample, so Brightness and Saturation can rebuild coverPal
     /** Background blur (Settings › Appearance): the blurred cover behind the pages and the Canvas, this song's or the one before's. */
@@ -235,7 +242,12 @@ private:
     } now;
     double lyricsHold = 0;      // while loading: where the previous lyrics stay
     /** Where the lyrics are: the music's position, less the track's nudge (lyrics moved later show later). */
-    double lyricsPos() const { return (now.loading ? lyricsHold : player.position()) - lyricNudge(); }
+    double lyricsPos() const { return (extApp_ ? shownPosition() : now.loading ? lyricsHold : smoothPosition()) - lyricNudge(); }
+    // The player's place as the lyrics follow it: Songate's own player counts what the sound device took, a chunk at a time (50 to
+    // 100 ms), so a word's fill moved in steps (the user, 2026-11-19: "not smooth at ALL"). Between chunks it runs on with the clock,
+    // never back and at most 0.25 s past the last count; a seek, a pause or a new song: the count as it is
+    double smoothPosition() const;
+    mutable double smRaw_ = -1, smRawAt_ = 0, smShown_ = 0, smLastT_ = 0;
     // The lyrics nudge: per track, in 0.1 s steps, kept by Gatefold (Store::lyricNudge); + later, − earlier.
     float lyricNudge() const;
     void nudgeLyrics(float by);   // 0: back in time with the file
@@ -557,13 +569,21 @@ private:
     double sleepUntil = 0;        // App::time it runs out, 0 off (Gatefold's own playback)
     bool sleepFading = false;
     unsigned sleepGenSeen = 0;    // the background player's sleepGen last seen
-    int sleepChoice = 0;          // the choice last made (Settings' segmented control), 0 off
+    int sleepChoice = 0;          // the choice last made (Settings' segmented control), 0 off; 6 Custom (sleepCustomMin_)
+    int sleepCustomMin_ = 0;      // Custom…'s minutes, as typed (the user, 2026-11-19)
+    // The card after the timer, and sleep itself: the console's and the PC's own; Android only the HiBy R4's, through SongateOS (its
+    // power sleep turns the screen off): an app cannot put a phone to sleep (the user chose A, 2026-11-19)
+    bool sleepCardOffered() const;
+    void sleepDevice();
     bool sleepReleased = false;   // the timer ran out: the console may dim and sleep again until music plays
     bool awakeHeld = false;       // keepAwake as applied (the idle-time extension and auto-sleep off)
     int mediaState = -1;          // appletSetMediaPlaybackState as last set: playing, or kept awake
     double sleepLeft() const;     // seconds, 0 off
     void setSleep(double seconds, int choice);
     void updateSleep();
+    bool keepAwakeOn() const;        // Keep awake, or on the HiBy R4 its screen set never to turn off (Appearance › Screen)
+    bool nativeNeverSleeps() const;  // the HiBy R4: Android itself keeps the screen on (Never)
+    bool screenNeverOffered() const; // the HiBy R4's service offers Never (v41): Keep awake gives way to it
     /** seen: it ran out while Gatefold watched, so the card that puts the console to sleep may follow. */
     void sleepEnded(bool seen);
     double sleepSeenAt = 0;       // steady-clock seconds the background player's timer was last seen running
@@ -590,8 +610,18 @@ private:
         double rate = 0;          // % a minute (+ charging), 0 unknown
         plat::BatteryInfo info;   // the charger and the battery (plat::batteryInfo), every 10 s
         bool infoOk = false;
-        /** 0 not charging, 1 slow (a low-power charger), 2 normal, 3 fast. */
-        int speed() const { return charging != 1 ? 0 : !infoOk ? 2 : info.fast ? 3 : info.charger == 1 ? 2 : 1; }
+        /** 0 not charging, 1 slow (a low-power charger), 2 normal, 3 fast. The HiBy R4 (byWatts): by the power going into the battery,
+         *  under 5 W slow, 5 to 10 W normal, 10 W and over fast (the user, 2026-11-17: 0.1 W showed as normal) */
+        bool byWatts = false;
+        int speed() const {
+            if (charging != 1) return 0;
+            if (byWatts) {   // (too little to measure, no current read: slow too; the user, 2026-11-17)
+                if (!infoOk || !info.gauge) return 1;
+                const double w = info.gaugeVolts * info.gaugeAmps;
+                return w < 5 ? 1 : w < 10 ? 2 : 3;
+            }
+            return !infoOk ? 2 : info.fast ? 3 : info.charger == 1 ? 2 : 1;
+        }
         bool full() const { return charging == 1 && pct >= 99.5; }
     } battery;
     void openBattery();   // the battery's card (the title bar's battery pressed)
@@ -810,29 +840,148 @@ private:
     // The HiBy R4's output rate following the song (SongateOS's out_rate): the rate asked, when, and the last asked (a refusal is not asked again at once)
     int r4RateWant_ = 0, r4RateLast_ = 0;
     double r4RateAt_ = 0, r4RatePoll_ = 0, r4RateLastAt_ = -100;
+    double r4UsbAt_ = -10;        // a USB output's rate last read (r4Tick)
     bool r4Wired_ = false;        // music goes to the wired outputs alone (asked of Android once a second: r4Tick)
+    bool outNone_ = false;        // SongateOS says nothing is plugged in or connected (output_get's connected, v99): no bit-perfect
+    unsigned bpDropGen_ = 0;      // the load whose song was opened again on the normal path (the equalizer switched on mid-song)
+    unsigned bpTriedGen_ = 0;     // the load (loadGen) whose song was opened again for bit-perfect (r4Tick: once a song)
+    bool bpRouted_ = false;       // music goes to the output bit-perfect is claimed on (r4Tick, once a second)
+    bool bpCouldWas_ = false;     // bit-perfect was possible last frame
+    unsigned bpPendGen_ = 0;      // the load whose song is due to be opened again for it (it became possible, or was lost)
+    unsigned bpLoadSeen_ = 0;     // the load last seen, and when (a fresh claim's confirmation waited for)
+    double bpLoadAt_ = 0;
     double r4WiredAt_ = -10;
+    int plugWas_ = -1;            // headphones in the 3.5 or 4.4 mm at the last output read (-1: not read yet): Play when plugged in
     /** The R4's wired output's rate when it is not the song's: " → 96 kHz" for the rate's chip, else "" */
     std::string r4OutRateNote(int songRate) const;
     /** The HiBy R4 with SongateOS: its boot animation has just played Songate's opening, so Songate opens straight into the app,
      *  silent, fading in from the boot animation's black (the ROM's boot prompt; the user hid the Opening card there). */
     bool bootOpening_ = false;
+    /** The HiBy R4 (or the dev build's simulated one): Songate is its only launcher (the user, 2026-11-16): no Home screen page,
+     *  the Apps page always there, Songate held as the home screen */
+    bool r4Dev_ = false;
+    // SongateOS's system pages (view_settings.cpp, sysapi.hpp): Connectivity's half (0 Wi-Fi, 1 Bluetooth), the network being joined
+    // (its name while the service has none yet), Bluetooth's page shown this frame (a search stopped when it goes)
+    int connTab_ = 0;
+    // ---- SongateOS's first-boot setup (view_setup.cpp; cap `setup`, service v52; the user chose the screens, 2026-11-18)
+    /** A setup screen's part of Settings: a page (section), and its cards by title, or rows by label gathered in one card (kicker) */
+    struct SetupPane { const char* section; std::string kicker; std::vector<std::string> labels, cards; bool skipFirst = false; };
+    const SetupPane* setupPane_ = nullptr;   // while drawSettings draws a setup screen's cards
+    int setupStep_ = -1;                     // the screen shown (0 Welcome … 8 Done); −1 none
+    int setupFrom_ = -1;                     // the screen before, for the slide
+    double setupAt_ = 0;                     // when the screen changed
+    bool setupChecked_ = false;              // the service asked once at the start whether it is due
+    double setupAskedAt_ = 0;                // … asked again while it gave no answer
+    std::string settingsWant_;               // a Settings page opened by its name (the R4's tour: its pages follow About)
+    // Songate's own first start (no folder yet), held on the R4 until the setup is known; after the setup if it chose no folder
+    bool firstHeld_ = false;   // (the folder found: firstFound_, the first card's own)
+    void firstStartNow();
+    bool setupFinishing_ = false;            // setup_done sent, its answer not read yet
+    std::string setupZoneQ_;                 // the time zone screen's search
+    void setupTick();
+    void drawSetup();
+    void setupGo(int step);
+    int updTab_ = 0;               // Settings › Updates' pill on the R4: 0 Songate, 1 SongateOS (SongateOS: always 1, no pill)
+    /** On SongateOS (its service lists "ota"; not yet known on the R4 counts too): Songate updates only with the OS, so it never
+     *  looks for its own updates, offers none, installs no APK (the user, 2026-11-18: an app update could need a newer OS) */
+    bool osUpdates() const;
+    /** SongateOS has an update to give (available, downloading, ready): the dot on Settings › Updates and on Settings */
+    bool osUpdateMark() const;
+    bool startCheckDue_ = false;
+    // AirPods' Adaptive strength while it is dragged (Settings › Connectivity › Bluetooth): shown at once, sent at most every 0.3 s
+    // and on release; -1: the earbuds' own value shown
+    float apLevelDrag_ = -1;
+    double apLevelSentAt_ = 0;
+    int apLevelSent_ = -1;
+    // after a drag: the value let go on, kept until the earbuds' answer says the same (or 3 s pass), so a late answer to an earlier
+    // send never pulls the thumb back; the thumb eases to a value that changes from outside (0.2 s)
+    int apLevelHold_ = -1;
+    double apLevelHoldAt_ = 0, apLevelAnimAt_ = 0;
+    float apLevelAnim_ = -1;
+    /** The Adaptive strength to show (0..1), its thumb eased; lvl: the earbuds' own (0..100) */
+    float apLevelShown(int lvl);
+    // SongateOS's boot animation lasts until Songate is drawn (service v58's home_ready, once per start): sent a few frames after
+    // the first real one, the library loaded (sysTick)
+    bool homeReadySent_ = false;
+    int homeFrames_ = 0;
+    /** GitHub's Markdown, Songate's way (a release's notes): headings, bullets, bold; links as their words; the rest plain text.
+     *  Draws at x, y in w (draw false: only measures); its height */
+    float mdBlock(const std::string& md, float x, float y, float w, bool draw);
+    std::string foldScrollTo_;     // Settings: a card just opened, its title brought to the page's top (drawSettings)
+    // System colours (Appearance, the R4): "Your own" chosen (its rounds shown before a colour of its own is set); the wheel's
+    // colour while the picker is open, and what it was (sent to the service once the picker closes with another)
+    bool sysThemeOwn_ = false;
+    int sysThemePick_ = 0, sysThemePickFrom_ = -1;
+    std::string installAsked_;     // SongateOS's Install pressed: the version, until the service's checks answer (sysTick)
+    std::string joinSsid_;
+    bool sysBtShown_ = false, sysBtWas_ = false;
+    // phase 2: Bluetooth's page shows connected headphones; the Settings page shown this frame (its areas watched: App::sysTick);
+    // the headphones last read; the screen brightness while its slider is dragged (−1: as the service said)
+    bool sysBudsShown_ = false;
+    std::string sysPage_, sysBudsAddr_;
+    float sysBright_ = -1;
+    double sysBrightSent_ = 0;
+    void sysTick();
+    // The output switcher (the volume pop-up's line and Sound & DAC's Plays on): its list open, and where it opens from
+    // (at, where: as the pop-up's position, 0 top, 1 side, 2 bottom; −1 from Sound & DAC, over the foot)
+    bool outList_ = false;
+    float outListAt_ = -1;
+    int outListWhere_ = -1;
+    void drawOutputs();
+    // the earbuds' noise modes as a card beside the Side pop-up's round (the user, 2026-11-16: "like the plays on one does")
+    bool noiseList_ = false;
+    float noiseListAt_ = -1;
+    void drawNoiseList();
+    static const char* outIcon(const std::string& kind);   // an output's symbol: Bluetooth's, a USB DAC's, else headphones
+    static std::string codecName(const std::string& codec);   // "ldac" → "LDAC", "aptx_hd" → "aptX HD"
+    /** The start guard (Android; App::init): this start follows two that ended early (no queue opened, no network); the count
+     *  removed once this one has run 20 s or closed cleanly */
+    bool safeStart_ = false, startGuardDone_ = false;
+    void startGuardEnd();
     std::string mockUi_;   // dev builds: mock-ui.txt's options being shown (empty: the app as it is)
     // Search's own keyboard card, the console's and the phone's (view_sheet.cpp): what is typed searches at once
     // (any search field: set takes each change, field names the one typed in; neither: Search's own)
-    struct SearchKb { bool open = false, symbols = false, shift = false, pushed = false; std::string text; double at = 0; Id focusWas = 0;
-                      std::function<void(const std::string&)> set; const char* field = "search"; };
+    struct SearchKb { bool open = false, symbols = false, shift = false, caps = false, pushed = false; std::string text; double at = 0; Id focusWas = 0;
+                      size_t cur = 0;   // the cursor: a byte in text, at a letter's start (L/R move it; keys type and ⌫ takes back there)
+                      double repAt = 0; uint64_t repBtn = 0;   // B, L or R held: repeated, as HOS's keyboard does
+                      std::function<void(const std::string&)> set; const char* field = "search";
+                      // a name or a number (session 21, the user chose N1, E2 upright, S1): the card's own field under its title,
+                      // a password's dots, what Done does, what was there (cancel puts it back), a number shown selected (fresh)
+                      KbKind kind = KbKind::Search; std::string title, was; bool secret = false, fresh = false;
+                      std::function<void(const std::string&)> done; };
     SearchKb skb_;
+    /** The card for a name (Text), a dB value (Number: −12..+12) or a 6-digit code (Code); Done hands the text to `done`, `live`
+     *  takes each change (a cancel then puts `initial` back). False on the PC: it has its own typing card (askName falls back). */
+    bool askKb(KbKind kind, const char* title, const std::string& initial, std::function<void(const std::string&)> done,
+               std::function<void(const std::string&)> live = nullptr, bool secret = false, bool symbols = false);
+    /** A name or any short text: Songate's card, or the PC's typing card (keyboard()); `done` only when it is finished, not cancelled */
+    void askName(const char* title, const std::string& initial, std::function<void(const std::string&)> done, bool secret = false, bool symbols = false);
+    void finishSearchKb();
+    void secretWipe(std::string& s);
     void openSearchKb();
     /** The console's and the phone's typing for a search field (false on the PC: it has its own card, keyboard() then) */
     bool openTextKb(const std::string& initial, std::function<void(const std::string&)> set, const char* field);
     /** While the keyboard types into `field`: the field lit, the caret after its words (textX: where they begin) */
     void typingMark(const char* field, float fx, float fy, float fw, float fh, float rad, float textX, const std::string& text, const Font& f, float maxW);
     void closeSearchKb();
-    void searchKbSet(const std::string& t);
+    void searchKbSet(const std::string& t, size_t cur = std::string::npos);
+    void searchKbMove(int dir);   // the cursor a letter left (−1) or right (+1)
+    void searchKbShift();         // aA, L3 or R3: Shift for one letter, again caps lock, again off
+    void keyFeedback();           // a key typed: its click and buzz, as Settings › Controls › Keyboard says (none on the R4)
+    std::vector<float> keyClick_; // the click, made once (the console and the PC: through the player, as the opening's bells)
+    int keyClickKind_ = -1;       // … which sound it was made as
+    void keyClickPlay(bool overMusic);   // the chosen sound; overMusic: heard even while music plays (a pick in Settings only)
+    bool kbCard() const;          // whether text is typed on Songate's card here (the PC: when a pad or a finger was last)
     void searchKbType(const char* s);
     void searchKbBack();
+    void pillKey(int sym, int mod);   // the PC: a key while Search's pill takes the words
+    /** Songate's card over the page (the PC's pill typing is not: the page stays to click) */
+    bool skbModal() const { return skb_.open && !plat::textTyping().load(); }
     void drawSearchKb();
+    // Search › In your other music apps: each app that answers Android's play-from-search, a row that hands it the words (view_phone.cpp);
+    // the height drawn, 0 none (not Android, no such app, nothing typed)
+    float drawPlayElsewhere(float x, float y, float w);
+    bool playElsewhereShown();   // the card would show (an app answers, words typed)
     bool mockUi(const char* kv) const { return mockUi_.find(kv) != std::string::npos; }
     double bootFadeAt_ = -1;   // −2: due at the first frame; ≥ 0: when it began; −1: none
     void drawBootFade();
@@ -943,6 +1092,7 @@ private:
     void setBackground(bool on);
     /** Asks a name with the keyboard and makes a playlist of your own; track ≥ 0 goes into it. */
     void newPlaylist(int track);
+    void newPlaylistNamed(int track, std::string name);   // (the name typed: made, track ≥ 0 put in)
     void addToPlaylist(int playlist, int track);
     void thumbFor(int track, bool now);
     void applyTheme();
@@ -1025,6 +1175,12 @@ private:
     TrackLoader::Result coverWait_;   // a loaded cover kept for the frame after its tags (one thing at a time)
     bool coverWaiting_ = false;
     void parseLyrics(const std::string& text);
+    /** One row of a lyric line (a piece of it as wrapped), drawn word by word when the line has its words' times: each lit as far
+     *  as it is sung at pos (Apple Music's way; the user chose A, 2026-11-18), the rest dim. first: the line's first word on this
+     *  row, moved on past the row's. nextT: the next line's start (the last word's end). False: no words, or they did not match
+     *  the row (draw it as text) */
+    bool lyricRowWords(const LyricLine& l, const std::string& row, size_t& first, Font f, float x, float y, const Rgb& c, float a, double pos,
+                       double nextT);
     // Lyrics found online (BETA 3, lyrics_online.cpp; Settings → Lyrics → Online): a song with none asks LRCLIB; what comes plays
     // at once with Keep and Not these (lyricsOnlineWay 0), or is shown on a card first, Save or Not these (1)
     lyrnet::Client lyrNet;
@@ -1096,6 +1252,7 @@ private:
     void drawPlayerbar();
     void drawToast();
     void drawFocusRing();
+    std::map<Id, SDL_FRect> ringAt_;   // items whose focus ring is round part of them only (an open Settings card's chevron, a key)
     void drawPointer();
     void drawFrameTimes();
     void drawCoverNotice();
@@ -1193,6 +1350,7 @@ private:
     void openEqPresets();
     /** Your saved equalizer presets: the sound now under a name (an existing name is replaced), renamed, deleted. */
     void saveEqPreset(int into = -1);   // into: your preset k updated with the sound now, else a new one (named)
+    void saveEqPresetNamed(int into, std::string name);
     void renameEqPreset(int k);
     void deleteEqPreset(int k);
     std::string eqPresetName(int preset) const;   // the preset button's text: a preset's name, or Custom
@@ -1262,6 +1420,7 @@ private:
     int tourCount() const;
     const std::vector<TourStep>& tourSteps() const { return tourStepsAt(tourLevel); }   // the chosen tour's
     static const std::vector<TourStep>& tourStepsAt(int level);   // 0 Basic, 1 Advanced, 2 Complete
+    static inline bool tourR4_ = false;  // the HiBy R4: its own tour (set with r4Dev_ at the start)
     int tourStep = -1;                  // the step shown; −1: no tour
     int tourLevel = 0;                  // the tour chosen on its first card
     bool tourChapters = false, tourFocus = false, tourLit = false;
@@ -1414,6 +1573,7 @@ private:
     void fileSheetHeader(const char*& icon, std::string& kick, std::string& title, std::string& sub);
     void filePaste();
     void fileRename(const std::string& path);
+    void fileRenameTo(const std::string& path, const std::string& old, const std::string& name);
     void fileDelete(const std::string& path);
     void fileNewFolder(const std::string& dir);
     bool startFileWork(const std::string& label, const std::string& dest, bool library, std::function<void(FileWork&)> work,
@@ -1578,14 +1738,29 @@ public:
     void appSheetHead(const char*& icon, std::string& kick, std::string& title, std::string& sub);
     int appIconCount() const;
     void appIconGrid(float x, float ry, float w, float by, float bodyH, int cols, float tile, float rowH);
+    // each app's colour (Icon…'s Colour: from its icon, Accent, Custom; the user, 2026-11-19)
+    int appTint(const std::string& app, const std::string& tint, int& budget);
+    int appTintKind(const std::string& app) const;
+    void appTintSet(const std::string& app, int kind);
+    int appSheetTint();                        // the app in the menu or Icon…: its colour (-1 the accent)
+    static constexpr float kAppSwatchH = 50;   // Custom's colours over the symbols
+    double appsRunAt_ = -100;                  // the running apps last read (the Apps page: every 5 s)
+    std::string appPickFor_;                   // the app whose colour the picker is choosing ("" none)
+    int appPick_ = 0, appPickWas_ = 0;
     void appsRefresh(bool now = false);
     void appsMove(int from, int to);
     void appsSave();
+    void appsSync();
+    void appsOpen(const std::string& app);
     int appsHidden();
     void appsShowAll();
     double homeHeldAt_ = -100;
 #endif
     float phoneQueueP_ = 0, phoneLyricsP_ = 0, phoneSeekP_ = 1;
+    // upright, Settings › Lyrics › Under the cover: how far the lyrics have taken the row's place, the line now and before, when it came
+    float phLyrK_ = 0;
+    int phLyrLine_ = -1, phLyrPrev_ = -1;
+    double phLyrAt_ = 0;
     double phoneSeekAt_ = -10;   // the seek bar last touched
     double turnAt_ = -10;        // the phone last turned (upright ⇄ sideways): App::frame fades the new layout in
     // The scale rule (App::fitWindow): under kPhoneDp across, a window held upright is a phone's (its own layout); that layout
@@ -1667,6 +1842,12 @@ private:
     double pinnedScrollAt_ = -10;          // when it was last drawn: the right stick scrolls it while it is up
     float updBanner_ = 0;               // 0..1: the banner in the work cards' place
     int updateOffer() const;            // the release to offer, or -1
+    // SongateOS's own update offered the same way (the user, 2026-11-19): the banner's offer, a release's, kOsOffer for SongateOS's
+    // (out, downloading or ready), -1 none; Later puts it away until Songate next starts
+    static constexpr int kOsOffer = -2;
+    bool osLater_ = false;
+    int bannerOffer() const;
+    void osOfferRows(std::vector<SheetRow>& rows);
     void drawUpdateBanner(float x, float bottom, float w, bool collapsed, int rel);
     void openUpdateOffer(int rel);
     void answerUpdateOffer(int rel, bool update);
@@ -1821,7 +2002,7 @@ private:
     /** The other device, while the starter alone changes what plays: its Previous, Play, Next, seek and order are off. */
     bool togetherLocked() const;
     /** The bar's and the Canvas's playing controls are someone else's: AirPlay's iPhone, or the starter of a session. */
-    bool controlsOff() const { return (extOn && !srvq_.on) || togetherLocked(); }
+    bool controlsOff() const { return (extOn && !srvq_.on && !extApp_) || togetherLocked(); }   // (another app's: its own buttons, pressed from here)
     void togetherSetOnlyHost(bool only);
     void togetherSendWho();
     /** The order the bar shows: in a session, the other device shows the starter's, which decides what comes next on both. */
@@ -1888,6 +2069,32 @@ private:
     // An outside source on screen (AirPlay): its song, artist, album and cover in now.info and now.cover, as a track's, and no
     // library song under them (no like, actions or Up next); your own song comes back when it ends
     bool extOn = false;
+    // … another app's music (Android, otherapps.cpp): its play state, its buttons (PlaybackState's actions), its song's key, its
+    // picture's generation, its app and icon
+    bool extApp_ = false, extPlaying_ = false, otherWatching_ = false;
+    long long extActions_ = 0;
+    // its own like, where it has one (OtherApps.java's like(): a heart rating or its own button): Songate's heart presses it
+    bool extLike_ = false, extLiked_ = false;
+    double extLikeHold_ = 0;   // pressed: shown so until the app says the same, or for 3 s
+    std::string extKey_, extArt_, extPkg_;
+    SDL_Texture* extIcon_ = nullptr;
+    unsigned otherSeen_ = ~0u;
+    const char* otherWhy_ = nullptr;   // (why another app's music is not shown, logged once each time it changes)
+    double otherAt_ = -10;
+    void otherTick();
+    void otherEnd();
+    void seekShown(double sec);   // a seek bar's: the player's, or the other app's
+    // The spectrum for another app's music (otherapps.cpp): a slice of Android's output into pcm (Spectrum::N samples) and its
+    // rate, when there is one; the in-place question where the bars go (Allow / Not now), drawn in x, y, w, h (false: not due)
+    bool otherVizFeed(float* pcm, int& rate);
+    bool otherSpecAsk(float x, float y, float w, float h);
+    void otherSpecAllow();
+    bool otherVizOn_ = false;
+    std::vector<uint8_t> otherWave_;
+    void extControl(int cmd);     // another app's button: 1 play, 2 pause, 3 next, 4 previous
+    bool extCan(long long action) const;   // another app offers this button (PlaybackState.ACTION_…), or no other app
+    /** Shown as playing: the player, an outside source, or another app as it says */
+    bool shownPlaying() const { return extApp_ ? extPlaying_ : isPlaying() || (extOn && !srvq_.on); }
     std::string marqueeTitle;   // the bar's marquee starts again for a new title (an outside source keeps no track)
     std::string extFrom;
     void extBegin(const std::string& from);
@@ -2003,8 +2210,6 @@ private:
 #ifdef GF_DEV
     bool identityAsked = false;
 #endif
-    // Settings › Last.fm (lastfm.hpp)
-    Lastfm lastfm;
     Subsonic subsonic;                  // music from your own server (subsonic.hpp)
     void subsonicSignIn();              // Settings › Library › Subsonic server: the address, the user, the password, asked in turn
     // the Server tab (view_server.cpp): level 0 its artists, 1 an artist's albums, 2 an album's songs; route.query "id\x1fname"
@@ -2085,7 +2290,7 @@ private:
     void serverSignOutCard();           // Sign out: what to keep (the user, 2026-11-06)
     void serverSignedOut(bool removeAll);
     bool srvRescanAfterWipe_ = false;
-    // stage 5: the heart on a server track stars it; its play is told to the server (half of it, or 4 minutes, as Last.fm's)
+    // stage 5: the heart on a server track stars it; its play is told to the server (half of it, or 4 minutes)
     bool currentLiked();
     void toggleCurrentLike();
     std::string srvPlayFor_;
@@ -2209,22 +2414,6 @@ private:
     bool togetherPlayServer(int i);      // a server song of the queue chosen: the session's, as togetherPlayAt
     void serverTick();
     void serverLeave();
-    void allowLastfm();                 // the switch: says what is sent and where first
-    void lastfmTick();                  // every frame: what was heard, what plays, the background player's scrobbles
-    bool lastfmSong(const Track& t, double duration, int64_t when, Lastfm::Song& out) const;   // false: not enough tags
-    void lastfmHeard(const std::string& path, int64_t when);
-    SDL_Texture* lastfmCode(int& side);  // the sign-in page's QR code: made once, dropped by lastfmTick
-    double lfmHeard = 0;                // seconds of the current track heard here
-    int64_t lfmBegan = 0;               // when they began
-    bool lfmDone = false, lfmSaid = false;   // scrobbled; announced
-    double lfmBgAt = 0;
-    std::vector<std::pair<std::string, int64_t>> lfmBgWait;   // the background player's, until the library knows them
-    SDL_Texture* lfmQr = nullptr;
-    int lfmQrSide = 0;
-    bool lfmShowUrl = false;
-#ifdef GF_WINDOWED
-    std::string lfmOpened;              // the sign-in page the browser was sent to
-#endif
     void logLine(const std::string& s); // the app's log, without a toast
 #ifdef GF_DEV
     // Debug › Testing (selftest.cpp): Basic, Advanced and Full, each a scripted walk of the app logging frames and what looks wrong
@@ -2284,7 +2473,7 @@ private:
     void defaultSettings();  // ... without asking (Reset settings, and a factory reset's Settings part)
     // Settings → Reset → Factory reset: a sheet of what Gatefold keeps, each with a switch (factoryPick), then Erase what
     // is ticked, or Erase everything (asks twice). It is done when Gatefold closes (factoryMask_), which then starts again.
-    enum FactoryPart { FacSettings, FacMusic, FacPlaylists, FacLiked, FacEdits, FacLyrics, FacLyricsOnline, FacEqPresets, FacStats, FacQueue, FacLastfm, FacConnections, FacCaches, FacParts };
+    enum FactoryPart { FacSettings, FacMusic, FacPlaylists, FacLiked, FacEdits, FacLyrics, FacLyricsOnline, FacEqPresets, FacStats, FacQueue, FacServer, FacConnections, FacCaches, FacParts };
     void openFactory();
     void factoryRows(std::vector<SheetRow>& rows);
     void factoryErase(unsigned mask);   // asks (twice for everything), then closes Gatefold
@@ -2342,6 +2531,7 @@ private:
     void openPlaylistMenu(int ref);   // + on the Playlists page: Move, Icon, Rename
     void openPlaylistIcons(int ref);  // the playlist page's icon button: the icon grid at once
     void renamePlaylist(int ref);
+    void renamePlaylistTo(int ref, std::string name);
     void renameJoins(const std::string& from, const std::string& to);
     std::string smartSummary(const std::string& spec) const;
     struct SmartCache { unsigned statsGen = ~0u, indexGen = ~0u, moodGen = ~0u; int64_t day = -1; std::vector<int> tracks; };
@@ -2431,6 +2621,6 @@ private:
 #else
     enum { SetFirst = 0 };
 #endif
-    enum SettingsCat { SetAppearance = SetFirst, SetPlayback = SetFirst + 1, SetEqualizer = SetFirst + 2, SetLibrary = SetFirst + 3, SetStorage = SetFirst + 4, SetDevices = SetFirst + 9, SetLastfm = SetFirst + 10, SetReset = SetFirst + 11, SetUpdates = SetFirst + 12, SetSupport = SetFirst + 13 };   // (Reset above Updates: the user, 2026-10-30)
+    enum SettingsCat { SetAppearance = SetFirst, SetPlayback = SetFirst + 1, SetEqualizer = SetFirst + 2, SetLibrary = SetFirst + 3, SetStorage = SetFirst + 4, SetDevices = SetFirst + 9, SetReset = SetFirst + 10, SetUpdates = SetFirst + 11, SetSupport = SetFirst + 12 };   // (Reset above Updates: the user, 2026-10-30)
     std::string settingsQuery;
 };

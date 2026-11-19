@@ -27,7 +27,7 @@
 #include "platform.hpp"
 
 #ifndef GF_VERSION
-#define GF_VERSION "2.0.0"
+#define GF_VERSION "2.1.0 BETA 1"
 #endif
 
 namespace {
@@ -1131,11 +1131,10 @@ std::string Updater::backupNow(const std::string& root, const std::string& note)
     int files = 0;
     // Left out: the downloads, and caches Songate makes again by itself (the overlay's covers, the tag cache)
     // (art/ is the covers cache: thousands of small files, and copying them took the console a minute and a half)
-    // and the Last.fm account: a key to it never sits in a backup, a restore asks you to sign in again
-    // (and the Subsonic account the same way: subsonic.hpp)
+    // and the Subsonic account: a key to it never sits in a backup, a restore asks you to sign in again (subsonic.hpp)
     // and a server's songs kept here (its play cache, to 512 MB, and albums downloaded into Songate's folder, with their lists):
     // music, not settings; every backup copied them, and a restore or a fresh start took the albums downloaded since away
-    if (!copyTree(dir_, backup, { "updates", "thumbs", "art", "tags.tsv", "lastfm-session.txt", "subsonic-account.txt", "connect-key.txt", "connect-peers.tsv",
+    if (!copyTree(dir_, backup, { "updates", "thumbs", "art", "tags.tsv", "subsonic-account.txt", "connect-key.txt", "connect-peers.tsv",
                                   "server-cache", "server-cache.tsv", "server-downloads", "server-downloads.tsv" }, bytes, files)) {
         removeTree(backup);
         return {};
@@ -1250,7 +1249,7 @@ const std::vector<std::vector<const char*>>& Updater::factoryFiles() {
         { "eq-presets.txt" },                                                         // saved equalizer presets
         { "stats.tsv", "bg-plays.txt" },                                              // play counts and statistics
         { "session.txt", "bg-session.txt", "bg-places.txt", "overlay-playlist.txt" }, // the queue
-        { "lastfm-session.txt", "scrobbles.tsv", "bg-scrobbles.txt", "subsonic-account.txt", "server-downloads", "server-downloads.tsv", "server-likes.tsv", "server-playlist-icons.tsv", "server-queue.tsv" },   // the Last.fm account and what waits to be sent; the Subsonic server's, and its downloads in Songate's folder
+        { "subsonic-account.txt", "server-downloads", "server-downloads.tsv", "server-likes.tsv", "server-playlist-icons.tsv", "server-queue.tsv" },   // the Subsonic server's account, what waits to be sent and its downloads in Songate's folder
         { "connect-key.txt", "connect-peers.tsv", "airplay-devices.tsv", "ledger.tsv", "sync-lists.tsv", "sync-seen.tsv", "sync-peers.txt", "sync-plays.tsv", "copy-peers.txt", "copied.txt", "sync-gone.txt" },   // this device's key, the devices paired with it, what was synced
         { "art", "thumbs", "tags.tsv", "library.tsv", "loudness.tsv", "mix.tsv", "mood.tsv", "gains.bin", "identity.tsv", "lyrics-index.tsv", "lastfm-tags.tsv", "updates", "server-cache", "server-cache.tsv" },   // caches
     };

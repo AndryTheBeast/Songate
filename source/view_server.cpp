@@ -197,11 +197,41 @@ void App::serverPlayAt(int i) {
     }
 }
 
+/** Settings › Library › Subsonic server's Sign in: its address, your user, your password (hidden as typed), one after another. Only a
+ *  token made from the password is kept (subsonic.hpp); the password itself is wiped here. */
+void App::subsonicSignIn() {
+    const Subsonic::View v = subsonic.view();
+    // Songate's card (the console's and the phone's; the user chose S1): the three one after another, the password as dots
+    if (askKb(KbKind::Text, "Its address, as http://nas.local:4533", v.server, [this, user0 = v.user](const std::string& server) {
+            if (server.empty()) return;
+            askKb(KbKind::Text, "Your username on it", user0, [this, server](const std::string& user) {
+                if (user.empty()) return;
+                askKb(KbKind::Text, "Your password: only a token made from it is kept", "", [this, server, user](const std::string& pw) {
+                    if (pw.empty()) return;
+                    std::string p = pw;
+                    subsonic.signIn(server, user, p);   // (p is wiped there; the card wipes its own copy)
+                }, nullptr, true);
+            });
+        }))
+        return;
+    char server[256] = {}, user[128] = {}, pw[256] = {};
+    plat::TextResult r = plat::askText("Subsonic server", "Its address, as http://nas.local:4533", v.server.c_str(), server, sizeof server);
+    if (r == plat::TextResult::Unavailable) { toast("The keyboard is not available in applet mode"); return; }
+    if (r != plat::TextResult::Done || !*server) return;
+    if (plat::askText("Subsonic server", "Your username on it", v.user.c_str(), user, sizeof user) != plat::TextResult::Done || !*user) return;
+    plat::textSecret() = true;
+    r = plat::askText("Subsonic server", "Your password: only a token made from it is kept", "", pw, sizeof pw);
+    plat::textSecret() = false;
+    std::string p = pw;
+    volatile char* w = pw;
+    for (size_t i = 0; i < sizeof pw; i++) w[i] = 0;
+    if (r != plat::TextResult::Done || p.empty()) return;
+    subsonic.signIn(server, user, p);   // (p is wiped there)
+}
+
 void App::serverShow(int i) {
     if (i < 0 || i >= int(srvq_.songs.size())) return;
     const Subsonic::Song& s = srvq_.songs[size_t(i)];
-    lfmHeard = 0;   // Last.fm: a play of its own (lastfmTick)
-    lfmDone = lfmSaid = false;
     extInfo(s.title, s.artist, s.album);
     now.info.duration = s.duration;
     std::string codec = s.suffix;
@@ -293,11 +323,11 @@ void App::serverTick() {
     if (srvq_.on && srvq_.pos >= 0 && srvq_.pos < int(srvq_.songs.size())) {
         const Subsonic::Song& so = srvq_.songs[size_t(srvq_.pos)];
         if (srvPlayFor_ != so.id) { srvPlayFor_ = so.id; srvPlayHeard_ = 0; srvPlaySaid_ = srvPlayDone_ = false; }
-        if (togetherGuest()) srvPlaySaid_ = srvPlayDone_ = true;   // (a session: only the device that started it counts the play, as Last.fm)
+        if (togetherGuest()) srvPlaySaid_ = srvPlayDone_ = true;   // (a session: only the device that started it counts the play)
         if (isPlaying() && player.loaded()) {
             if (!srvPlaySaid_) { srvPlaySaid_ = true; subsonic.scrobble(so.id, false); }
             srvPlayHeard_ += dt;
-            const double need = Lastfm::threshold(so.duration);
+            const double need = Subsonic::playedAfter(so.duration);
             if (!srvPlayDone_ && need > 0 && srvPlayHeard_ >= need) { srvPlayDone_ = true; subsonic.scrobble(so.id, true); }
         }
     }
@@ -792,11 +822,19 @@ bool App::serverGenreTile(Id tid, const Subsonic::Genre& gn, float tx, float ty,
 
 /** The heart: a server track's star while one plays, else the library track's Liked. */
 bool App::currentLiked() {
+    if (extApp_) return extLike_ && extLiked_;   // (another app's song: its own like)
     if (srvq_.on) return srvq_.pos >= 0 && srvq_.pos < int(srvq_.songs.size()) && subsonic.isStarred(srvq_.songs[size_t(srvq_.pos)].id);
     return now.track >= 0 && !extOn && store.isLiked(lib.tracks[size_t(now.track)].path);
 }
 void App::toggleCurrentLike() {
     const bool liked = currentLiked();
+    if (extApp_) {   // another app's song: its own like pressed, shown at once (its word follows; no toast: it is that app's, not Liked)
+        if (!extLike_) return;
+        extControl(6);
+        extLiked_ = !liked;
+        extLikeHold_ = time + 3;
+        return;
+    }
     if (srvq_.on) {
         if (srvq_.pos < 0 || srvq_.pos >= int(srvq_.songs.size())) return;
         subsonic.star(srvq_.songs[size_t(srvq_.pos)].id, !liked);
@@ -958,6 +996,7 @@ void App::drawServerQueue(float x, float y, float w, float h) {
 }
 
 std::string App::lyrHerePath() const {
+    if (extApp_) return "app:" + extKey_;   // (another app's song: no file; its lyrics found online, never kept)
     if (srvq_.on && srvq_.pos >= 0 && srvq_.pos < int(srvq_.songs.size())) return "server:" + srvq_.songs[size_t(srvq_.pos)].id;
     return now.track >= 0 ? lib.tracks[size_t(now.track)].path : std::string();
 }
@@ -985,30 +1024,30 @@ void App::serverPlaylistChanged(const std::string& id) {
 
 /** New playlist on the server (the Playlists page's Server, the sidebar's +, Add to a playlist…'s New playlist…): a name, as yours. */
 void App::serverNewPlaylist(const std::vector<std::string>& songIds) {
-    std::string name = "Playlist " + std::to_string(srvPlaylists_.size() + 1);
-    if (!keyboard("New playlist", name, name)) return;
-    while (!name.empty() && name.back() == ' ') name.pop_back();
-    while (!name.empty() && name[0] == ' ') name.erase(0, 1);
-    if (name.empty()) return;
-    for (const auto& p : srvPlaylists_) if (p.name == name) { toast("There is already a playlist called “" + name + "”"); return; }
-    subsonic.newPlaylist(name, songIds);
-    serverPlaylistChanged("");
-    if (songIds.empty()) srvOpenNew_ = name;   // (opened once the server lists it)
-    toast("Made the playlist “" + name + "”" + (songIds.empty() ? std::string() : ", with this song"));
+    askName("New playlist", "Playlist " + std::to_string(srvPlaylists_.size() + 1), [this, songIds](std::string name) {
+        while (!name.empty() && name.back() == ' ') name.pop_back();
+        while (!name.empty() && name[0] == ' ') name.erase(0, 1);
+        if (name.empty()) return;
+        for (const auto& p : srvPlaylists_) if (p.name == name) { toast("There is already a playlist called “" + name + "”"); return; }
+        subsonic.newPlaylist(name, songIds);
+        serverPlaylistChanged("");
+        if (songIds.empty()) srvOpenNew_ = name;   // (opened once the server lists it)
+        toast("Made the playlist “" + name + "”" + (songIds.empty() ? std::string() : ", with this song"));
+    });
 }
 
 void App::serverRenamePlaylist(const std::string& id, const std::string& old) {
-    std::string name = old;
-    if (!keyboard("Rename the playlist", name, name)) return;
-    while (!name.empty() && name.back() == ' ') name.pop_back();
-    while (!name.empty() && name[0] == ' ') name.erase(0, 1);
-    if (name.empty() || name == old) return;
-    for (const auto& p : srvPlaylists_) if (p.id != id && p.name == name) { toast("There is already a playlist called “" + name + "”"); return; }
-    subsonic.updatePlaylist(id, name, {}, {});
-    if (srvPage_[0].key == "P:" + id) srvPage_[0].name = name;
-    for (auto& p : srvPlaylists_) if (p.id == id) p.name = name;
-    serverPlaylistChanged(id);
-    if (route.view == View::Server && route.ref == 5 && route.query.rfind(id + "\x1f", 0) == 0) route.query = id + "\x1f" + name;
+    askName("Rename the playlist", old, [this, id, old](std::string name) {
+        while (!name.empty() && name.back() == ' ') name.pop_back();
+        while (!name.empty() && name[0] == ' ') name.erase(0, 1);
+        if (name.empty() || name == old) return;
+        for (const auto& p : srvPlaylists_) if (p.id != id && p.name == name) { toast("There is already a playlist called “" + name + "”"); return; }
+        subsonic.updatePlaylist(id, name, {}, {});
+        if (srvPage_[0].key == "P:" + id) srvPage_[0].name = name;
+        for (auto& p : srvPlaylists_) if (p.id == id) p.name = name;
+        serverPlaylistChanged(id);
+        if (route.view == View::Server && route.ref == 5 && route.query.rfind(id + "\x1f", 0) == 0) route.query = id + "\x1f" + name;
+    });
 }
 
 void App::serverDeletePlaylist(const std::string& id, const std::string& name, int songs) {

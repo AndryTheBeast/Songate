@@ -5,7 +5,7 @@
  *
  * The password is never kept. Subsonic's token sign-in sends md5(password + salt); a server takes any salt, so the token and its
  * salt are made once at sign-in and kept in subsonic-account.txt (the address, the user, the salt, the token), and the password is
- * wiped. That file is as lastfm-session.txt is: never in settings.txt, left out of backups, never logged, never in a report and
+ * wiped. That file is never in settings.txt, left out of backups, never logged, never in a report and
  * never sent to another device.
  */
 #pragma once
@@ -104,6 +104,8 @@ public:
 
     // ---- stage 5: sync (the user: "Liked ↔ starred, Plays (scrobbles), Playlists")
     void scrobble(const std::string& songId, bool submission);   // false: now playing; true: played (its time now)
+    /** When a play counts on the server: over 30 seconds long, heard for half of it or 4 minutes (-1: never). */
+    static double playedAfter(double duration) { return duration > 30 ? (duration * 0.5 < 240 ? duration * 0.5 : 240) : -1; }
     void askStarred();                                            // getStarred2's songs
     bool starred(std::vector<Song>& out, unsigned& gen);          // a copy, and its generation (moves when stars change)
     bool isStarred(const std::string& songId);

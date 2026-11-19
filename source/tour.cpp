@@ -9,6 +9,7 @@
 #include "app.hpp"
 #include "icons.inc"
 #include "plicons.inc"
+#include "appicons.inc"
 
 #include <algorithm>
 #include <cmath>
@@ -60,11 +61,13 @@ const char kArrowUp[] = GF_ARROW("M5.5 14.67h13L12 6.67z");
 const char kArrowLeft[] = GF_ARROW("M14.67 5.5v13L6.67 12z");
 const char kArrowRight[] = GF_ARROW("M9.33 5.5v13L17.33 12z");
 #undef GF_ARROW
+const char* chapterName(int ch, bool r4);
 const char* const kChapters[] = { "Welcome", "Playing", "Library", "Playlists", "Files", "Sound", "Canvas", "Background player", "Devices",
                                   "Settings" };
 constexpr int kChapterCount = int(std::size(kChapters));
 // The three tours the first card offers (the user, 2026-10-30)
 struct TourLevel { const char* icon; const char* name; const char* what; };
+const char* chapterName(int ch, bool r4) { return r4 && ch == 7 ? "Your player" : kChapters[ch]; }
 const TourLevel kLevels[] = {
     { ICON_PLAY, "Basic", "The essentials, in a few minutes" },
     { ICON_GRID, "Advanced", "Every screen, and what its buttons do" },
@@ -129,43 +132,44 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           "button opens the song menu, with everything else you can do to the song.",
           page(View::Now), { { "np.like" }, { "np.album" }, { "np.artist" }, { "np.folder" }, { "np.more" } }, false,
           { nullptr,
-            "The heart saves the song to your Liked list. The three buttons on the right open the lyrics, what plays next, and the "
-            "song menu, where Album, Artist and Folder take you to their pages, with everything else you can do to the song.",
-            nullptr, { { "ph.like" }, { "ph.lyrics" }, { "ph.queue" }, { "ph.more" } } } },
+            "The heart saves the song to your Liked list. On the cover, one button shows what plays next and the other opens the "
+            "song menu, where Album, Artist and Folder take you to their pages, with everything else you can do to the song. Tap the "
+            "cover itself for the lyrics.",
+            nullptr, { { "ph.like" }, { "ph.queue" }, { "ph.more" } } } },
         { 1, 1, ICON_LIST, "Up next, Lyrics and Palette",
           "Up next shows what plays after this song. Lyrics shows the words, from an .lrc file beside the song or its "
           "tags: synced lyrics follow the music, and tapping a line jumps to it. If they run early or late, Earlier and "
           "Later fix them for this song. Palette shows the colours taken from the cover.",
           page(View::Now), { { "np.tab" }, { "np.tab", 1 }, { "np.tab", 2 } }, false,
           { nullptr,
-            "Up next shows what plays after this song. Lyrics shows the words, from an .lrc file beside the song or its "
-            "tags: synced lyrics follow the music, and tapping a line jumps to it. If they run early or late, Earlier and "
-            "Later fix them for this song. Palette, beside Lyrics, shows the colours taken from the cover.",
-            nullptr, { { "ph.lyrics" }, { "ph.queue" } } } },
+            "The button on the cover shows Up next: what plays after this song. Tap the cover for the lyrics, from an .lrc file "
+            "beside the song or its tags: synced lyrics follow the music, and tapping a line jumps to it. If they run early or "
+            "late, Earlier and Later fix them for this song. Palette, beside Lyrics, shows the colours taken from the cover.",
+            nullptr, { { "ph.queue" }, { "ph.cover" } } } },
         // ---- BETA 3 (the user, 2026-11-08: "update the tour (all three of them) with every new feature"; texts approved first:
         // docs/next-session/tour-beta3-draft.md)
         { 2, 1, ICON_QUOTE, "Lyrics found online",
           "A song with no lyrics can find them online, once you allow it here. Play them at once, or see them on a card "
           "first. Keep saves them beside the song or in Songate's folder; Not these tries the next match.",
-          settings(5), { { "set.lyronline" }, { "set.lyrway", 0, 2 } } },
+          settings(App::SetFirst + 5), { { "set.lyronline" }, { "set.lyrway", 0, 2 } } },
         { 0, 1, ICON_PLAY, "The player bar",
           "The controls are always here. The first button sets the order: Default, Repeat list, Repeat song or Shuffle. "
-          "The last one stops the music after this song. " GF_ON_THE_PADS "{X} plays and pauses, {L} and {R} skip, and "
-          "{ZL} and {ZR} jump ten seconds.",
+          "The last one stops the music after this song." GF_PADS(" " GF_ON_THE_PADS "{X} plays and pauses, {L} and {R} skip, and "
+          "{ZL} and {ZR} jump ten seconds."),
           nullptr, { { "pb.order" }, { "pb.prev" }, { "pb.play" }, { "pb.next" }, { "pb.sac" } }, false,
           { nullptr,
             "The controls are here on Now playing, and a small player stays above the bottom bar on every other page. The "
-            "button on the left stops the music after this song. " GF_ON_THE_PADS "{X} plays and pauses, {L} and {R} skip, and "
-            "{ZL} and {ZR} jump ten seconds.",
-            phoneNow, { { "ph.sac" }, { "ph.prev" }, { "ph.play" }, { "ph.next" } } } },
+            "heart on the left saves the song to Liked." GF_PADS(" " GF_ON_THE_PADS "{X} plays and pauses, {L} and {R} skip, and "
+            "{ZL} and {ZR} jump ten seconds."),
+            phoneNow, { { "ph.like" }, { "ph.prev" }, { "ph.play" }, { "ph.next" } } } },
         { 1, 1, ICON_WAVE, "The seek bar",
-          "The waveform of the song. Drag it to jump anywhere. With the buttons, move onto it with {DPAD}, press {A} "
-          "to grab it, steer with left and right, then press {A} or {B} to let go.",
+          "The waveform of the song. Drag it to jump anywhere." GF_PADS(" With the buttons, move onto it with {DPAD}, press {A} "
+          "to grab it, steer with left and right, then press {A} or {B} to let go."),
           nullptr, { { "pb.seek", 0, 0, 10 } }, false, { nullptr, nullptr, phoneNow, { { "ph.seek" } } } },
         { 1, 1, ICON_MOON, "More controls",
           "The moon starts a sleep timer: the music fades out and pauses. The equalizer button switches it on and off; "
-          "hold it to open the equalizer's settings. Then come the queue, the volume and the Canvas, which {-} opens "
-          "too.",
+          "hold it to open the equalizer's settings. Then come the queue, the volume and the Canvas" GF_PADS(", which {-} opens "
+          "too") ".",
           nullptr, { { "pb.sleep" }, { "pb.eq" }, { "pb.queue" }, { "pb.mute" }, { "pb.vol" }, { "pb.canvas" } }, false,
           { nullptr,
             "The moon starts a sleep timer: the music fades out and pauses. Then come the Canvas, the equalizer, which a tap "
@@ -173,9 +177,17 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
             "the phone's own.",
             phoneNow, { { "ph.sleep" }, { "ph.canvas" }, { "ph.eq" }, { "ph.order" } } } },
         { 2, 1, ICON_MOON, "The sleep timer",
-          "15 to 90 minutes, or the end of the song. The music fades out over its last ten seconds and pauses where you "
-          GF_SLEEP_WORDS "Then a card counts down and puts " GF_THE_CONSOLE " to sleep, unless you stay awake.",
-          settings(App::SetPlayback), { { "set.sleepcon", 0, 4 } } },
+          "15 to 90 minutes, any number you type, or the end of the song. The music fades out over its last ten seconds and "
+          "pauses where you " GF_SLEEP_WORDS "Then a card counts down and puts " GF_THE_CONSOLE " to sleep, unless you stay awake.",
+          settings(App::SetPlayback), { { "set.sleepcon", 0, 4 } }, false,
+#ifdef GF_ANDROID
+          // (a phone: nothing puts it to sleep after the timer, so no countdown; the HiBy R4's tour takes the main text back)
+          { nullptr, "15 to 90 minutes, any number you type, or the end of the song. The music fades out over its last ten "
+                     "seconds and pauses where you were.",
+            nullptr, { { "set.sleep", 0, 6 } } } },
+#else
+          {} },
+#endif
 #ifdef __SWITCH__
         { 1, 1, ICON_LOCK, "Pocket lock",
           "Lock, under the cover, turns the screen off and ignores every button and touch while the music plays on, so "
@@ -205,8 +217,8 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
             "Folders each show your music a different way.",
             phoneLibrary, { { "ph.nav" }, { "ph.nav", 1 }, { "ph.nav", 2 }, { "ph.nav", 3 }, { "ph.nav", 4 } } } },
         { 1, 2, ICON_ALBUMS, "Albums",
-          "Every album, with its cover. The button at the top right sorts them by artist, title, year or folder. Press "
-          "{A} on an album to open it: play it, shuffle it or add it to the queue.",
+          "Every album, with its cover. The button at the top right sorts them by artist, title, year or folder. "
+          GF_PADS_OR("Press {A} on an album", "Tap an album") " to open it: play it, shuffle it or add it to the queue.",
           page(View::Albums), { { "@main" } } },
         { 1, 2, ICON_MIC, "Artists and genres",
           "Every artist and every genre has a page of its own, with its albums and its songs on separate tabs.",
@@ -221,7 +233,7 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           { nullptr,
             "Songs can be sorted by artist, title, album, year, genre or length, either way round. The filter narrows the "
             "list: sort by genre and type \"jazz\" to see only jazz. The letters on the right jump through it.",
-            nullptr, {} } },
+            nullptr, { { "trk.filter" }, { "trk.sort" }, { "trk.dir" } } } },
         { 1, 2, ICON_LINK, "Your server",
           "Songate also plays the music on your own server: Navidrome, Airsonic or any server with the Subsonic API. Sign "
           "in once here, and its albums, artists, playlists and folders appear beside yours, apart or mixed in.",
@@ -241,7 +253,7 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           [](App& a) { a.navigate(View::Folders, a.lib.rootFolders.empty() ? -1 : a.lib.rootFolders[0], {}, false); },
           { { "fo.play" }, { "fo.shuffle" }, { "fo.addpl" }, { "fo.addall" } } },
         { 1, 2, ICON_SEARCH, "Search",
-          "Press {Y} or " GF_TAP " here to search. What it finds comes on six tabs: Songs, Albums, Artists, Genres, Playlists "
+          GF_PADS_OR("Press {Y} or " GF_TAP, GF_CAP_TAP) " here to search. What it finds comes on six tabs: Songs, Albums, Artists, Genres, Playlists "
           "and Lyrics. Lyrics lists each song that sings your words, and a synced line plays from that moment. For example, "
           "\"live\" finds every live recording.",
           nullptr, { { "tb.search" } }, false, { nullptr, nullptr, nullptr, { { "ph.nav", 2 } } } },
@@ -251,9 +263,9 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           page(View::Queue), { { "@main" } } },
         // ---- Playlists
         { 1, 3, ICON_LIST, "The queue",
-          "Playlist is everything lined up to play. Press {A} on a row to play it, or {+} for more: Play next, Remove, "
-          "or Move. With the buttons, {DPAD} carries the row and {A} drops it; by touch, every row gets a handle to drag, "
-          "then Done. Current song scrolls back to what's playing; Clear empties the list.",
+          "Playlist is everything lined up to play. " GF_PADS_OR("Press {A} on a row to play it, or {+} for more", "Tap a row to play "
+          "it, or hold it for more") ": Play next, Remove, or Move. " GF_PADS_OR("With the buttons, {DPAD} carries the row and {A} drops "
+          "it; by touch, every row gets a handle to drag, then Done.", "Move gives every row a handle to drag, then Done.") " Current song scrolls back to what's playing; Clear empties the list.",
           page(View::Queue), { { "@main" } } },
         { 0, 3, ICON_PLUS, "Your playlists",
           "The + next to PLAYLISTS creates a playlist: your own, a smart one that keeps itself up to date (most played, "
@@ -284,12 +296,18 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           "A join plans itself from both songs' tempo, bars, key and bass: on the drop, a bridge between tempos, by the "
           "songs' structure, or a smart crossfade. While it plays, the cover frosts over with Automix's hint. Settings › "
           "Appearance › Automix chooses how a join shows, on Now playing and on the Canvas.",
-          settings(App::SetAppearance), { { "set.mixnow", 0, 3 }, { "set.mixcanvas", 0, 2 } } },
+          settings(App::SetAppearance), { { "set.mixnow", 0, 3 }, { "set.mixcanvas", 0, 2 } }, false,
+          // (upright: Full only, no choice: the card alone, without its last sentence)
+          { nullptr,
+            "A join plans itself from both songs' tempo, bars, key and bass: on the drop, a bridge between tempos, by the "
+            "songs' structure, or a smart crossfade. While it plays, the cover frosts over with Automix's hint.",
+            phoneNow, { { "@none" } } } },
         { 2, 3, ICON_SPARKLE, "Automix's order",
           "An Automix playlist keeps the order it found, and orders itself again as songs are added. Move a song by hand "
           "and your order stays until Order again; Play this first pins the opener. Automix playlists never shuffle: "
           "their order is the point.",
-          page(View::Queue), { { "nav.playlists" } } },
+          page(View::Queue), { { "nav.playlists" } }, false,
+          { nullptr, nullptr, phonePlaylists, { { "ph.nav", 3 } } } },
         { 1, 3, PLI_MOOD, "Mood playlists",
           "A Mood playlist sorts your library by how it sounds: Happy, Party, Relaxed, Sad, Aggressive, Workout, Focus, "
           "Dark or Epic. Songate measures each song on " GF_THE_CONSOLE ", so the list fills in as it goes. For example: + › "
@@ -311,7 +329,7 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           page(View::List, -1), { { "@main" } } },
         { 2, 3, PLI_STAR, "Icons and order",
           "Every playlist can wear one of 78 icons, shown in the sidebar even when it is folded. " GF_CAP_TAP " the PLAYLISTS "
-          "heading for the Playlists page: Move puts them in your order, with {DPAD} or by dragging, as in the queue.",
+          "heading for the Playlists page: Move puts them in your order, " GF_PADS_OR("with {DPAD} or by dragging", "by dragging") ", as in the queue.",
           page(View::Playlists), { { "@main" } }, false,
           { nullptr,
             "Every playlist can wear one of 78 icons. On this page, hold a playlist and choose Move to put them in your order: "
@@ -328,11 +346,13 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           "Files browses everything " GF_ON_CARD ". It is hidden at first: turn it on in Settings › Appearance › Sidebar. "
           GF_FILE_MENU ": an image can become a cover, an .lrc file a song's lyrics, an .m3u8 a "
           "playlist. You can also rename, copy, move and delete, one file or several.",
-          nullptr, { { "nav.files" } } },
+          nullptr, { { "nav.files" } }, false,
+          { nullptr, nullptr, phoneLibrary, { { "ph.lrow", 6 } } } },
         // ---- Sound
         { 1, 5, ICON_EQ, "Equalizer",
           "Simple mode gives you a preset plus bass and treble; Advanced adds ten bands and a preamp. Save your own "
-          "sound under a name. For example: choose Rock, add a little bass, then Save as a new preset.",
+          "sound under a name. For example: choose Rock, add a little bass, then Save as a new preset. In Advanced, tap a "
+          "band's number to type its exact value.",
           settings(App::SetEqualizer), { { "set.eqon" }, { "set.eqmode", 0, 2 }, { "set.eqpreset" } } },
         { 1, 5, ICON_PLAY, "Playback",
           "Volume levelling makes every song about as loud as the next. Crossfade blends the end of one song into the "
@@ -346,7 +366,7 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
         // ---- Canvas
         { 0, 6, ICON_CANVAS, "The Canvas",
           "The Canvas gives the whole screen to the music, in three layouts: Cover, Lyrics and Minimal. Leave it alone "
-          "and the controls fade away while the progress line grows into a spectrum. {-} or × closes it.",
+          "and the controls fade away while the progress line grows into a spectrum. " GF_PADS("{-} or ") "× closes it.",
           [](App& a) { a.navigate(View::Now, -1, {}, false); a.openCanvas(true); },
           { { "cv.layout", 0 }, { "cv.layout", 1 }, { "cv.layout", 2 }, { "cv.mute" }, { "cv.vol" }, { "cv.sleep" }, { "cv.lyrics" }, { "cv.eq" }, { "cv.close" }
 #ifdef GF_ANDROID
@@ -362,7 +382,8 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
         { 2, 6, ICON_CANVAS, "The Canvas, your way",
           "Settings › Canvas picks its layout, a slow float and zoom on the cover, how soon the controls fade, and the "
           "spectrum. A song without lyrics switches to Minimal by itself and back with the next one that has some.",
-          settings(6), { { "set.cvlayout", 0, 3 }, { "set.cvfloat" }, { "set.cvzoom" }, { "set.cvidle" } } },
+          settings(App::SetFirst + 6), { { "set.cvlayout", 0, 3 }, { "set.cvfloat" }, { "set.cvzoom" }, { "set.cvidle" } }, false,
+          { nullptr, nullptr, nullptr, { { "set.cvfloat" }, { "set.cvzoom" }, { "set.cvidle" } } } },
         // ---- Looks (Complete)
         { 2, 9, ICON_SUN, "Colours",
           "From the cover takes the whole interface's colours from the album playing, on a dark or a light background. "
@@ -381,10 +402,12 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
         { 2, 9, ICON_SLIDERS, "The visualizer",
           "The spectrum's sensitivity, smoothing, number of bars and peak caps, for Now playing and the Canvas apart, and "
           "how much the cover pulses with the bass.",
-          settings(7), { { "set.vsens" }, { "set.vbands", 0, 3 }, { "set.vpeaks" } } },
+          settings(App::SetFirst + 7), { { "set.vsens" }, { "set.vbands", 0, 3 }, { "set.vpeaks" } } },
+#ifndef GF_ANDROID   // (no pointer on Android: touch only)
         { 2, 9, ICON_GAME, "Controls",
           GF_TOUR_POINTER,
-          settings(8), { { "set.ptrspeed" }, { "set.ptraccel" } } },
+          settings(App::SetFirst + 8), { { "set.ptrspeed" }, { "set.ptraccel" } } },
+#endif
         // ---- Background player and overlay
 #ifndef GF_WINDOWED
         { 0, 7, ICON_GAME, "The background player",
@@ -474,14 +497,102 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           GF_VERSIONS_WORDS ". It stays off until you "
           "turn it on.",
           settings(App::SetSupport), { { "set.repon" } } },
-        { 2, 9, ICON_MUSIC, "Last.fm",
-          "Scrobbles what you play to your Last.fm account: each song with tags, once you have heard half of it or 4 minutes. "
-          "It stays off until you turn it on and sign in.",
-          settings(App::SetLastfm), { { "set.lfon" } } },
         { 0, 9, ICON_SPARKLE, "You're all set",
           GF_TOUR_END,
           nullptr, {} },
     };
+#ifdef GF_ANDROID
+    if (tourR4_) {
+        // The HiBy R4's own tour (the user approved its plan, 2026-11-19): the steps above that fit it; Songate's own updates out
+        // (SongateOS brings Songate); the welcome, Settings and the end in the player's words; its own steps in "Your player",
+        // before Devices. A Settings page of the R4's is opened by its name (they follow About, so their numbers move)
+        auto named = [](const char* name, int tab = -1) -> std::function<void(App&)> {
+            return [name, tab](App& a) {
+                a.settingsWant_ = name;
+                if (tab >= 0) a.connTab_ = tab;
+                a.settingsQuery.clear();
+                a.settingsPhoneOpen_ = true;
+                a.navigate(View::Settings, -1, {}, false);
+                a.area("settings.pane").target = a.area("settings.pane").y = 0;
+            };
+        };
+        const std::function<void(App&)> apps = [](App& a) { a.navigate(View::Apps, -1, {}, false); };
+        const std::function<void(App&)> settingsList = [](App& a) {   // (the categories' list, upright)
+            a.settingsQuery.clear();
+            a.settingsPhoneOpen_ = false;
+            a.navigate(View::Settings, -1, {}, false);
+        };
+        static const std::vector<TourStep> mine = {
+            { 0, 7, ICON_APPS, "The Apps page",
+              "Your other apps, a tap away. Hold one for its menu: its icon and colour, Move, Close.",
+              apps, { { "ph.app", 0 } } },
+            { 0, 7, ICON_MUSIC, "Other apps' music",
+              "When another app plays, it shows here with its own controls, cover and lyrics.",
+              page(View::Now), {} },
+            { 0, 7, ICON_VOL, "The volume keys",
+              "Songate's volume, with where it plays: headphones, 4.4 mm, Bluetooth, and your earbuds' modes.",
+              page(View::Now), {} },
+            { 1, 7, ICON_EQ, "Sound & DAC",
+              "The R4's gain, filter and balance, and bit-perfect: the song as it is, untouched.",
+              named("Sound & DAC"), { { "@main" } } },
+            { 1, 7, ICON_LOCK, "The hold switch",
+              "What it locks, and whether the screen goes off with it.",
+              settings(App::SetFirst + 8), { { "@main" } } },
+            { 1, 7, ICON_BUDS, "Your earbuds",
+              "Battery for each bud and the case, noise control, and more for the ones Songate knows.",
+              named("Connectivity", 1), { { "@main" } } },
+            { 1, 7, ICON_DOWNLOAD, "SongateOS updates",
+              "A new version shows above Settings. Updates are kept on the microSD card.",
+              settings(App::SetUpdates), { { "@main" } } },
+            { 2, 7, ICON_LED, "The status LED",
+              "Its colour, what it tells you, and your accent as its light.",
+              named("Status LED"), { { "@main" } } },
+            { 2, 7, ICON_WIFI, "Connectivity",
+              "Wi-Fi and Bluetooth, in Songate's own pages.",
+              named("Connectivity", 0), { { "@main" } } },
+            { 2, 7, ICON_LOCK, "Recovery, root and Google apps",
+              "For when you want more from the player. Each asks before it changes anything.",
+              settings(App::SetUpdates), { { "@main" } } },
+        };
+        static const std::vector<TourStep> r4All = [&] {
+            std::vector<TourStep> v;
+            bool placed = false;
+            for (TourStep t : all) {
+                const std::string title = t.title;
+                if (title == "Updates" || title == "Betas and Automix models") continue;   // (Songate's own: SongateOS brings it)
+                if (!placed && t.chapter == 8) { v.insert(v.end(), mine.begin(), mine.end()); placed = true; }
+                if (title == "Welcome to the tour") {
+                    t.text = t.phone.text = "Songate shows you around your player and its own screens, using your music. " GF_TOUR_KEYS ", "
+                                            "Chapters jumps to a topic and × ends the tour. Choose how deep to go:";
+                } else if (title == "Settings") {
+                    t.text = t.phone.text = "Every option lives here, grouped by category, your player's own too: Sound & DAC, Status LED "
+                                            "and Connectivity. Find a setting searches them by name.";
+                    t.enter = t.phone.enter = settingsList;
+                } else if (title == "The sidebar") {   // (upright: the bottom bar, with Apps last)
+                    t.phone.text = "Songate sorts your music by its tags, never by how your folders are arranged. The bar at the bottom goes "
+                                   "to Now playing, the Library, Search, your Playlists, Settings and your Apps. In the Library, Songs, "
+                                   "Albums, Artists, Genres and Folders each show your music a different way.";
+                    t.phone.targets.push_back({ "ph.nav", 5 });
+                } else if (title == "The sleep timer") {
+                    t.phone.text = nullptr;
+                    t.phone.targets.clear();
+                } else if (title == "You're all set") {
+                    t.text = t.phone.text = "Touch works everywhere and back goes back. Enjoy your music on your player. This tour is "
+                                            "waiting in Settings › About whenever you want it.";
+                }
+                v.push_back(std::move(t));
+            }
+            if (!placed) v.insert(v.end() - 1, mine.begin(), mine.end());
+            return v;
+        }();
+        static const std::vector<TourStep> r4Levels[3] = {
+            [] { std::vector<TourStep> v; for (const auto& t : r4All) if (t.level <= 0) v.push_back(t); return v; }(),
+            [] { std::vector<TourStep> v; for (const auto& t : r4All) if (t.level <= 1) v.push_back(t); return v; }(),
+            r4All,
+        };
+        return r4Levels[std::clamp(level, 0, 2)];
+    }
+#endif
     static const std::vector<TourStep> levels[3] = {
         [] { std::vector<TourStep> v; for (const auto& t : all) if (t.level <= 0) v.push_back(t); return v; }(),
         [] { std::vector<TourStep> v; for (const auto& t : all) if (t.level <= 1) v.push_back(t); return v; }(),
@@ -572,7 +683,7 @@ void App::tourCheck() {
         tourLevel = level;
         tourGo(1);
         at = time;
-        printf("[tour] %s: %d steps\n", kLevels[level].name, int(tourSteps().size()));
+        SDL_Log("[tour] %s: %d steps", kLevels[level].name, int(tourSteps().size()));   // (SDL_Log: Android's log too)
         return;
     }
     if (tourStep < 0) { done = true; return; }
@@ -602,13 +713,13 @@ void App::tourCheck() {
                 line += b;
             }
         }
-        printf("[tour] %3d %-17s %-34s %s%s\n", tourStep, kChapters[st.chapter], tourTitle(st),
+        SDL_Log("[tour] %3d %-17s %-34s %s%s", tourStep, chapterName(st.chapter, r4Dev_), tourTitle(st),
                tourTargets(st).empty() ? "card alone" : (std::to_string(found) + "/" + std::to_string(want) + ":").c_str(), line.c_str());
         fflush(stdout);
     }
     if (time - at < 1.5) return;
     if (tourStep + 1 >= int(S.size())) {
-        printf("[tour] end\n");
+        SDL_Log("[tour] end");
         fflush(stdout);
         endTour();
         done = true;
@@ -878,8 +989,8 @@ void App::drawTour() {
     const float tx = x + pad + 52;
     // kicker: the chapter and where in the tour
     char where[96];
-    if (tourStep == 0) snprintf(where, sizeof where, "%s · 3 tours", kChapters[st.chapter]);
-    else snprintf(where, sizeof where, "%s · %d of %d", kChapters[st.chapter], tourShown(S, tourStep), tourShown(S));
+    if (tourStep == 0) snprintf(where, sizeof where, "%s · 3 tours", chapterName(st.chapter, r4Dev_));
+    else snprintf(where, sizeof where, "%s · %d of %d", chapterName(st.chapter, r4Dev_), tourShown(S, tourStep), tourShown(S));
     kicker(tourChapters ? std::string("Chapters") : std::string(where), tx, y + pad + 6 + rise, Rgb{ pal.surface2.r + (pal.accentInk.r - pal.surface2.r) * ta, pal.surface2.g + (pal.accentInk.g - pal.surface2.g) * ta,
                   pal.surface2.b + (pal.accentInk.b - pal.surface2.b) * ta });
     g.text(tourChapters ? "Jump to a chapter" : tourTitle(st), tf, tx, y + pad + 16 + rise, pal.text, ta, Align::Left, int(iw));
@@ -890,7 +1001,7 @@ void App::drawTour() {
         for (int n = 0; n < int(chapFirst.size()); n++) {
             const int first = chapFirst[size_t(n)], ch = S[size_t(first)].chapter;
             const float cx = x + pad + (n % 2) * cw, cy = ly + (n / 2) * kChapRow;
-            button(uid("tour.chap", ch), nullptr, kChapters[ch], cx, cy, st.chapter == ch, &c, false, false, st.chapter == ch ? DefaultFocus : 0);
+            button(uid("tour.chap", ch), nullptr, chapterName(ch, r4Dev_), cx, cy, st.chapter == ch, &c, false, false, st.chapter == ch ? DefaultFocus : 0);
             if (c) { tourGo(first); return; }
         }
     } else {

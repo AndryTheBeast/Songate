@@ -14,7 +14,7 @@
  * moods, Workout, Focus, Dark and Epic, from the same features (tried on 1,369 of the PC's songs first); and two more voices:
  *   your choices: a song you set to a mood is in it; one you said is not in a mood is never in it; and songs that sound like the
  *     ones you set move with them (the nearest of them by the features above, each pulling as close as it is);
- *   Last.fm's tags for a song ("chill", "gym", "cinematic"…), as a share for each mood, where Last.fm has any.
+ *   Last.fm's tags (taken out 2026-11-08; Last.fm itself left Songate 2026-11-19).
  */
 #pragma once
 #include <cstdint>
@@ -44,7 +44,7 @@ struct Index {
     std::vector<signed char> best;   // per track: its mood, -1 not known yet
     std::vector<float> score;        // … and how strongly (the mood's z-score)
     int known = 0;
-    std::vector<signed char> sound;  // per track: its mood by its sound alone (as before your choices and Last.fm), -1 not known
+    std::vector<signed char> sound;  // per track: its mood by its sound alone (as before your choices), -1 not known
     /** labels, tags: by track as `tracks`, or null. */
     void build(const std::vector<const mixan::Mood*>& tracks, const std::vector<Label>* labels = nullptr);
 };

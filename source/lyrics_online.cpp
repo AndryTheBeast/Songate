@@ -189,7 +189,29 @@ void App::lyrOnlineTick() {
         }
         lyrOn.found = std::move(a.found[0]);
         lyrOn.state = LyrOnline::Found;
-        if (store.lyricsOnlineWay == 0 && now.lyrics.empty()) lyrOnlineShow(lyrOn.found);
+        if ((store.lyricsOnlineWay == 0 || extApp_) && now.lyrics.empty()) lyrOnlineShow(lyrOn.found);
+    }
+    // Another app's song (otherapps.cpp): asked as any song is, by its words and length; shown at once, never kept
+    if (extApp_) {
+        if (!store.lyricsOnline || !now.lyrics.empty() || lyrOn.state != LyrOnline::None || now.info.title.empty() || now.info.artist.empty()) return;
+        lyrOn.path = lyrHerePath();
+        for (const auto& m : lyrMemo_)
+            if (m.path == lyrOn.path) {
+                if (m.have) { lyrOn.found = m.found; lyrOn.state = LyrOnline::Found; lyrOnlineShow(lyrOn.found); }
+                else { lyrOn.state = LyrOnline::NotFound; lyrOn.why = m.why; }
+                return;
+            }
+        lyrnet::Query q;
+        q.kind = lyrnet::Ask::Lyrics;
+        q.ticket = ++lyrOn.ticket;
+        q.path = lyrOn.path;
+        q.title = now.info.title;
+        q.artist = now.info.artist;
+        q.album = now.info.album;
+        q.duration = now.info.duration;
+        lyrOn.state = LyrOnline::Looking;
+        lyrNet.ask(q);
+        return;
     }
     // A song with no lyrics, playing here, not asked about this run: asked now
     if (!store.lyricsOnline || now.track < 0 || now.loading || extOn || !now.lyrics.empty() || lyrOn.state != LyrOnline::None) return;
@@ -306,7 +328,7 @@ void App::lyrOnlinePick(int i) {
     lyrOn.state = LyrOnline::Found;
     lyrRemember();
     lyrFocusNext_ = uid(store.lyricsOnlineWay == 0 ? "lyr.keep" : "lyr.save");
-    if (store.lyricsOnlineWay == 0) lyrOnlineShow(lyrOn.found);
+    if (store.lyricsOnlineWay == 0 || extApp_) lyrOnlineShow(lyrOn.found);
     else if (lyrOn.shown) { now.lyrics.clear(); now.synced = false; lyrOn.shown = false; }
 }
 
@@ -328,6 +350,16 @@ bool App::lyrOnlineBar(float x, float y, float w) {
     // sync"): playing the same way, Save as on the card
     const bool listing = lyrOn.state == LyrOnline::Listing;
     if (!lyrOn.shown || (lyrOn.state != LyrOnline::Found && !listing) || lyrOn.path.empty() || lyrHerePath() != lyrOn.path) return false;
+    if (extApp_) {   // another app's song: found online, Not these only (nothing to keep it beside: the user, 2026-11-18)
+        g.textC(std::string(now.synced ? "Synced" : "Plain text") + " · found online", { css::Xs }, x, y + 20, pal.text3, 1, Align::Left, int(w * 0.55f));
+        const Font bf{ css::Sm, Weight::SemiBold };
+        const char* other = listing ? "Looking…" : "Not these";
+        const float w2 = 32 + std::max(g.measure("Not these", bf), g.measure("Looking…", bf));
+        bool c = false;
+        button(uid("lyr.notthese"), nullptr, other, x + w - w2, y + 3, false, &c, false, false, 0, w2);
+        if (c && !listing) lyrOnlineNotThese();
+        return true;
+    }
     const bool trying = store.lyricsOnlineWay == 1;
     const char* keep = trying ? "Save" : "Keep";
     g.textC(std::string(now.synced ? "Synced" : "Plain text") + (trying ? " · trying, not saved" : " · found online, not saved"), { css::Xs }, x, y + 20,

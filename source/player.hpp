@@ -49,11 +49,17 @@ public:
     void ensureOpen();
     double idleSince_ = -1;   // since when nothing has had to play (the device closes after 5 s of it: Android's mixer may sleep)
     bool idleClosed_ = false;
+    int bpIdle_ = 0;          // the bit-perfect format let go at the idle close (claimed again by ensureOpen); 0: none
+    /** Bit-perfect let go while the device is closed idle: still the song's, claimed again before it sounds */
+    bool bitPerfectIdle() const { return bpIdle_ != 0; }
     /** Bit-perfect output may be used for the next song (the app: its setting on, the HiBy R4, nothing changing the sound). */
     void setBitPerfectWanted(bool on) { bpWanted_ = on; }
     /** The song plays bit-perfect now: claimed, opened in its format, Android has not taken it away. */
     bool bitPerfect() const;
     bool bitPerfectClaimed() const { return bpFormat_ != 0; }   // (asked for, before Android confirms it)
+    /** Bit-perfect was wanted when this song loaded (asked for if the output offered it): false, a song that may now be opened again */
+    bool bitPerfectWantedAtLoad() const { return bpLoadWanted_; }
+    bool bpLoadWanted_ = false;
 #endif
     void stop();
     void togglePause();
@@ -170,6 +176,12 @@ public:
 
     /** Newest n mono samples of what was mixed; false when nothing new since the last call. */
     bool latestPcm(float* out, int n);
+#ifdef GF_ANDROID
+    /** Once per display frame: the n mono samples sounding about now, on a steady clock between the output's clumps (a
+     *  Bluetooth output takes ~150 ms at once: the newest block alone gave the visualizer 7 shapes a second). false: nothing
+     *  new. playing false forgets the clock. */
+    bool pcmNow(float* out, int n, double now, bool playing);
+#endif
 
     /**
      * The join editor's Listen (view_join.cpp): a join rendered in memory, 16-bit stereo at sampleRate(), played here
@@ -223,6 +235,7 @@ private:
     std::atomic<float> syncErr_{ 0 };
     std::function<int(int16_t*, int)> stream_;
     std::atomic<bool> streamOn_{ false };
+    int streamRateWas_ = 0;   // Android: the rate open before AirPlay played here (its stream is made at 48 kHz); put back after
     std::atomic<float> streamGain_{ 1.f }, streamLevel_{ 1.f };
     float streamLv_ = 1.f;   // the audio thread's eased copy
     float streamMono_[8192 * 2] = {};
@@ -276,10 +289,22 @@ private:
     std::mutex eqLock_;
     std::atomic<bool> eqNew_{ false };
 
+#ifdef GF_ANDROID
+    // (Android: a Bluetooth output takes ~150 ms at once, up to 384 kHz: the ring holds a clump and the window behind it)
+    static constexpr int Ring = 1 << 17;
+#else
     static constexpr int Ring = 8192;
+#endif
     float ring_[Ring] = {};
     std::atomic<unsigned> written_{ 0 };
     unsigned lastRead_ = 0;
+#ifdef GF_ANDROID
+    // pcmNow's clock: the last clump's end and when it came, the clumps' spacing, the slice last read
+    unsigned clumpW_ = 0, nowRead_ = 0;
+    double clumpT_ = -1, clumpGap_ = 0.05;
+    double heardDelay_ = 0;   // (eased: the output's delay as Android tells it, 0 unknown)
+    bool nowOn_ = false;
+#endif
     int channels_ = 2;
     bool float32_ = false;
     bool int32_ = false;   // a 32-bit integer device (bit-perfect: 24 and 32-bit songs)

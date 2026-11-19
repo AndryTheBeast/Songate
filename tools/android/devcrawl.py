@@ -72,7 +72,7 @@ ROUTES = {
                 + sum([["reset:" + N + "#4", "?ph.back", "wait:0.5", "swipe:down", "swipe:down"] + (["swipe:up"] if k >= 7 else []) + [f"text:{c}", "wait:1",
                         f"pages:{c.lower()}", "key:4"]
                        for k, c in enumerate(["Appearance", "Playback", "Equalizer", "Library", "Storage", "Lyrics", "Canvas", "Visualizer",
-                                              "Controls", "Devices", "Last.fm", "Reset", "Updates", "Support", "Debug", "About"])], []),
+                                              "Controls", "Devices", "Reset", "Updates", "Support", "Debug", "About"])], []),
     # ---- the Canvas and its three layouts
     "s-canvas": ["reset:nav.now", "pb.canvas", "wait:1.5", "shot:canvas", "cv.layout", "wait:1", "shot:cover", "cv.layout#1", "wait:1", "shot:lyrics",
                "cv.layout#2", "wait:1", "shot:minimal", "cv.sleep", "wait:0.8", "shot:sleep", "key:4", "key:4"],
@@ -105,7 +105,7 @@ ROUTES = {
                   + sum([["reset:nav.settings", f"text:{c}", "wait:1", f"shot:{c.lower()}", "swipe:up", f"shot:{c.lower()}-2", "swipe:up",
                           f"shot:{c.lower()}-3"]
                          for c in ["Appearance", "Playback", "Equalizer", "Library", "Storage", "Lyrics", "Canvas", "Visualizer",
-                                   "Controls", "Devices", "Last.fm", "Reset", "Updates", "Support", "Debug", "About"]], []),
+                                   "Controls", "Devices", "Reset", "Updates", "Support", "Debug", "About"]], []),
     "s-pages": ["reset:nav.pl#-1", "wait:1", "shot:liked", "reset:nav.albums", "wait:1", "text:Twilight", "wait:1.2", "shot:album",
                 "reset:nav.artists", "wait:1", "text:Geoxor", "wait:1.2", "shot:artist", "swipe:up", "shot:artist-below",
                 "reset:nav.library", "wait:1", "hold:trk.r*", "wait:1", "shot:track-menu", "key:4",

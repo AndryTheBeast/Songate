@@ -22,7 +22,6 @@ if(DEFINED ANDROID_ABI)   # (ANDROID itself is set only once project() reads the
   file(GLOB APP_SOURCES CONFIGURE_DEPENDS source/*.cpp)
   add_library(main SHARED
     ${APP_SOURCES}
-    source/qrcodegen.c
     source/monocypher.c
     platform/android/platform_android.cpp
     platform/none/bgclient_none.cpp)
@@ -67,7 +66,6 @@ file(GLOB APP_SOURCES CONFIGURE_DEPENDS source/*.cpp)
 set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreaded)   # the C library inside the program: no redistributable to install
 add_executable(Songate
   ${APP_SOURCES}
-  source/qrcodegen.c
   source/monocypher.c
   platform/windows/platform_windows.cpp
   platform/windows/winfiles.cpp

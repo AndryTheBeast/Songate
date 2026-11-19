@@ -35,7 +35,7 @@ import java.io.OutputStream;
 import java.util.List;
 
 public class SongateActivity extends SDLActivity {
-    private static SongateActivity self;
+    static SongateActivity self;   // (package-wide: SysApi opens Android's pages from it)
     private WifiManager.MulticastLock multicast;
 
     // A player's own buttons (pause, next, previous; a headset's button) with Songate in front: Android gives the key to the window
@@ -43,6 +43,7 @@ public class SongateActivity extends SDLActivity {
     // 2026-11-13). They go to the media session, as they do when another app is in front.
     @Override
     public boolean dispatchKeyEvent(android.view.KeyEvent event) {
+        if (held) return super.dispatchKeyEvent(event);   // (waiting for the first unlock: nothing of Songate runs yet)
         if (android.view.KeyEvent.isMediaSessionKey(event.getKeyCode()) && SongateService.mediaButton(event)) return true;
         // The volume keys with Songate in front, while Settings › Playback › Volume keys show is "Songate": Android's music volume
         // moved here, without Android's panel, and Songate draws its own (App::drawVolumePop). "Android": they go on to Android as
@@ -112,6 +113,7 @@ public class SongateActivity extends SDLActivity {
     public static int hibyState() { return HibyR4.state(); }
     public static boolean hibyDevice() { return HibyR4.device; }
     public static int bitPerfectBegin(int rate, int bits) { return BitPerfect.begin(rate, bits); }
+    public static boolean bitPerfectRouted() { return BitPerfect.routed(); }
     public static void bitPerfectEnd() { BitPerfect.end(); }
     public static String hibyGet() { return HibyR4.get(); }
     public static String hibySet(String key, String value) { return HibyR4.set(key, value); }
@@ -123,14 +125,81 @@ public class SongateActivity extends SDLActivity {
         ownVolumeKeys = own;
     }
 
+    /** SDL opens the main library by its path in the unpacked libraries' folder; loaded from the APK (useLegacyPackaging false: no
+     *  such folder's file), by its name: already loaded (getLibraries), the linker hands it back. */
+    @Override
+    protected String getMainSharedObject() {
+        final String path = super.getMainSharedObject();
+        return new File(path).exists() ? path : new File(path).getName();
+    }
+
     @Override
     protected String[] getLibraries() {
         // FFmpeg and mpg123 are shared (LGPL): the system's linker finds them beside libmain when it loads
         return new String[] { "SDL2", "main" };
     }
 
+    // ---------------------------------------------------------------- before the first unlock (SongateOS, 2026-11-16)
+    // The home activity is direct-boot aware (the manifest): Android shows it at once after the boot animation, with no placeholder
+    // home and its black dip between. Before the first unlock the app's own storage cannot be read (settings, the library, the
+    // fonts), so the activity only waits, black, as the screen after the boot animation already is; once Android unlocks (a few
+    // seconds on the R4, which has no lock screen) it starts again as always, and Songate fades in from that black.
+    private boolean held = false;
+    private android.content.BroadcastReceiver unlockWatch;
+
+    private boolean userLocked() {
+        try {
+            final android.os.UserManager um = getSystemService(android.os.UserManager.class);
+            return um != null && !um.isUserUnlocked();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    @Override
+    protected boolean holdStart() {
+        return held;
+    }
+
+    private void waitForUnlock() {
+        Log.w("Songate", "before the first unlock: waiting");
+        try { getWindow().getDecorView().setBackgroundColor(0xff000000); } catch (Throwable ignored) {}
+        unlockWatch = new android.content.BroadcastReceiver() {
+            @Override
+            public void onReceive(Context c, Intent i) {
+                startAfterUnlock();
+            }
+        };
+        try {
+            final android.content.IntentFilter f = new android.content.IntentFilter(Intent.ACTION_USER_UNLOCKED);
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(unlockWatch, f, Context.RECEIVER_EXPORTED);
+            else registerReceiver(unlockWatch, f);
+        } catch (Throwable t) {
+            Log.w("Songate", "unlock watch: " + t);
+        }
+        if (!userLocked()) startAfterUnlock();   // (unlocked between the question and the watch)
+    }
+
+    private boolean unlockedOnce = false;
+
+    private void startAfterUnlock() {
+        if (!held || unlockedOnce) return;
+        unlockedOnce = true;
+        Log.w("Songate", "unlocked: starting");
+        try { if (unlockWatch != null) unregisterReceiver(unlockWatch); } catch (Throwable ignored) {}
+        unlockWatch = null;
+        // (this waiting screen stays held to its end; the new one is made unheld, the storage there now)
+        recreate();
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        if (userLocked()) {   // before the first unlock: SDL is not started (SDLActivity.holdStart), the activity waits
+            held = true;
+            super.onCreate(savedInstanceState);
+            waitForUnlock();
+            return;
+        }
         // A second copy of the activity in a process where Songate already runs. Android 12 makes one when Songate becomes the
         // home app while it is open as an ordinary app (the home entry is started in the home task, a new activity, in the same
         // process), and at the home button after that. SDL runs once a process: its second start ran the app's main beside the
@@ -155,16 +224,21 @@ public class SongateActivity extends SDLActivity {
             System.exit(0);   // (before SDL's own onCreate: it would set up a second SDL over the first)
         }
         self = this;
+        keyLoad(getApplicationContext());   // (the keyboard's sounds' pool; Songate puts its sounds in it at its start: keyWave)
         HibyR4.context = getApplicationContext();
         HibyR4.detect(HibyR4.context);   // (before SDL starts the app's thread: its first frame already knows)
-        SongateService.attach(this);
-        copyRomfs();   // before SDL starts the app's thread: the fonts are read at launch
-        WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-        if (wifi != null) {
-            multicast = wifi.createMulticastLock("songate");
-            multicast.setReferenceCounted(false);
-            multicast.acquire();   // Devices' broadcasts and AirPlay's mDNS reach the app
-        }
+        homeEntryAtStart();
+        // (each step on its own: one that fails is logged and the start goes on; the only home app must not end at its start)
+        try { SongateService.attach(this); } catch (Throwable t) { Log.w("Songate", "start: service: " + t); }
+        try { copyRomfs(); } catch (Throwable t) { Log.w("Songate", "start: romfs: " + t); }   // before SDL starts the app's thread: the fonts are read at launch
+        try {
+            WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wifi != null) {
+                multicast = wifi.createMulticastLock("songate");
+                multicast.setReferenceCounted(false);
+                multicast.acquire();   // Devices' broadcasts and AirPlay's mDNS reach the app
+            }
+        } catch (Throwable t) { Log.w("Songate", "start: multicast: " + t); }
         super.onCreate(savedInstanceState);
         // Android's own mark for the view that has the keys' focus is not Songate's: after typing (SDL gives its surface the focus
         // back) and a key from a keyboard or a pad, it drew a green frame round the whole screen (seen 2026-11-11 in the test
@@ -215,9 +289,13 @@ public class SongateActivity extends SDLActivity {
 
     /** Swiped away from the recent apps while music plays: the music goes on (the user, 2026-11-03: "Keep playing"), the app with
      *  it, out of sight; opening Songate again brings its screen back to it (SDLActivity.onCreate). Not playing, or the switch off
-     *  (Settings › Playback; the user chose the switch, 2026-11-04): it ends as ever. */
+     *  (Settings › Playback; the user chose the switch, 2026-11-04): it ends as ever.
+     *  Also whenever Android only rebuilds the screen (a change the manifest can't take itself: new system colours, an overlay):
+     *  the app goes on and the new screen joins it, playing or not (the Hiby R4, 2026-11-16: a System colours change ended the
+     *  process and Songate came back on Now Playing). */
     @Override
     protected boolean keepNativeWhenDestroyed() {
+        if (isChangingConfigurations()) return true;
         return SongateService.playingNow() && SongateService.keepOnSwipe;
     }
 
@@ -225,6 +303,8 @@ public class SongateActivity extends SDLActivity {
      *  thread, before SDL pauses it; Android may end it later without another word. */
     @Override
     protected void onPause() {
+        OtherViz.stop();   // (the spectrum for other apps' music: only while Songate is in front)
+        if (held) { super.onPause(); return; }
         try {
             nativeLeave();
         } catch (UnsatisfiedLinkError e) {   // libmain not loaded: nothing to write
@@ -270,6 +350,12 @@ public class SongateActivity extends SDLActivity {
 
     @Override
     protected void onDestroy() {
+        if (held || unlockWatch != null) {   // (the waiting screen: only its watch to end)
+            try { if (unlockWatch != null) unregisterReceiver(unlockWatch); } catch (Throwable ignored) {}
+            unlockWatch = null;
+            super.onDestroy();
+            return;
+        }
         if (multicast != null && multicast.isHeld()) multicast.release();
         if (volumeWatch != null) {
             try { unregisterReceiver(volumeWatch); } catch (Throwable ignored) {}
@@ -357,6 +443,58 @@ public class SongateActivity extends SDLActivity {
     /** Settings › Appearance › Screen rotation (2.0.1): 0 Auto, with the device as its own auto-rotate allows (SDL's, as it always
      *  was); 1 Portrait; 2 Landscape, either way round as it is held. Held whatever the device's auto-rotate says. While the Canvas
      *  holds the screen sideways this is what it gives the screen back to. */
+    // ---- The keyboard card's keys (plat::keyTap): a soft click of Songate's own and a light tick
+    private static volatile android.media.SoundPool keyPool;
+    private static final int[] keyIds = { 0, 0, 0, 0 };
+
+    /** The pool the key sounds play from: made once */
+    private static synchronized void keyLoad(Context c) {
+        if (keyPool != null) return;
+        keyPool = new android.media.SoundPool.Builder().setMaxStreams(4)
+            .setAudioAttributes(new android.media.AudioAttributes.Builder()
+                .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION).build()).build();
+    }
+
+    /** One of the keyboard's key sounds (Songate's own, keyclick.hpp: Soft, Tick, Pop, Clack), 16-bit mono: written into the app's
+     *  cache as a WAV and loaded into the pool, by its number */
+    public static void keyWave(int kind, short[] pcm, int rate) {
+        final SongateActivity a = self;
+        if (a == null || kind < 0 || kind >= keyIds.length) return;
+        try {
+            keyLoad(a.getApplicationContext());
+            final int n = pcm.length;
+            final java.nio.ByteBuffer b = java.nio.ByteBuffer.allocate(44 + n * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            b.put("RIFF".getBytes()).putInt(36 + n * 2).put("WAVE".getBytes()).put("fmt ".getBytes()).putInt(16)
+             .putShort((short) 1).putShort((short) 1).putInt(rate).putInt(rate * 2).putShort((short) 2).putShort((short) 16)
+             .put("data".getBytes()).putInt(n * 2);
+            for (short x : pcm) b.putShort(x);
+            final File f = new File(a.getCacheDir(), "key-sound-" + kind + ".wav");
+            try (FileOutputStream o = new FileOutputStream(f)) { o.write(b.array()); }
+            keyIds[kind] = keyPool.load(f.getPath(), 1);
+        } catch (Exception e) { Log.w("Songate", "key sound: " + e); }
+    }
+
+    /** click: no music playing in Songate (the app says); none either while another app plays music, unless overMusic (Settings'
+     *  While music plays, or a pick of a sound there). kind: which sound. The tick (vibrate) always. */
+    public static void keyTap(boolean click, int vibrate, int kind, boolean overMusic) {
+        final SongateActivity a = self;
+        if (a == null) return;
+        try {
+            final android.media.AudioManager am = (android.media.AudioManager) a.getSystemService(Context.AUDIO_SERVICE);
+            final int id = kind >= 0 && kind < keyIds.length ? keyIds[kind] : 0;
+            if (click && keyPool != null && id != 0 && am != null && (overMusic || !am.isMusicActive())
+                && am.getRingerMode() == android.media.AudioManager.RINGER_MODE_NORMAL)
+                keyPool.play(id, 0.5f, 0.5f, 1, 0, 1f);
+            if (vibrate > 0) {   // Light, Medium, Strong: Android's own tick, click and heavy click
+                final android.os.Vibrator v = (android.os.Vibrator) a.getSystemService(Context.VIBRATOR_SERVICE);
+                final int effect = vibrate >= 3 ? android.os.VibrationEffect.EFFECT_HEAVY_CLICK
+                                 : vibrate == 2 ? android.os.VibrationEffect.EFFECT_CLICK : android.os.VibrationEffect.EFFECT_TICK;
+                if (v != null && v.hasVibrator()) v.vibrate(android.os.VibrationEffect.createPredefined(effect));
+            }
+        } catch (Exception e) { Log.w("Songate", "key tap: " + e); }
+    }
+
     public static void screenRotation(final int kind) {
         final SongateActivity a = self;
         if (a == null) return;
@@ -419,6 +557,30 @@ public class SongateActivity extends SDLActivity {
         return new android.content.ComponentName(c.getPackageName(), "io.github.andrythebeast.songate.HomeAlias");
     }
 
+    // SongateOS's system settings (SysApi.java): for the app's worker thread (callStatic finds them here)
+    public static String sysCall(String method, String arg, String extras) { return SysApi.call(method, arg, extras); }
+    public static void sysWatch(String area, boolean on) { SysApi.watch(area, on); }
+    public static void sysOpen(String which) { SysApi.openAndroid(which); }
+
+    /** The home entry is on in the manifest (SongateOS has no other home app). On the R4 it stays on (turned back on if it was
+     *  ever switched off); anywhere else, never chosen (the manifest's default), it is turned off at Songate's first start, as it
+     *  was before: a choice made with the Settings switch (on or off) is left as it is. */
+    private void homeEntryAtStart() {
+        try {
+            final PackageManager pm = getPackageManager();
+            final android.content.ComponentName c = homeAlias(this);
+            final int st = pm.getComponentEnabledSetting(c);
+            if (HibyR4.device) {
+                if (st == PackageManager.COMPONENT_ENABLED_STATE_DISABLED)
+                    pm.setComponentEnabledSetting(c, PackageManager.COMPONENT_ENABLED_STATE_ENABLED, PackageManager.DONT_KILL_APP);
+            } else if (st == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT) {
+                pm.setComponentEnabledSetting(c, PackageManager.COMPONENT_ENABLED_STATE_DISABLED, PackageManager.DONT_KILL_APP);
+            }
+        } catch (Throwable t) {
+            Log.w("Songate", "home entry at start: " + t);
+        }
+    }
+
     public static boolean homeHeld() {
         final SongateActivity a = self;
         if (a == null || Build.VERSION.SDK_INT < 29) return false;
@@ -472,6 +634,7 @@ public class SongateActivity extends SDLActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        if (held) return;
         applyHome();
         reportVolume(false);
         try {
@@ -481,6 +644,27 @@ public class SongateActivity extends SDLActivity {
     }
 
     /** The apps a home screen shows, by name: label, then "package/activity", for each (Songate itself left out). */
+    /** Of apps(): those that came with the device (FLAG_SYSTEM; an updated one keeps it), as package/activity */
+    public static String[] systemApps() {
+        final SongateActivity a = self;
+        if (a == null) return new String[0];
+        try {
+            final PackageManager pm = a.getPackageManager();
+            final List<android.content.pm.ResolveInfo> found =
+                pm.queryIntentActivities(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0);
+            final java.util.ArrayList<String> rows = new java.util.ArrayList<>();
+            for (android.content.pm.ResolveInfo r : found) {
+                if (r.activityInfo == null || r.activityInfo.applicationInfo == null) continue;
+                if ((r.activityInfo.applicationInfo.flags & android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0)
+                    rows.add(r.activityInfo.packageName + "/" + r.activityInfo.name);
+            }
+            return rows.toArray(new String[0]);
+        } catch (Exception e) {
+            Log.w("Songate", "systemApps: " + e);
+            return new String[0];
+        }
+    }
+
     public static String[] apps() {
         final SongateActivity a = self;
         if (a == null) return new String[0];
@@ -506,6 +690,40 @@ public class SongateActivity extends SDLActivity {
             Log.w("Songate", "apps: " + e);
             return new String[0];
         }
+    }
+
+    // ---- other apps' music (OtherApps.java), for the app
+    public static boolean otherAllowed() { final SongateActivity a = self; return a != null && OtherApps.allowed(a); }
+    public static void otherAccess() { final SongateActivity a = self; if (a != null) OtherApps.openAccess(a); }
+    public static boolean otherWatch(boolean on) { final SongateActivity a = self; if (a == null) return false; OtherApps.watch(a, on); return true; }
+    public static String otherState() { return OtherApps.state(); }
+    public static byte[] otherArt() { return OtherApps.art(); }
+    public static int[] otherIcon(int size) { return OtherApps.icon(size); }
+    public static void otherControl(int cmd, long arg) { OtherApps.control(cmd, arg); }
+    public static String playSearchApps() { return self == null ? "" : OtherApps.playSearchApps(self); }
+    public static void playSearch(String component, byte[] query) {
+        if (self != null) OtherApps.playSearch(self, component, new String(query, java.nio.charset.StandardCharsets.UTF_8));
+    }
+    // The spectrum for other apps' music (OtherViz): Android's audio recording permission, asked in Android's own dialog; its
+    // answer kept for the app (1 allowed, 2 refused; 0 none since the last read)
+    private static final int ASK_RECORD = 7;
+    private static volatile int recordAnswered = 0;
+    public static boolean recordAllowed() {
+        final SongateActivity a = self;
+        return a != null && a.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+    }
+    public static void askRecord() {
+        final SongateActivity a = self;
+        if (a != null) a.runOnUiThread(() -> a.requestPermissions(new String[] { Manifest.permission.RECORD_AUDIO }, ASK_RECORD));
+    }
+    public static int recordAnswer() { final int r = recordAnswered; recordAnswered = 0; return r; }
+    public static byte[] otherViz(int[] rateHz) { return OtherViz.wave(rateHz); }
+    public static void otherVizStop() { OtherViz.stop(); }
+
+    @Override
+    public void onRequestPermissionsResult(int code, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(code, permissions, results);
+        if (code == ASK_RECORD) recordAnswered = results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED ? 1 : 2;
     }
 
     /** An app's icon, size by size pixels of ARGB, or null. */
@@ -654,10 +872,33 @@ public class SongateActivity extends SDLActivity {
         return a != null ? a.getResources().getDisplayMetrics().density : 0f;
     }
 
-    /** The shared volumes, one a line: the phone's own first, then each card that is in. Their app folders say where they are. */
+    /** The mounted shared volumes, as Android lists them (StorageManager, Android 11 and later: each one's own folder): the phone's
+     *  own first, then each card; null on an older Android or when it cannot say (the app folders then). A card mounted after
+     *  Songate started (the home app, at a boot) may have no app folder yet: the R4's microSD card was missing (2026-11-19) */
+    private static java.util.List<StorageVolume> mountedVolumes() {
+        if (android.os.Build.VERSION.SDK_INT < 30 || self == null) return null;
+        try {
+            final StorageManager sm = (StorageManager) self.getSystemService(Context.STORAGE_SERVICE);
+            final java.util.List<StorageVolume> out = new java.util.ArrayList<>();
+            for (StorageVolume v : sm.getStorageVolumes()) {
+                final String st = v.getState();
+                if (v.getDirectory() == null || !(android.os.Environment.MEDIA_MOUNTED.equals(st) || android.os.Environment.MEDIA_MOUNTED_READ_ONLY.equals(st))) continue;
+                if (v.isPrimary()) out.add(0, v);
+                else out.add(v);
+            }
+            return out.isEmpty() ? null : out;
+        } catch (Throwable t) { return null; }
+    }
+
+    /** The shared volumes, one a line: the phone's own first, then each card that is in */
     public static String volumes() {
         StringBuilder out = new StringBuilder();
-        for (File f : self.getExternalFilesDirs(null)) {
+        final java.util.List<StorageVolume> vs = mountedVolumes();
+        if (vs != null) {
+            for (StorageVolume v : vs) out.append(v.getDirectory().getAbsolutePath()).append('\n');
+            return out.toString();
+        }
+        for (File f : self.getExternalFilesDirs(null)) {   // (Android 10: their app folders say where they are)
             if (f == null) continue;   // a card being taken out
             String p = f.getAbsolutePath();
             int cut = p.indexOf("/Android/data/");
@@ -680,7 +921,10 @@ public class SongateActivity extends SDLActivity {
             boolean wired = false;
             for (android.media.AudioDeviceInfo d : am.getAudioDevicesForAttributes(aa)) {
                 final int t = d.getType();
-                if (t == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES || t == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET) wired = true;
+                // (the HiBy R4 with SongateOS: Android knows only the 3.5 mm jack, so the 4.4 mm balanced output is "the speaker", the
+                // R4 having none of its own: wired too; the SongateOS session's request, 2026-11-19)
+                final boolean r4Balanced = t == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER && HibyR4.device;
+                if (t == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES || t == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET || r4Balanced) wired = true;
                 else return false;   // (anything else in the route: not only wired)
             }
             return wired;
@@ -708,6 +952,11 @@ public class SongateActivity extends SDLActivity {
      *  them by it (Internal storage, SD card): platform_android.cpp volumeLabel. */
     public static String volumesRemovable() {
         StringBuilder out = new StringBuilder();
+        final java.util.List<StorageVolume> vs = mountedVolumes();
+        if (vs != null) {
+            for (StorageVolume v : vs) out.append(v.isRemovable() ? '1' : '0').append('\n');
+            return out.toString();
+        }
         StorageManager sm = (StorageManager) self.getSystemService(Context.STORAGE_SERVICE);
         for (File f : self.getExternalFilesDirs(null)) {
             if (f == null) continue;

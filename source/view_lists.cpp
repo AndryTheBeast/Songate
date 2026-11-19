@@ -367,7 +367,9 @@ void App::drawTrackList(float x, float y, float w, float h) {
                         : ref < 0 ? "Songs you like appear here"
                         : ref < int(store.playlists.size()) && store.playlists[ref].smart() ? "Nothing matches yet"
                                                                                                          : "This playlist has no songs";
-        g.textC(msg, { css::Lg, Weight::SemiBold }, x + w / 2, ly + 90, pal.text2, 1, Align::Center);
+        // (Search with the other music apps' card under it: the line near the top, the card right after it, not a page's height down)
+        const bool card = v == View::Search && (!tabs || stab == 0) && playElsewhereShown();
+        g.textC(msg, { css::Lg, Weight::SemiBold }, x + w / 2, ly + (card ? 34 : 90), pal.text2, 1, Align::Center);
     }
     g.clip(x, y, w, h);
     bodyGrab = v == View::Queue && grab.kind == Grab::Queue && !grab.upNext ? grab.pos
@@ -403,6 +405,11 @@ void App::drawTrackList(float x, float y, float w, float h) {
         const float sh = order.empty() ? -48.f : drawServerBody("pl.srv", srvStarred_, order, x, gy + 30, w, y, h, mode == ListMode::Albums ? ListMode::Covers : mode, false,
                                         [&](int i) { playServer(srvStarred_, i, "Liked"); });
         bodyH += 18 + 30 + sh;
+    }
+    if (v == View::Search && (!tabs || stab == 0)) {   // In your other music apps (the user chose A, 2026-11-19)
+        const float gy = tracks.empty() && !lyricGroup && !srvGroup ? ly + 70 : ly + bodyH + 18;
+        const float ph = drawPlayElsewhere(x, gy, w);
+        if (ph > 0) bodyH = gy - ly + ph;
     }
     bodyGrab = -1;
     // Mix: after each track (but the last) a line down to the next, and on it a pill saying the two are joined by Automix
@@ -928,8 +935,12 @@ void App::drawPicker(float x, float y, float w, float h) {
     static bool listedFiles = false;
     static unsigned listedGen = ~0u;
     static std::vector<std::string> dirs, lists;
-    if (listedPath != path || listedFiles != files || listedGen != pickerGen) {
+    static double listedAt = -100;
+    // (the top level, the volumes: read again every 2 s, a card mounted meanwhile shows; the R4 mounts its microSD after Songate
+    // has started at a boot, and the picker, the setup's Music screen's too, kept the list without it: 2026-11-19)
+    if (listedPath != path || listedFiles != files || listedGen != pickerGen || (isRoot && time - listedAt > 2)) {
         listedGen = pickerGen;
+        listedAt = time;
         dirs = listDirs(path);
 #ifdef GF_ANDROID
         if (!storageOk_) dirs.clear();   // the volumes are known, nothing in them can be seen yet: nothing to choose
@@ -1002,8 +1013,7 @@ void App::drawPicker(float x, float y, float w, float h) {
         if (clicked) { ui.popArea(); exportPlaylist(path); return; }
         bx += button(uid("pk.mkdir"), ICON_PLUS, "New folder", bx, cy, false, &clicked) + 8;
         if (clicked) {
-            std::string name;
-            if (keyboard("New folder", "", name)) {
+            askName("New folder", "", [this, path, self, join](std::string name) {
                 while (!name.empty() && name.back() == ' ') name.pop_back();
                 while (!name.empty() && name[0] == ' ') name.erase(0, 1);
                 const std::string made = join(path, name);
@@ -1018,12 +1028,10 @@ void App::drawPicker(float x, float y, float w, float h) {
                     toast("Could not make the folder “" + name + "”");
                 } else {
                     listedPath.clear();   // list it again
-                    ui.popArea();
-                    navigate(self, -1, made, false);
+                    if (route.view == self) navigate(self, -1, made, false);
                     toast("Made the folder “" + name + "”");
-                    return;
                 }
-            }
+            });
         }
     }
     if (!isRoot) {
@@ -1179,3 +1187,8 @@ void App::playLyricHit(size_t i) {
     sheet.askAlt = "From the start";
     sheet.askAltYes = [play] { play(false); };
 }
+
+#ifndef GF_ANDROID
+float App::drawPlayElsewhere(float, float, float) { return 0; }   // (Search's other music apps: Android only)
+bool App::playElsewhereShown() { return false; }
+#endif

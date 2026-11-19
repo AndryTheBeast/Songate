@@ -6,7 +6,7 @@
   </picture>
 </p>
 <p align="center"><b>A native music player for the Nintendo Switch, Windows and Android.</b><br>
-Your own music folder or your own server, synced lyrics, colours from every cover and DJ-style Automix. Listen together on a Switch, a PC and a phone, hand the music over, play from an iPhone with AirPlay, and scrobble to Last.fm. On the Switch, music that keeps playing on the HOME menu and in games.<br>
+Your own music folder or your own server, synced lyrics, colours from every cover and DJ-style Automix. Listen together on a Switch, a PC and a phone, hand the music over, and play from an iPhone with AirPlay. On the Switch, music that keeps playing on the HOME menu and in games.<br>
 By <a href="https://github.com/AndryTheBeast"><b>AndryTheBeast</b></a> · version 2.0.0 · based on <a href="https://github.com/DEVIROYrus/gatefold-foobar2000"><b>Gatefold</b></a> by <a href="https://github.com/DEVIROYrus"><b>DEVIROYrus</b></a><br>
 <a href="../../releases"><b>⬇️ Download</b></a> · <a href="https://github.com/AndryTheBeast/songate-automix"><b>🎚️ The Automix models</b></a></p>
 
@@ -42,7 +42,6 @@ Songate is a native rewrite, not a port, that began as a recreation of [Gatefold
 - 🖼️ **Canvas.** The whole screen for the music, with Cover, Lyrics and Minimal layouts.
 - 🔗 **Your devices, together.** Sync, Listen together and Handoff between a Switch, a PC and an Android phone, with no account.
 - 📲 **AirPlay.** From an iPhone into Songate, and from Songate to AirPlay speakers.
-- 📻 **Last.fm.** Scrobbles, and what is playing on your profile.
 - 🎧 **On the Switch: music in your games.** A background player keeps it going on the HOME menu and in games; an Ultrahand overlay controls it.
 - 🧭 **A guided tour.** Basic, Advanced or Complete, on Songate's own screens with your music.
 - ⬆️ **Updates from inside the app.** Only if you turn them on.
@@ -113,8 +112,8 @@ Each line below opens.
 | ![Devices](docs/screenshots/devices.webp) | ![Handoff](docs/screenshots/handoff.webp) |
 | **Listening together: who changes what plays** | **AirPlay from an iPhone** |
 | ![Listen together](docs/screenshots/listen-together.webp) | ![AirPlay](docs/screenshots/airplay.webp) |
-| **Last.fm** | **The opening** |
-| ![Last.fm](docs/screenshots/lastfm.webp) | ![Opening](docs/screenshots/opening.webp) |
+| **The guided tour** | **The opening** |
+| ![Tour](docs/screenshots/tour.webp) | ![Opening](docs/screenshots/opening.webp) |
 | **Now playing · synced lyrics** | **Canvas** |
 | ![Lyrics](docs/screenshots/lyrics.webp) | ![Canvas](docs/screenshots/canvas.webp) |
 | **Canvas when idle: the spectrum** | **Automix: a join playing** |
@@ -139,10 +138,8 @@ Each line below opens.
 | ![Equalizer](docs/screenshots/settings-eq.webp) | ![Sleep timer](docs/screenshots/sleep-timer.webp) |
 | **Updates and Automix models** | **Support** |
 | ![Updates](docs/screenshots/settings-updates.webp) | ![Support](docs/screenshots/settings-support.webp) |
-| **The guided tour** | |
-| ![Tour](docs/screenshots/tour.webp) | |
 
-<sub>The screenshots and the film come from the PC preview (see below). In the shots of Devices, Handoff, AirPlay and Last.fm, the other device, the iPhone and the Last.fm account are stand-ins: the preview has none of its own. The music is from NCS (NoCopyrightSounds), [ncs.io](https://ncs.io): see [Credits](#-credits-and-licences).</sub>
+<sub>The screenshots and the film come from the PC preview (see below). In the shots of Devices, Handoff and AirPlay, the other device and the iPhone are stand-ins: the preview has none of its own. The music is from NCS (NoCopyrightSounds), [ncs.io](https://ncs.io): see [Credits](#-credits-and-licences).</sub>
 
 </details>
 
@@ -234,7 +231,7 @@ Songate also plays the music on **your own server**: Navidrome, Airsonic, Gonic 
 - 💽 **The server's albums, artists, genres, folders and playlists**, on pages like your library's, with the same views and sorting.
 - ⬇️ **Download an album** to play without the server.
 - ❤️ **Hearts and plays go back to the server.** Its playlists can be made, edited, renamed, saved to this device or sent to the server.
-- 🔗 Server songs go along in Handoff and Listen together, and scrobble to Last.fm.
+- 🔗 Server songs go along in Handoff and Listen together.
 
 On the Switch, the PC and Android. Server music cannot go into Automix, smart or Mood playlists, and its tags cannot be edited.
 
@@ -251,7 +248,7 @@ On the Switch, the PC and Android. Server music cannot go into Automix, smart or
 </details>
 
 <details>
-<summary><b>🔗 Devices, AirPlay and Last.fm</b></summary>
+<summary><b>🔗 Devices and AirPlay</b></summary>
 
 ### 🔗 Devices
 
@@ -265,14 +262,6 @@ Songates on the same network, a Switch, a PC or an Android phone, find each othe
 - ⏩ **Handoff.** Your queue and your place in the song move to the other device, and this one pauses. The other device asks once before it takes over. **Undo the handoff** brings your own queue back for two minutes.
 - 📲 **AirPlay.** Turn on **Receive AirPlay**, then pick Songate in an iPhone's AirPlay list. The song, its cover and its progress show in Songate, with levelling and the equalizer; play, pause and skip on the iPhone. A new iPhone is asked about once, and **Always** remembers it. On the Switch, the PC and Android.
 - 🔈 **Play on AirPlay speakers.** With it on, the speakers and TVs on your network are listed under the AirPlay button, each with its own volume.
-
-### 📻 Last.fm
-
-Settings → Last.fm, off until you turn it on.
-
-- ✍️ **Sign in on Last.fm's own page:** on the Switch, scan a QR code with your phone; on the PC, your browser opens. Your password is never typed into Songate.
-- 🎶 **Scrobbles** each track once you have heard half of it or four minutes, and shows what is playing on your profile. Only tracks with tags are sent.
-- 📴 **Offline?** What can't be sent waits on the card and goes, oldest first, as soon as Last.fm can be reached.
 
 </details>
 
@@ -344,7 +333,7 @@ Open it with Ultrahand's combo (L + D-pad down + R3, a click of the right stick,
 <details>
 <summary><b>💻 Songate for PC</b></summary>
 
-The same app on Windows, from the same code: the library, playlists, Automix, Mood, the equalizer, lyrics and the Canvas all work as they do on the console. So do your own server, Devices, Listen together, Handoff, AirPlay and Last.fm: **a PC, a Switch and an Android phone pair with each other**, and play together. **Tests were only made on Windows 11.**
+The same app on Windows, from the same code: the library, playlists, Automix, Mood, the equalizer, lyrics and the Canvas all work as they do on the console. So do your own server, Devices, Listen together, Handoff and AirPlay: **a PC, a Switch and an Android phone pair with each other**, and play together. **Tests were only made on Windows 11.**
 
 ![Songate on Windows](docs/screenshots/pc-now-playing.webp)
 
@@ -357,7 +346,6 @@ The same app on Windows, from the same code: the library, playlists, Automix, Mo
 - 🔽 **Keep playing when the window closes.** Songate stays by the clock, playing, and its icon brings it back (Settings → Playback).
 - ▶️ **Media keys and Windows' media controls.**
 - 🔗 **Devices and AirPlay** use your network, so the first time they are on, Windows asks once to let Songate through its firewall. Allow it, on private networks, or other devices and iPhones can't reach it.
-- 📻 **Last.fm** opens your browser to sign in.
 - 📁 **Settings are in `%APPDATA%\Songate`.** Uninstalling leaves them there.
 
 **Not on the PC:** the background player, the overlay, game actions and the pocket lock. They belong to the console.
@@ -380,7 +368,7 @@ The same app on Android, from the same code. **Android 10 or newer.** **Tests we
 - 🔄 **Sideways, the console's layout**, one to one. Turning the phone keeps the page, the song and whatever is open.
 - 🖼️ **The Canvas** is for a screen held sideways: upright, its button turns the screen, and closing it turns it back.
 - 🎧 **Music that keeps playing** out of sight, with the notification's and the lock screen's controls; a call pauses it. Settings → Playback → Keep playing when swiped away.
-- 🔗 **Your server, Devices, Listen together, Handoff, AirPlay and Last.fm** work as on the console and the PC.
+- 🔗 **Your server, Devices, Listen together, Handoff and AirPlay** work as on the console and the PC.
 - ⬆️ **Updates:** Settings › Updates downloads a new version and hands it to Android's own installer.
 
 **Not on Android:** the background player, the overlay, game actions and the pocket lock. They belong to the console.
@@ -509,8 +497,8 @@ Songate's own code (the app, the background player and the tools) is under the *
 - 🎨 **[Gatefold](https://github.com/DEVIROYrus/gatefold-foobar2000)** by **[DEVIROYrus](https://github.com/DEVIROYrus)**: the foobar2000 interface Songate began as a recreation of, with its design, palette algorithm and icons. © Gatefold contributors, MIT licence (`LICENSE-gatefold`).
 - 🔤 **Inter:** the typeface. © The Inter Project Authors, SIL Open Font Licence (`romfs/fonts/OFL.txt`). **Fraunces:** the Songate wordmark, SIL Open Font Licence (`tools/brand/OFL.txt`).
 - 🎞️ **FFmpeg** (LGPL 2.1), **SDL 2** with SDL_mixer, SDL_ttf and SDL_image (zlib), **libFLAC**, **mpg123**, **Opus**, **Tremor** and **libjpeg-turbo**, through devkitPro's portlibs. **stb_image** (public domain / MIT).
-- 🔐 **Monocypher:** the encryption between your devices. © Loup Vaillant and contributors, BSD 2-clause or CC0. **QR Code generator** (the Last.fm sign-in code): © Project Nayuki, MIT.
-- 📡 **AirPlay:** **Mbed TLS** answers an iPhone and decodes what it sends, © The Mbed TLS Contributors, Apache 2.0 (devkitPro's on the console, built by `tools/windows` on the PC). How an iPhone speaks AirPlay was learned from [shairport-sync](https://github.com/mikebrady/shairport-sync) (Mike Brady and contributors) and James Laird's ShairPort, which published the AirPort Express key it answers with; none of their code is in Songate. AirPlay is Apple's; Songate is not affiliated with Apple. Nor with Last.fm, whose service Songate's scrobbles go to.
+- 🔐 **Monocypher:** the encryption between your devices. © Loup Vaillant and contributors, BSD 2-clause or CC0.
+- 📡 **AirPlay:** **Mbed TLS** answers an iPhone and decodes what it sends, © The Mbed TLS Contributors, Apache 2.0 (devkitPro's on the console, built by `tools/windows` on the PC). How an iPhone speaks AirPlay was learned from [shairport-sync](https://github.com/mikebrady/shairport-sync) (Mike Brady and contributors) and James Laird's ShairPort, which published the AirPort Express key it answers with; none of their code is in Songate. AirPlay is Apple's; Songate is not affiliated with Apple.
 - 🧰 **libnx and devkitPro:** the Switch homebrew toolchain (ISC).
 - 🪟 **On Windows:** the same libraries built by `tools/windows`, plus **curl**, **zlib** and **Mbed TLS**, as listed in the `licences` folder beside the program. FFmpeg and mpg123 are separate DLLs you may replace.
 - 🎧 **Background player:** the Helix fixed-point AAC decoder © RealNetworks, RPSL (`sysmodule/lib/helix-aac`). Also minimp3 (CC0) and dr_flac (public domain / MIT-0), in `sysmodule/lib/single`.

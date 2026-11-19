@@ -49,6 +49,10 @@ struct Store {
     Order order = Order::RepeatAll;
     bool sidebarCollapsed = false;
     bool motion = true;
+    bool keySound = true;   // Settings › Controls › Keyboard: a click as each key is pressed
+    int keySoundKind = 0;   // … which: 0 Soft, 1 Tick, 2 Pop, 3 Clack (keyclick.hpp; the user, 2026-11-18)
+    bool keyVibe = true;    // … and its buzz,
+    int keyVibeLevel = 1;   // … how strong: 1 light, 2 medium, 3 strong (the user, 2026-11-18)
     // Settings › Appearance › Automix (the user, 2026-10-29): how a join shows. Now playing: 0 Full (the interface steps
     // aside, the cover glides to the screen's middle), 1 Immersive (the cover to the page's middle, the bars stay), 2 Simple
     // (all in place: the cover frosts, the texts wipe from one song to the next). The Canvas: 0 Full, 1 Simple
@@ -85,16 +89,32 @@ struct Store {
     int brightness = 0;             // From the cover: 0 dark, 1 light (palette-core.js opts.mode)
     // Background blur (2.0.1): how the cover is blurred behind every page and the Canvas. 0 Classic: 12x12 points of it stretched,
     // its patches showing (as it always was; the user likes it, "but some people might not"); 1 Smooth, as smooth as bgSmooth says
-    int bgBlur = 0;
+    int bgBlur = 1;   // (Smooth, Light by default: the user, 2026-11-18)
     // Screen rotation (2.0.1, Android only): 0 Auto, with the device; 1 Portrait; 2 Landscape (plat::screenRotation)
     int screenTurn = 0;
+    // Settings' folded cards (session 21): each page's open card by its title ("" all folded; a page not here: its first card)
+    std::map<std::string, std::string> foldOpen;
     // Show Apps (2.0.1, Android only): the device's other apps as a sixth button of the upright bottom bar, while Songate is the
     // home screen (Settings › Home screen)
     bool appsTab = false;
+    // The Apps page's own settings (session 21, its gear): Order (0 your own, 1 A to Z, 2 most used), Tile size (0 small, 1 medium,
+    // 2 large), Icons (0 Songate's, 1 their own), Names under the tiles, Find an app's field, Only the apps you installed
+    // System colours (SongateOS, Appearance): Android's accent set from Songate's own (as it was when chosen), not a colour of
+    // your own; the service keeps the colour itself
+    bool sysThemeSongate = false;
+    int appsOrder = 0, appsSize = 1, appsIcons = 0;
+    bool appsNames = true, appsFind = true, appsMine = false;
+    // Settings › Playback › Other apps (Android): what another app plays shows in Songate. On by default on SongateOS (the user,
+    // 2026-11-19), off elsewhere: otherAppsSaved says whether settings.txt had it ("otherMusic"; the older "otherApps" key, saved
+    // while it was off for everyone, is left unread)
+    bool otherApps = false, otherAppsSaved = false;
+    // Settings › Playback › Other apps › Spectrum for other apps (the user chose B, asked in place, 2026-11-19): the bars follow
+    // another app's music (Android's audio recording permission); otherSpecAsked: Now playing's Allow / Not now answered
+    bool otherSpectrum = false, otherSpecAsked = false;
     // Sidebar opacity (2.0.1): how solid the sidebar's ground is when it opens over the page, 0.5 to 1 (solid, as it was). Only a
     // screen too narrow for the sidebar beside the page opens it so (a small player held sideways, a narrow window)
     float sideOpacity = 1.f;
-    int bgSmooth = 1;               // Smooth's strength: 0 Light, 1 Medium, 2 Strong
+    int bgSmooth = 0;               // Smooth's strength: 0 Light, 1 Medium, 2 Strong
     float saturation = 1;           // opts.intensity, 0..1 (higher changes nothing)
     float colourTransition = 1.1f;  // seconds the colours take to follow a new cover (Gatefold's --tx)
     // Custom: your background and accents as 0xRRGGBB, −1 when left to the cover (theme.js customTheme)
@@ -111,9 +131,16 @@ struct Store {
     // Android upright, Settings › Visualizer › Seek bar › Seek bar animation: how the bars come back after scrubbing. 0 Quick (half a
     // second, all together), 1 Smooth (longer and gentler: the default, the user's choice), 2 Wave (out from the song's place)
     int seekAnim = 1;
+    // Android upright, Settings › Storage › Files › Files in Library (the user, 2026-11-16): the Files row on the Library page, between
+    // Folders and Liked; its own switch (it was the sidebar's Files tab's, whose card goes when the screen is held upright). -1:
+    // not saved yet: as the sidebar's Files tab is
+    int libFiles = -1;
     // Android, Settings › Playback › Volume (2.1.0; the volume is Android's own music volume): what the volume keys show (0 Songate's
     // own pop-up, 1 Android's panel), where Songate's shows (0 Top, 1 Side, 2 Bottom), and the volume as 0 steps or 1 percent
     int volPop = 0, volWhere = 1, volNum = 0;
+    float volStay = 1.5f;   // ... and how long Songate's stays after the last press, in seconds (the user, 2026-11-17)
+    // Android upright, Settings › Lyrics › Under the cover: 0 off, 1 the line being sung in the buttons' place, 2 with the next one
+    int lyrUnder = 1;
     // The HiBy R4 only, Appearance › Status LED › Colour "A": the light follows Songate's accent, set again with each cover
     // (the ROM keeps the colour itself; this is Songate's own part of it). Saved only while it is on: no other device keeps a line
     bool r4LedAccent = false;
@@ -182,6 +209,9 @@ struct Store {
     // Settings → Playback → Crossfade: seconds (0 off), and whether consecutive tracks of one album keep their join
     float crossfade = 0;
     bool xfadeNotInAlbum = true;
+    // Settings › Playback › Play when plugged in (the HiBy R4 only; the user, 2026-11-20): headphones into the 3.5 or 4.4 mm
+    // start the music where it is, every time. Off unless chosen
+    bool playOnPlug = false;
     // Settings → Equalizer (gfeqcfg.h); with the background player connected, the player's own copy wins (the overlay edits it too)
     GfbgEq eq = gfEqDefault();
     struct AirPlayDevice { std::string id, name; };
@@ -235,8 +265,6 @@ struct Store {
     bool betas = false;   // Beta versions: listed (apart) and offered; asked first (App::allowBetas)
     bool reports = false; // Settings › Support › Reports: off, nothing can be sent; on, asked first (App::allowReports)
     std::string updateToasted;
-    // Settings › Last.fm: off, nothing goes online; on, asked first (App::allowLastfm). The account is lastfm-session.txt (lastfm.hpp)
-    bool lastfm = false, lastfmScrobble = true, lastfmNow = true;
     // Settings › Connections: off, no socket is open; on, asked first (App::allowConnections). connectAim: a typed address
     bool connections = false;
     std::string connectAim;

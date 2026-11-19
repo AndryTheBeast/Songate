@@ -99,7 +99,7 @@ const std::map<std::string, u64> kButtons = {
     { "A", HidNpadButton_A },       { "B", HidNpadButton_B },         { "X", HidNpadButton_X },       { "Y", HidNpadButton_Y },
     { "L", HidNpadButton_L },       { "R", HidNpadButton_R },         { "ZL", HidNpadButton_ZL },     { "ZR", HidNpadButton_ZR },
     { "UP", HidNpadButton_Up },     { "DOWN", HidNpadButton_Down },   { "LEFT", HidNpadButton_Left }, { "RIGHT", HidNpadButton_Right },
-    { "PLUS", HidNpadButton_Plus }, { "MINUS", HidNpadButton_Minus },
+    { "PLUS", HidNpadButton_Plus }, { "MINUS", HidNpadButton_Minus }, { "L3", HidNpadButton_StickL }, { "R3", HidNpadButton_StickR },
 };
 
 void loadScript() {

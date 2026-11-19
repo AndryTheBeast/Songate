@@ -41,6 +41,7 @@ bool legacyData() { return false; }
 
 void padInit() { padInitializeDefault(&pad); }
 void padRead() { padUpdate(&pad); }
+void padRumble(int) {}
 uint64_t padDown() { return padGetButtonsDown(&pad); }
 uint64_t padHeld() { return padGetButtons(&pad); }
 Stick stick(int which) {

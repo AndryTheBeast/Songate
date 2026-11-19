@@ -3,7 +3,7 @@
 #   bash tools/android/build.sh                 a dev build (GF_DEV) for the emulator and phones: android/app/build/outputs/apk/debug/
 #   ABIS=x86_64 bash tools/android/build.sh     the emulator's only (faster)
 #   DEV=0 bash tools/android/build.sh           a release build's code, debug-signed (a check that it compiles)
-#   RELEASE=1 bash tools/android/build.sh       the release: no dev extras, both ABIs, signed with Songate's key
+#   RELEASE=1 bash tools/android/build.sh       the release: no dev extras, arm64 only, signed with Songate's key
 #                                               (C:\Android\keys\songate-release.properties), as build-android/release/SongateAND-<version>.apk
 # tools/android/build-deps.sh makes the libraries first.
 set -euo pipefail
@@ -20,7 +20,8 @@ cp -r "$ROOT/romfs" "$ROOT/android/build/assets/romfs"
 cd "$ROOT/android"
 if [ "${RELEASE:-0}" = "1" ]; then
   [ -f "${SONGATE_KEY_PROPERTIES:-/c/Android/keys/songate-release.properties}" ] || { echo "no signing key: C:\Android\keys\songate-release.properties is missing"; exit 1; }
-  ./gradlew.bat --no-daemon -q assembleRelease -Pdev=0 -Pabis="x86_64,arm64-v8a"
+  # (arm64 only: phones and the R4 are; x86_64 stays in the dev builds, for the emulator. The user, 2026-11-18)
+  ./gradlew.bat --no-daemon -q assembleRelease -Pdev=0 -Pabis="arm64-v8a"
   VERSION="$(grep -E '^APP_VERSION' "$ROOT/Makefile" | sed -E 's/^APP_VERSION[[:space:]:=]*//; s/[[:space:]]+$//')"
   # 2.0.0 BETA 1 → SongateAND-2.0.0-beta.1, the spelling of the tag (plat::isInstaller finds it by that start)
   NAME="SongateAND-$(echo "$VERSION" | tr 'A-Z' 'a-z' | sed -E 's/ ([a-z]+) ([0-9]+)$/-\1.\2/; s/ /-/g')"

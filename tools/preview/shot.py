@@ -3,7 +3,7 @@
 
     python tools/preview/shot.py <step> <step> ...
 
-Steps: "wait 1.5" | "tap x y" | "hold x y s" | "press B" (A B X Y L R ZL ZR PLUS MINUS LEFT RIGHT UP DOWN) | "key text" (the
+Steps: "wait 1.5" | "tap x y" | "hold x y s" | "press B" (A B X Y L3 R3 L R ZL ZR PLUS MINUS LEFT RIGHT UP DOWN) | "key text" (the
 keyboard's answer) | "wheel x y n" | "drag x1 y1 x2 y2 [s]" (a finger down, moved there over s seconds, 0.8 unless given, and
 lifted) | "down x y" / "move x y [s]" / "up x y" (the same in parts, for a frame with the finger still down) | "shot name" (saves tools/preview/out/shots/<name>.jpg, 1280x720). Coordinates are the
 app's (1280x720). Speaks streamshim.cpp's protocol like record.py, with the exe in tools/preview/out.
@@ -31,7 +31,7 @@ CFG = CARD / 'sdmc' / 'config' / 'songate-nx'
 SHOTS = OUT / 'shots'
 MUSIC = Path(os.environ.get('GF_LIVE_MUSIC', r'D:\Music'))
 PORT = int(os.environ.get('GF_SHOT_PORT', '8798'))
-BUTTONS = {'A': 0, 'B': 1, 'X': 2, 'Y': 3, 'L': 6, 'R': 7, 'ZL': 8, 'ZR': 9, 'PLUS': 10, 'MINUS': 11,
+BUTTONS = {'A': 0, 'B': 1, 'X': 2, 'Y': 3, 'L3': 4, 'R3': 5, 'L': 6, 'R': 7, 'ZL': 8, 'ZR': 9, 'PLUS': 10, 'MINUS': 11,
            'LEFT': 12, 'UP': 13, 'RIGHT': 14, 'DOWN': 15}
 
 latest = {'jpeg': None, 'n': 0}

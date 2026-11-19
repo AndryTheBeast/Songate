@@ -5,6 +5,16 @@
  */
 #pragma once
 
+// Words about keys and pads: none on Android, touch only (the user, 2026-11-19). GF_PADS(x) is x elsewhere; GF_PADS_OR(pads, touch)
+// picks the touch words on Android.
+#if defined(GF_ANDROID)
+#define GF_PADS(x) ""
+#define GF_PADS_OR(pads, touch) touch
+#else
+#define GF_PADS(x) x
+#define GF_PADS_OR(pads, touch) pads
+#endif
+
 #if defined(GF_ANDROID)
 // A phone or a tablet: "this device"; touch and back, a keyboard or a pad as on the PC
 #define GF_PLATFORM "Android"
@@ -31,11 +41,11 @@
 #define GF_MENU_KEY "a long press"
 #define GF_TOUR_POINTER "Touch works everywhere. On a pad, the left stick moves a pointer that taps and drags, with its speed and acceleration here, and the right stick scrolls."
 #define GF_TOUR_KEYS "Next moves on, back goes back"
-#define GF_TOUR_END "Touch works everywhere and back goes back; on a pad, {DPAD} reaches everything and {B} goes back. Enjoy your music. This tour is waiting in Settings › About whenever you want it."
+#define GF_TOUR_END "Touch works everywhere and back goes back. Enjoy your music. This tour is waiting in Settings › About whenever you want it."
 #define GF_MENU_WORDS "hold your finger on it"
-#define GF_MOVE_WORDS "Move it with your finger or the arrows, then tap it"
-#define GF_MOVING_WORDS "Your finger or the arrows move it; a tap puts it down"
-#define GF_MOVING_LOW "your finger or the arrows move it; a tap puts it down"
+#define GF_MOVE_WORDS "Move it with your finger, then tap it"
+#define GF_MOVING_WORDS "Your finger moves it; a tap puts it down"
+#define GF_MOVING_LOW "your finger moves it; a tap puts it down"
 #define GF_PLAYED_WHERE "in Songate"
 #define GF_GAMES_WORDS ""
 #define GF_KEPT_WHERE "on this device"

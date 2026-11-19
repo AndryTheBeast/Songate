@@ -291,6 +291,11 @@ void eqSet(const GfbgEq& e) {
     cv.notify_one();
 }
 
+bool eqOn() {
+    std::lock_guard<std::mutex> g(mx);
+    return vals.count("eq") && !vals["eq"].empty() && eqFields(vals["eq"])[0] != 0;
+}
+
 bool autoPreamp() {
     std::lock_guard<std::mutex> g(mx);
     if (autoWant >= 0) return autoWant != 0;
@@ -353,6 +358,7 @@ int getInt(const char*, int fallback) { return fallback; }
 unsigned gen() { return 0; }
 void set(const char*, const std::string&) {}
 void eqSet(const GfbgEq&) {}
+bool eqOn() { return false; }
 bool autoPreamp() { return false; }
 void setAutoPreamp(bool) {}
 void ledLive(int, int, bool) {}

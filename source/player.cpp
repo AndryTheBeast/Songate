@@ -67,7 +67,16 @@ void Player::ensureOpen() {
     idleSince_ = -1;
     if (!idleClosed_) return;
     idleClosed_ = false;
-    if (!reopenAt(rate_, bpFormat_)) return;
+    // bit-perfect claimed again, as for a new song: never assumed still held (audioserver may have restarted meanwhile: the
+    // claim is gone then; the SongateOS session, 2026-11-20)
+    int format = bpFormat_;   // (a song loaded meanwhile claimed its own: kept)
+    if (bpIdle_) {
+        format = 0;
+        if (bpWanted_) format = plat::bitPerfectBegin(rate_, bpIdle_);
+        SDL_Log("SongateAudio: bit-perfect %s (back from idle)", format ? "claimed again" : "not claimed again: the normal path");
+        bpIdle_ = 0;
+    }
+    if (!reopenAt(rate_, format)) return;
     if (ffActive_ || pvOn_ || streamOn_) Mix_HookMusic(&Player::ffHook, this);   // (the hook as it was)
 }
 
@@ -81,6 +90,7 @@ bool Player::reopenAt(int rate, int format) {
     while (samples < 16384 && double(samples) * 48000.0 < 2048.0 * rate) samples *= 2;
     bool ok = false;
     bpFormat_ = 0;
+    bpIdle_ = 0;
     if (format) {   // bit-perfect: exactly the format claimed, nothing else (SDL's patch packs 32-bit into 24 when asked)
         SDL_setenv("SONGATE_AAUDIO_I24", format == 24 ? "1" : "0", 1);
         ok = Mix_OpenAudioDevice(rate, format == 16 ? AUDIO_S16SYS : AUDIO_S32SYS, 2, samples, nullptr, 0) == 0;
@@ -187,6 +197,7 @@ bool Player::load(const std::string& path, bool paused, double fade, const autom
         // Bit-perfect (the user's ROM prompt, 2026-11-15): a lossless song, nothing changing the sound (the app says), the output
         // offering its rate and depth: claimed before the stream opens. Anything else: let go, the normal path
         int format = 0;
+        bpLoadWanted_ = bpWanted_;
         if (free && src > 0) {
             const int bits = d->sourceBits();
             if (bpWanted_ && bits > 0 && src == want) format = plat::bitPerfectBegin(src, bits);
@@ -306,6 +317,15 @@ void Player::preview(std::vector<int16_t>&& pcm) {
 void Player::streamBegin(std::function<int(int16_t*, int)> read) {
 #ifdef GF_ANDROID
     ensureOpen();
+    // AirPlay's sound comes made for 48 kHz (airplay.cpp): the output opened at that rate while it plays, not at the last song's
+    // own (a 44.1 kHz song left it there and an iPhone played slow, the user, 2026-11-18). Bit-perfect let go; the song paused
+    // here gets its rate back at the end (streamEnd)
+    streamRateWas_ = 0;
+    if (rate_ != 48000 || bpFormat_) {
+        streamRateWas_ = rate_;
+        if (bpFormat_) plat::bitPerfectEnd();
+        reopenAt(48000, 0);
+    }
 #endif
     {
         std::lock_guard<std::mutex> g(ffLock_);
@@ -324,6 +344,11 @@ void Player::streamEnd() {
         streamOn_ = false;
         stream_ = nullptr;
     }
+#ifdef GF_ANDROID
+    if (streamRateWas_ && streamRateWas_ != rate_ && reopenAt(streamRateWas_, 0) && (ffActive_ || pvOn_))
+        Mix_HookMusic(&Player::ffHook, this);   // (the paused song's decoder makes its rate: the output at it again)
+    streamRateWas_ = 0;
+#endif
     if (!ffActive_) Mix_HookMusic(nullptr, nullptr);
 }
 
@@ -374,6 +399,14 @@ void Player::update() {
             Mix_CloseAudio();
             idleClosed_ = true;
             SDL_Log("SongateAudio: closed after 5 s with nothing to play (Android's mixer may sleep)");
+            // the bit-perfect claim let go with the stream (the SongateOS session, 2026-11-20): a claim left on a closed stream made
+            // Android 14's audioserver abort when the jack was pulled (the preferred output reopened with no device). The song keeps
+            // its format (bpFormat_: the mark as it was); ensureOpen claims again before anything sounds
+            if (bpFormat_) {
+                bpIdle_ = bpFormat_;
+                plat::bitPerfectEnd();
+                SDL_Log("SongateAudio: bit-perfect let go (idle)");
+            }
         }
     }
 #endif
@@ -581,6 +614,49 @@ bool Player::latestPcm(float* out, int n) {
     for (int i = 0; i < n; i++) out[i] = ring_[(w - n + i) % Ring];
     return true;
 }
+
+#ifdef GF_ANDROID
+// (tools/android/sdl-patches/SDL_aaudio.c: how far what is heard is behind the newest frame mixed, Bluetooth's delay included)
+extern "C" int SDL_SongateAAudioDelay(double* seconds);
+
+bool Player::pcmNow(float* out, int n, double now, bool playing) {
+    if (remote()) return latestPcm(out, n);
+    double heardLag = 0;
+    const bool told = playing && SDL_SongateAAudioDelay(&heardLag) && heardLag >= 0 && heardLag < 2;
+    const unsigned w = written_.load();   // (right after: the delay is counted to the newest frame mixed)
+    // (Android's position moves in steps and the newest frame in clumps: the delay saws up and down each clump; its mean, slowly)
+    if (told) heardDelay_ = heardDelay_ > 0 ? heardDelay_ * 0.97 + heardLag * 0.03 : heardLag;
+    if (!playing || n > Ring / 2) {
+        nowOn_ = false;
+        heardDelay_ = 0;
+        return false;
+    }
+    if (!nowOn_) {   // (a start: the clock from the newest clump, one spacing behind it)
+        nowOn_ = true;
+        clumpW_ = w;
+        clumpT_ = now;
+        nowRead_ = w - unsigned(clumpGap_ * rate_);
+    } else if (w != clumpW_) {
+        // a clump came: its spacing (the longest lately, eased down slowly), so the clock never runs past what was written
+        const double gap = now - clumpT_;
+        if (gap < 0.5) clumpGap_ = gap > clumpGap_ ? gap : clumpGap_ * 0.97 + gap * 0.03;
+        clumpGap_ = std::clamp(clumpGap_, 0.01, 0.4);
+        clumpW_ = w;
+        clumpT_ = now;
+    }
+    // the sounding end: the clump's end played on from when it came (a steady clock), behind it by what Android says the output's
+    // delay is (its mean over a clump, plus half a clump: the clock is at the clump's end when it comes); without its word, one
+    // spacing (and a frame) behind
+    const double lag = (heardDelay_ > 0 ? heardDelay_ + clumpGap_ / 2 : clumpGap_ + 0.02) * rate_;
+    unsigned r = unsigned(int64_t(std::floor(double(clumpW_) - lag + (now - clumpT_) * rate_)));
+    if (int(w - r) < 0) r = w;                                          // never past what was written
+    if (int(w - r) > Ring - n) r = w - unsigned(lag);                   // fallen behind the ring (a stall): caught up
+    if (int(r - nowRead_) <= 0) return false;                           // nothing new since the last frame (never backwards)
+    nowRead_ = r;
+    for (int i = 0; i < n; i++) out[i] = ring_[(r - n + i) % Ring];
+    return true;
+}
+#endif
 
 /** The mono mix before volume and the equalizer, for the spectrum (as the background player's). */
 void Player::feedRing(const float* stereo, int frames) {

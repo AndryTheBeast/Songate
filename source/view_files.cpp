@@ -356,23 +356,24 @@ void App::updateFileWork() {
 // ------------------------------------------------------------------ actions
 
 void App::fileNewFolder(const std::string& dir) {
-    std::string name;
-    if (!keyboard("New folder", "", name)) return;
-    name = trimmed(name);
-    if (const char* bad = badName(name)) { if (*bad) toast(bad); return; }
-    const std::string made = join(dir, name);
-    if (exists(made)) { toast("“" + name + "” is already here"); return; }
-    if (mkdir(made.c_str(), 0777) != 0) { toast("Could not make the folder “" + name + "”"); return; }
-    files.gen++;
-    files.focusAfter = made;
-    toast("Made the folder “" + name + "”");
+    askName("New folder", "", [this, dir](const std::string& typed) {
+        const std::string name = trimmed(typed);
+        if (const char* bad = badName(name)) { if (*bad) toast(bad); return; }
+        const std::string made = join(dir, name);
+        if (exists(made)) { toast("“" + name + "” is already here"); return; }
+        if (mkdir(made.c_str(), 0777) != 0) { toast("Could not make the folder “" + name + "”"); return; }
+        files.gen++;
+        files.focusAfter = made;
+        toast("Made the folder “" + name + "”");
+    });
 }
 
 void App::fileRename(const std::string& path) {
     const std::string old = baseName(path);
-    std::string name = old;
-    if (!keyboard("Rename", old, name)) return;
-    name = trimmed(name);
+    askName("Rename", old, [this, path, old](const std::string& typed) { fileRenameTo(path, old, trimmed(typed)); });
+}
+
+void App::fileRenameTo(const std::string& path, const std::string& old, const std::string& name) {
     if (name == old) return;
     if (const char* bad = badName(name)) { if (*bad) toast(bad); return; }
     const std::string to = join(parentOf(path), name);

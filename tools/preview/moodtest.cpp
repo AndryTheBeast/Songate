@@ -1,5 +1,5 @@
 /* Songate · moodtest.cpp: Mood playlists (source/mood.hpp) on a real library's measurements (a mood.tsv: path, then
- * mixan::Mood::pack), with your choices and Last.fm's tags made up here. Prints each check, then ALL GOOD or SOME FAILED.
+ * mixan::Mood::pack), with your choices made up here. Prints each check, then ALL GOOD or SOME FAILED.
  *   clang++ -std=c++20 -Isource tools/preview/moodtest.cpp source/mood.cpp source/mixan.cpp ... (see the build line in NEXT_SESSION)
  *   moodtest <mood.tsv>
  */

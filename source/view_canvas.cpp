@@ -106,8 +106,10 @@ void App::drawCanvasLyricsOf(float x, float y, float w, float h, int size, int l
             lyricDots(x, ly + lineH / 2, std::clamp(std::round(size * 0.24f), 7.f, 14.f), pal.text, a, d == 0);
             continue;
         }
+        size_t wordAt = 0;
         for (const auto& line : parts[i]) {
-            g.text(line, f, x, ly, pal.text, a, Align::Left, int(w));
+            if (!(d == 0 && lyricRowWords(lyrics[i], line, wordAt, f, x, ly, pal.text, a, pos, i + 1 < lyrics.size() ? lyrics[i + 1].t : 1e9)))
+                g.text(line, f, x, ly, pal.text, a, Align::Left, int(w));
             ly += lineH;
         }
     }
@@ -366,7 +368,7 @@ void App::drawCanvas() {
             const float block = kf.size * 1.4f + 4 + tf.size * 1.1f + 4 + arf.size * 1.4f;
             float my = s.ay + (s.art - block) / 2 + dy;
             // as Now playing's kicker: its bars, then the same words, spaced the same (the user, 2026-11-07)
-            eqGlyph(mx, my + kf.size * 0.7f, pal.accentInk, isPlaying() || (extOn && !srvq_.on), A, kf.size / float(css::Xs));
+            eqGlyph(mx, my + kf.size * 0.7f, pal.accentInk, shownPlaying(), A, kf.size / float(css::Xs));
             g.textSpaced(kick, kf, mx + 23 * kf.size / float(css::Xs), my + kf.size * 0.7f, 0.14f, pal.accentInk, A);
             my += kf.size * 1.4f + 4;
             auto metaBlock = [&](bool old) {
@@ -393,7 +395,7 @@ void App::drawCanvas() {
             const std::vector<std::string> lines = g.wrap(has ? titleTrim(title, tf, s.sw) : title, tf, int(s.sw), 2);
             const float metaH = kf.size * 1.4f + 10 + lines.size() * std::round(tf.size * 1.02f) + 10 + arf.size * 1.35f + 6 + alf.size * 1.45f;
             float my = (lyricsOn ? s.sy : s.ay + (s.art - metaH) / 2) + dy;
-            eqGlyph(s.sx, my + kf.size * 0.7f, pal.accentInk, isPlaying() || (extOn && !srvq_.on), A, kf.size / float(css::Xs));
+            eqGlyph(s.sx, my + kf.size * 0.7f, pal.accentInk, shownPlaying(), A, kf.size / float(css::Xs));
             g.textSpaced(kick, kf, s.sx + 23 * kf.size / float(css::Xs), my + kf.size * 0.7f, 0.14f, pal.accentInk, A);
             my += kf.size * 1.4f + 10;
             auto block = [&](bool old) {   // the next song's lines decide the layout
@@ -431,7 +433,7 @@ void App::drawCanvas() {
     pageWipe_.on = false;   // (the controls: not wiped)
 
     // ---- .cv-chrome: hairline progress, transport, tools; fades out when idle
-    const bool idle = canvasIdle > store.canvasIdleAfter && (isPlaying() || (extOn && !srvq_.on));
+    const bool idle = canvasIdle > store.canvasIdleAfter && (shownPlaying());
     // Coming back from idle, the spectrum folds back first: the controls only return in its last moments,
     // so they never sit on top of the bars (going idle, they leave first and the bars rise after).
     canvasCtl += ((idle || canvasViz > 0.12f ? 0.f : 1.f) - canvasCtl) * (1 - std::exp(-dt / 0.12f));
@@ -453,7 +455,7 @@ void App::drawCanvas() {
         if (const int st = ui.sliderStep(pid)) seekBy(st * 5);
         const float d = ui.sliderDrag(pid);
         if (d >= 0) frac = clampf((d - padX) / pw, 0, 1);
-        if (ui.sliderReleased(pid) && dur > 0) player.seek(clampf((ui.lastDragX() - padX) / pw, 0, 1) * dur);
+        if (ui.sliderReleased(pid) && dur > 0) seekShown(clampf((ui.lastDragX() - padX) / pw, 0, 1) * dur);
     }
     // Idle: the hairline slides into the room the controls leave and grows into a spectrum.
     // A constant pace over Settings → Canvas → Spectrum rise, eased at both ends (smootherstep).
@@ -535,7 +537,7 @@ void App::drawCanvas() {
     // changes what plays
     const bool ctlOff = controlsOff();
     if (cvBtn(uid("cv.prev"), ICON_PREV, mid - 30 - 14 - 21, tc, 42, false, false, ctlOff)) prev();
-    if (cvBtn(uid("cv.play"), isPlaying() || (extOn && !srvq_.on) ? ICON_PAUSE : ICON_PLAY, mid, tc, 60, true, false, ctlOff)) togglePlay();
+    if (cvBtn(uid("cv.play"), shownPlaying() ? ICON_PAUSE : ICON_PLAY, mid, tc, 60, true, false, ctlOff)) togglePlay();
     if (cvBtn(uid("cv.next"), ICON_NEXT, mid + 30 + 14 + 21, tc, 42, false, false, ctlOff)) next(false);
 
     // .cv-tools: layout segment, volume, lyrics, close

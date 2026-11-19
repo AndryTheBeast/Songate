@@ -25,6 +25,7 @@
 #include "SDL_audio.h"
 #include "SDL_loadso.h"
 #include "SDL_timer.h"   /* (Songate: SDL_Delay) */
+#include <time.h>        /* (Songate: clock_gettime, SDL_SongateAAudioDelay) */
 #include "../SDL_audio_c.h"
 #include "../../core/android/SDL_android.h"
 #include "SDL_aaudio.h"
@@ -92,6 +93,33 @@ static aaudio_format_t aaudio_wantFormat(SDL_AudioFormat f)
 }
 static SDL_SpinLock aaudio_streamLock;   /* the output stream swapped on the audio thread while Android's pause and resume use it */
 
+/* Songate: the output's frames since its stream opened: handed over by the mixer, and dropped (not taken in time); under
+   aaudio_streamLock. SDL_SongateAAudioDelay sets them against where Android says the stream is heard (Bluetooth's delay included) */
+static Sint64 aaudio_mixed = 0, aaudio_dropped = 0;
+
+/* Songate: how far, in seconds, what is heard now is behind the newest frame the mixer made. 1 and *seconds when Android gives
+   a timestamp (playing), else 0. Any thread. */
+extern DECLSPEC int SDLCALL SDL_SongateAAudioDelay(double *seconds);
+DECLSPEC int SDLCALL SDL_SongateAAudioDelay(double *seconds)
+{
+    int ok = 0;
+    SDL_AtomicLock(&aaudio_streamLock);
+    if (audioDevice && audioDevice->hidden && audioDevice->hidden->stream && audioDevice->spec.freq > 0) {
+        int64_t pos = 0, t = 0;
+        if (ctx.AAudioStream_getTimestamp(audioDevice->hidden->stream, CLOCK_MONOTONIC, &pos, &t) == AAUDIO_OK && t > 0) {
+            struct timespec ts;
+            double heard, rate = (double)audioDevice->spec.freq;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            heard = (double)pos + ((double)ts.tv_sec * 1e9 + (double)ts.tv_nsec - (double)t) * rate / 1e9 + (double)aaudio_dropped;
+            if (heard > (double)aaudio_mixed) heard = (double)aaudio_mixed;
+            *seconds = ((double)aaudio_mixed - heard) / rate;
+            ok = 1;
+        }
+    }
+    SDL_AtomicUnlock(&aaudio_streamLock);
+    return ok;
+}
+
 void aaudio_errorCallback(AAudioStream *stream, void *userData, aaudio_result_t error);
 void aaudio_errorCallback(AAudioStream *stream, void *userData, aaudio_result_t error)
 {
@@ -156,6 +184,11 @@ static int aaudio_OpenDevice(_THIS, const char *devname)
     if (res != AAUDIO_OK) {
         LOGI("SDL Failed AAudioStreamBuilder_openStream %d", res);
         return SDL_SetError("%s : %s", __func__, ctx.AAudio_convertResultToText(res));
+    }
+    if (!iscapture) {   /* (Songate: a new stream counts from 0) */
+        SDL_AtomicLock(&aaudio_streamLock);
+        aaudio_mixed = aaudio_dropped = 0;
+        SDL_AtomicUnlock(&aaudio_streamLock);
     }
 
     this->spec.freq = ctx.AAudioStream_getSampleRate(private->stream);
@@ -272,6 +305,7 @@ static SDL_bool aaudio_ReopenOutput(_THIS)
     }
     SDL_AtomicLock(&aaudio_streamLock);
     private->stream = stream;
+    aaudio_mixed = aaudio_dropped = 0;   /* (Songate: a new stream counts from 0) */
     SDL_AtomicUnlock(&aaudio_streamLock);
     SDL_Log("AAudio: output reopened after a disconnect (%d Hz)", (int)ctx.AAudioStream_getSampleRate(stream));
     return SDL_TRUE;
@@ -319,6 +353,9 @@ static void aaudio_PlayDevice(_THIS)
                 outFrame = (size_t)this->spec.channels * 3;
             }
         }
+        SDL_AtomicLock(&aaudio_streamLock);
+        aaudio_mixed += want;   /* (Songate: SDL_SongateAAudioDelay) */
+        SDL_AtomicUnlock(&aaudio_streamLock);
         res = 0;
         while (done < want) {
             res = ctx.AAudioStream_write(private->stream, src + (size_t)done * outFrame, want - done,
@@ -331,6 +368,11 @@ static void aaudio_PlayDevice(_THIS)
                 LOGI("SDL AAudio play: %d of %d frames in time, the rest dropped", (int)done, (int)want);
                 break;
             }
+        }
+        if (done < want) {   /* (Songate: frames the stream never took: what is heard skips them) */
+            SDL_AtomicLock(&aaudio_streamLock);
+            aaudio_dropped += want - done;
+            SDL_AtomicUnlock(&aaudio_streamLock);
         }
     }
     if (res == AAUDIO_ERROR_DISCONNECTED) {   /* (if the callback has not said so yet) */

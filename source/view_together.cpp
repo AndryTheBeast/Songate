@@ -1421,6 +1421,7 @@ double App::shownPosition() const {
     if (!extOn && airsend.silenceHere()) return std::max(0.0, player.position() - airsend.delay());
 #endif
     if (!extOn || srvq_.on) return player.position();   // (the server's queue: Songate plays it, its own position)
+    if (extApp_ && !extPlaying_) return extPos;   // (another app's, paused: where it stopped)
     const double p = extPos + (time - extPosAt);
     return now.info.duration > 0 ? std::clamp(p, 0.0, now.info.duration) : std::max(0.0, p);
 }

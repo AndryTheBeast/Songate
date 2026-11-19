@@ -1,6 +1,6 @@
 """Songate for Android: checks an APK before it goes anywhere (the installer's checkinstaller.py, for Android).
    python tools/android/checkapk.py [path/to/app.apk]
-Every file inside is unpacked and searched for the secrets (report.key's token, lastfm.key's lines), whole, in other encodings and in
+Every file inside is unpacked and searched for the secrets (report.key's token), whole, in other encodings and in
 8-byte pieces; they are never printed. Also: the key files stay out of git, FFmpeg has no GPL or non-free parts, the LGPL libraries
 are files of their own. Ends with ALL GOOD or the failures."""
 import base64, io, os, re, subprocess, sys, zipfile
@@ -46,12 +46,6 @@ lines = open(keyf, 'rb').read().split(b'\n') if os.path.isfile(keyf) else []
 token = lines[1].strip() if len(lines) > 1 else b''
 check(len(token) > 20, "report.key's line 2 was read")
 if token: secrets.append(('the token', token))
-lf = os.path.join(REPO, 'lastfm.key')
-if os.path.isfile(lf):
-    for i, l in enumerate(open(lf, 'rb').read().split(b'\n')[:2]):
-        if l.strip(): secrets.append((f"lastfm.key's line {i + 1}", l.strip()))
-else:
-    print('    (no lastfm.key on this PC, so no Last.fm secret to look for)')
 blobs = dict(files)
 blobs['(the APK itself)'] = open(APK, 'rb').read()
 for name, t in secrets:
@@ -60,7 +54,7 @@ for name, t in secrets:
     pieces = {t[i:i + 8] for i in range(len(t) - 7)}
     hits = [f for f, d in blobs.items() if any(p in d for p in pieces)]
     check(not hits, f'no 8-byte piece of {name} in any file' + (': ' + ', '.join(hits) if hits else ''))
-for f in ('report.key', 'lastfm.key', 'source/report_key.inc', 'source/lastfm_key.inc'):
+for f in ('report.key', 'source/report_key.inc'):
     check(git('check-ignore', f) == f, f'{f} is excluded from git')
 
 print('\n' + ('ALL GOOD' if not failed else f'{len(failed)} FAILED'))

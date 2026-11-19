@@ -194,10 +194,29 @@ void padInit() {
     openPads();
 }
 
+void padRumble(int level) {   // (a key of the keyboard card: a moment's buzz on every open pad, light, medium or strong)
+    // (a pad's motors, no haptic: the right one, the lighter, alone for Light; short, a tick more than a buzz)
+    static const Uint16 lo[4] = { 0, 0, 0x1800, 0x3800 }, hi[4] = { 0, 0x2400, 0x4800, 0x7800 };
+    level = std::clamp(level, 1, 3);
+    openPads();
+    for (SDL_GameController* p : pads) SDL_GameControllerRumble(p, lo[level], hi[level], level == 3 ? 30 : 20);
+}
+
 void padRead() {
     heldBefore = heldNow;
     uint64_t b = 0;
-    if (SDL_GetKeyboardFocus()) {
+    // typing in Search's pill: the keys are its words; once it ends (Enter, Esc), the keys still down stay words until let go, or
+    // the Enter that ended it pressed what has the focus as well
+    static bool typedHold = false;
+    if (textTyping().load()) typedHold = true;
+    else if (typedHold) {
+        int n = 0;
+        const Uint8* k = SDL_GetKeyboardState(&n);
+        bool any = false;
+        for (int i = 0; i < n && !any; i++) any = k[i] != 0;
+        typedHold = any;
+    }
+    if (SDL_GetKeyboardFocus() && !typedHold) {
         const Uint8* k = SDL_GetKeyboardState(nullptr);
         const SDL_Keymod mod = SDL_GetModState();
         const bool ctrl = mod & KMOD_CTRL;
@@ -229,6 +248,7 @@ void padRead() {
             { SDL_CONTROLLER_BUTTON_Y, BtnY },           { SDL_CONTROLLER_BUTTON_LEFTSHOULDER, BtnL }, { SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, BtnR },
             { SDL_CONTROLLER_BUTTON_START, BtnPlus },    { SDL_CONTROLLER_BUTTON_BACK, BtnMinus },    { SDL_CONTROLLER_BUTTON_DPAD_LEFT, BtnLeft },
             { SDL_CONTROLLER_BUTTON_DPAD_UP, BtnUp },    { SDL_CONTROLLER_BUTTON_DPAD_RIGHT, BtnRight }, { SDL_CONTROLLER_BUTTON_DPAD_DOWN, BtnDown },
+            { SDL_CONTROLLER_BUTTON_LEFTSTICK, BtnLStick }, { SDL_CONTROLLER_BUTTON_RIGHTSTICK, BtnRStick },
         };
         for (const auto& [from, to] : map) if (SDL_GameControllerGetButton(padDev, from)) b |= to;
         if (SDL_GameControllerGetAxis(padDev, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 12000) b |= BtnZL;
@@ -270,7 +290,7 @@ bool padWasLast() { return padLast; }
 std::string capName(const std::string& b) {
     static const std::pair<const char*, const char*> keys[] = { { "A", "Enter" }, { "B", "Esc" }, { "X", "Space" }, { "Y", "Ctrl F" }, { "L", "Ctrl ←" },
                                                                 { "R", "Ctrl →" }, { "ZL", "Shift ←" }, { "ZR", "Shift →" }, { "+", "Right-click" }, { "-", "C" } };
-    static const std::pair<const char*, const char*> pad[] = { { "L", "LB" }, { "R", "RB" }, { "ZL", "LT" }, { "ZR", "RT" }, { "+", "Menu" }, { "-", "View" } };
+    static const std::pair<const char*, const char*> pad[] = { { "L", "LB" }, { "R", "RB" }, { "L3", "LS" }, { "R3", "RS" }, { "ZL", "LT" }, { "ZR", "RT" }, { "+", "Menu" }, { "-", "View" } };
     if (padLast) {
         for (const auto& [from, to] : pad) if (b == from) return to;
         return b;
@@ -467,9 +487,6 @@ void placeThread(int, int priority) {
 bool netStart() { return true; }   // curl starts the sockets
 
 void openUrl(const std::string& url) {
-#ifdef GF_DEV
-    if (getenv("GF_LASTFM")) return;   // tests against a stand-in: no browser
-#endif
     wchar_t w[1024];
     if (MultiByteToWideChar(CP_UTF8, 0, url.c_str(), -1, w, 1024) > 0) ShellExecuteW(nullptr, L"open", w, nullptr, nullptr, SW_SHOWNORMAL);
 }

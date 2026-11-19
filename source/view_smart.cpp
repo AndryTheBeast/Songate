@@ -322,8 +322,15 @@ void App::setMoodLabel(int track, mood::Label l) {
 
 void App::renamePlaylist(int ref) {
     if (ref < 0 || ref >= int(store.playlists.size()) || store.playlists[size_t(ref)].folder()) return;
-    std::string name = store.playlists[size_t(ref)].name;
-    if (!keyboard("Rename the playlist", name, name)) return;
+    const std::string old = store.playlists[size_t(ref)].name;
+    askName("Rename the playlist", old, [this, old](const std::string& typed) {
+        const int r = [&] { for (int i = 0; i < int(store.playlists.size()); i++) if (store.playlists[size_t(i)].name == old) return i; return -1; }();
+        if (r >= 0) renamePlaylistTo(r, typed);   // (found again by its name: the list may change while the name is typed)
+    });
+}
+
+void App::renamePlaylistTo(int ref, std::string name) {
+    if (ref < 0 || ref >= int(store.playlists.size()) || store.playlists[size_t(ref)].folder()) return;
     while (!name.empty() && name.back() == ' ') name.pop_back();
     while (!name.empty() && name[0] == ' ') name.erase(0, 1);
     if (name.empty() || name == store.playlists[size_t(ref)].name) return;
@@ -570,7 +577,11 @@ void App::drawColourSheet() {
     // ---- the card, as the track menu's
     g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, 0.55f);
     const float w = cardW(620), x = (css::W - w) / 2;
-    const float headH = 24 + 64 + 18, bodyH = 16 + 220 + 14 + 20 + 16, footH = 64, h = headH + bodyH + footH + 16;
+    // narrow (a phone upright): no room beside the square for before, now and the hex code: they go in a row under the hue bar
+    // (the user's HiBy R4, 2026-11-16: "Before" and "Now" ran together and the hex code ran off the card)
+    const bool narrow = w - 48 - 320 - 24 < 170;
+    const float sw = narrow ? w - 48 : 320.f, sh = narrow ? std::min(220.f, std::max(160.f, sw * 0.62f)) : 220.f;
+    const float headH = 24 + 64 + 18, bodyH = 16 + sh + 14 + 20 + 16 + (narrow ? 48 + 22 + 8 : 0), footH = 64, h = headH + bodyH + footH + 16;
     const float y = cardY(h);
     g.glow(x + w / 2, y + h / 2 + 30, w * 0.75f, { 0, 0, 0 }, 0.5f);
     g.roundRect(x, y, w, h, 20, pal.surface2);
@@ -583,13 +594,17 @@ void App::drawColourSheet() {
     kicker("Custom colour", hx + 64 + 16, hy + 8, pal.accentInk);
     const int textW = int(w - 64 - 16 - 24 - 24 - 40);
     g.text(pick.what, { css::Lg, Weight::Bold }, hx + 64 + 16, hy + 18, pal.text, 1, Align::Left, textW);
-    g.text("Pick it on the square and the bar, or type its hex code", { css::Sm }, hx + 64 + 16, hy + 44, pal.text3, 1, Align::Left, textW);
+    {   // (two lines when the card is narrow, rather than an ending cut off)
+        const std::vector<std::string> ls = g.wrap("Pick it on the square and the bar, or type its hex code", { css::Sm }, textW, 2);
+        for (size_t i = 0; i < ls.size(); i++)
+            g.text(ls[i], { css::Sm }, hx + 64 + 16, hy + 40 + float(i) * 18, pal.text3, 1, Align::Left, textW);
+    }
     hint(uid("cp.close"), "Close");
     if (iconButton(uid("cp.close"), ICON_X, x + w - 24 - 14, hy + 14)) { closeColourPicker(false); return; }
     g.rect(x + 24, y + headH - 1, w - 48, 1, pal.text, 0.09f);
 
     // ---- the square: saturation → right, brightness ↑
-    const float sx = x + 24, sy = y + headH + 16, sw = 320, sh = 220;
+    const float sx = x + 24, sy = y + headH + 16;
     {
         const Id id = uid("cp.sv");
         ui.item(id, { sx, sy, sw, sh }, 12, Slider | Slider2D | DefaultFocus);
@@ -624,34 +639,42 @@ void App::drawColourSheet() {
     }
 
     // ---- beside them: before and now, and the hex code
-    const float rx = sx + sw + 24, rw = x + w - 24 - rx, cw = (rw - 8) / 2;
+    const float rx = narrow ? sx : sx + sw + 24, rw = x + w - 24 - rx;
+    const float cw = narrow ? 64.f : (rw - 8) / 2, chH = narrow ? 48.f : 72.f;   // (before and now: their size)
+    const float cy0 = narrow ? by + bh + 16 : sy;                             // (their top)
     {
         // Before: pressing it goes back to it (an "A", the cover's own colour, has nothing to go back to here)
         const Id id = uid("cp.before");
         const bool hadOwn = pick.before >= 0;
-        if (hadOwn && ui.item(id, { rx, sy, cw, 72 }, 12)) {
+        if (hadOwn && ui.item(id, { rx, cy0, cw, chH }, 12)) {
             float hh = pick.h, ss, vv;
             rgbToHsv(unpackRgb(pick.before), hh, ss, vv);
             setPick(hh, ss, vv);
         }
-        if (hadOwn) g.roundRect(rx, sy, cw, 72, 12, unpackRgb(pick.before));
+        if (hadOwn) g.roundRect(rx, cy0, cw, chH, 12, unpackRgb(pick.before));
         else {
-            g.roundRect(rx, sy, cw, 72, 12, pal.text, 0.06f);
-            g.textC("From the cover", { css::Xs, Weight::SemiBold }, rx + cw / 2, sy + 36, pal.text2, 1, Align::Center);
+            g.roundRect(rx, cy0, cw, chH, 12, pal.text, 0.06f);
+            // (narrow: on two lines, as it fits)
+            const Font cf{ css::Xs, Weight::SemiBold };
+            const std::vector<std::string> ls = g.wrap("From the cover", cf, int(cw - 8), 2);
+            const float lh = g.lineHeight(cf);
+            for (size_t i = 0; i < ls.size(); i++)
+                g.textC(ls[i], cf, rx + cw / 2, cy0 + chH / 2 + (float(i) - (float(ls.size()) - 1) / 2) * lh, pal.text2, 1, Align::Center);
         }
-        g.roundRect(rx + cw + 8, sy, cw, 72, 12, now);
-        g.textC("Before", { css::Xs }, rx + cw / 2, sy + 72 + 14, pal.text3, 1, Align::Center);
-        g.textC("Now", { css::Xs }, rx + cw + 8 + cw / 2, sy + 72 + 14, pal.text3, 1, Align::Center);
+        g.roundRect(rx + cw + 8, cy0, cw, chH, 12, now);
+        g.textC("Before", { css::Xs }, rx + cw / 2, cy0 + chH + 12, pal.text3, 1, Align::Center);
+        g.textC("Now", { css::Xs }, rx + cw + 8 + cw / 2, cy0 + chH + 12, pal.text3, 1, Align::Center);
     }
     {
         // the hex code, like Settings' search field: the console keyboard
+        // (narrow: beside before and now, level with them, without its title: the field says what it is)
         const float fy = sy + 72 + 34;
-        kicker("Hex", rx, fy + 6, pal.text3, 0.12f);
+        const float hx0 = narrow ? rx + cw * 2 + 8 + 16 : rx, hw = narrow ? x + w - 24 - hx0 : rw;
+        if (!narrow) kicker("Hex", rx, fy + 6, pal.text3, 0.12f);
         const Id id = uid("cp.hex");
-        const float ty = fy + 18;
-        if (ui.item(id, { rx, ty, rw, 44 }, 10)) {
-            std::string in;
-            if (keyboard("Colour, as a hex code", hexOf(packRgb(now)), in)) {
+        const float ty = narrow ? cy0 + (chH - 44) / 2 : fy + 18;
+        if (ui.item(id, { hx0, ty, hw, 44 }, 10)) {
+            askName("Colour, as a hex code", hexOf(packRgb(now)), [this](const std::string& in) {
                 std::string t;
                 for (char c : in) if (c != '#' && c != ' ') t += c;
                 if (t.size() == 3) t = std::string{ t[0], t[0], t[1], t[1], t[2], t[2] };
@@ -664,14 +687,14 @@ void App::drawColourSheet() {
                     rgbToHsv(unpackRgb(int(v)), hh, ss, vv);
                     setPick(hh, ss, vv);
                 }
-            }
+            });
         }
         const bool hot = ui.focused(id) && ui.showFocusRing();
-        g.roundRect(rx, ty, rw, 44, 10, pal.text, hot ? 0.09f : 0.05f);
-        g.roundStroke(rx, ty, rw, 44, 10, 1, pal.text, 0.12f);
-        g.roundRect(rx + 12, ty + 12, 20, 20, 6, now);
-        g.textNum(hexOf(packRgb(now)), { css::Base, Weight::SemiBold }, rx + 42, ty + 22 - g.lineHeight({ css::Base }) / 2.f, pal.text);
-        g.textC("Edit", { css::Xs }, rx + rw - 12, ty + 22, pal.text3, 1, Align::Right);
+        g.roundRect(hx0, ty, hw, 44, 10, pal.text, hot ? 0.09f : 0.05f);
+        g.roundStroke(hx0, ty, hw, 44, 10, 1, pal.text, 0.12f);
+        g.roundRect(hx0 + 12, ty + 12, 20, 20, 6, now);
+        g.textNum(hexOf(packRgb(now)), { css::Base, Weight::SemiBold }, hx0 + 42, ty + 22 - g.lineHeight({ css::Base }) / 2.f, pal.text);
+        g.textC("Edit", { css::Xs }, hx0 + hw - 12, ty + 22, pal.text3, 1, Align::Right);
     }
 
     // ---- footer: Cancel, Use
@@ -896,7 +919,7 @@ void App::drawSmartSheet() {
                              closeSheet();
                              setJobStopped(s, true);
                          } });
-        rows.push_back({ Row::Action, ICON_GEAR, "Open in Settings", std::string(j.settingsCat == SetPlayback ? "Playback" : j.settingsCat == 5 ? "Lyrics" : j.settingsCat == SetLastfm ? "Last.fm" : "Library") + " · " + (j.row ? j.row : ""), "",
+        rows.push_back({ Row::Action, ICON_GEAR, "Open in Settings", std::string(j.settingsCat == SetPlayback ? "Playback" : j.settingsCat == 5 ? "Lyrics" : "Library") + " · " + (j.row ? j.row : ""), "",
                          [this, j] {
                              closeSheet();
                              showSetting(j);
@@ -1101,8 +1124,17 @@ void App::drawSmartSheet() {
     } else if (page == Sheet::AppMenu) {   // an app on the Apps page (view_phone.cpp)
         appMenuRows(rows);
     } else if (page == Sheet::AppIcon) {
+        // its colour first (with Songate's symbols: their own icons keep theirs), then the symbols
+        const int kind = appTintKind(sheet.arg);
+        if (store.appsIcons == 0) {
+            rows.push_back({ Row::Setting, nullptr, "Colour" });
+            rows.back().opts = { "From its icon", "From cover", "Custom" };   // (From cover: Songate's accent, as Appearance's "From the cover")
+            rows.back().cur = kind;
+            rows.back().pick = [this, app = sheet.arg](int p) { appTintSet(app, p); };
+            rows.back().h = 56;
+        }
         rows.push_back({ Row::Grid });
-        rows.back().h = ((appIconCount() + IconCols - 1) / IconCols) * IconRowH + 4;
+        rows.back().h = ((appIconCount() + IconCols - 1) / IconCols) * IconRowH + 4 + (store.appsIcons == 0 && kind == 2 ? kAppSwatchH : 0);
 #endif
     } else if (page == Sheet::Battery) {
         const bool charging = battery.charging == 1;
@@ -1326,6 +1358,24 @@ void App::drawSmartSheet() {
                          } });
         rows.back().h = 46;
         rows.back().on = !on && stopAfterCurrent;
+        // Custom…: any minutes, typed on the number keyboard (the user, 2026-11-19; all platforms; after End of this song, 2026-11-20); running, its minutes beside it
+        rows.push_back({ Row::Choice, nullptr, "Custom\u2026", "",
+                         on && sleepChoice == 6 ? std::to_string(sleepCustomMin_) + (sleepCustomMin_ == 1 ? " minute" : " minutes") : std::string(), [this] {
+                             closeSheet();
+                             auto start = [this](const std::string& t) {
+                                 const int m = std::clamp(atoi(t.c_str()), 0, 999);
+                                 if (m < 1) return;
+                                 stopAfterCurrent = false;
+                                 sleepCustomMin_ = m;
+                                 setSleep(m * 60.0, 6);
+                                 toast("The music pauses in " + std::to_string(m) + (m == 1 ? " minute" : " minutes"));
+                             };
+                             const char* q = "Pause the music in how many minutes?";
+                             std::string out;
+                             if (!askKb(KbKind::Minutes, q, "", start) && keyboard(q, "", out)) start(out);
+                         } });
+        rows.back().h = 46;
+        rows.back().on = on && sleepChoice == 6;
         rows.push_back({ Row::Choice, nullptr, "Off", "", "", [this, on] {
                              setSleep(0, 0);
                              stopAfterCurrent = false;
@@ -1350,11 +1400,10 @@ void App::drawSmartSheet() {
         }
         if (!matched.empty()) { rows.push_back({ Row::Group, nullptr, "" }); rows.back().h = 10; }
         rows.push_back({ Row::Name, nullptr, "Name", "", sheet.name, [this] {
-                             std::string n = sheet.name;
-                             if (keyboard("Name the playlist", n, n)) {
+                             askName("Name the playlist", sheet.name, [this](std::string n) {
                                  while (!n.empty() && n.back() == ' ') n.pop_back();
                                  if (!n.empty()) { sheet.name = n; sheet.nameTouched = true; }
-                             }
+                             });
                          } });
         rows.back().h = 48;
         if (rc->genre) {
@@ -1534,12 +1583,20 @@ void App::drawSmartSheet() {
 
     // ---- header: the icon tile (.sp-ic), kicker, title, a line under it, close
     const float hx = x + 24, hy = y + 24;
-    g.roundRect(hx, hy, 64, 64, 14, pal.accent, 0.16f);
-    g.roundStroke(hx, hy, 64, 64, 14, 1, pal.accent, 0.3f);
+    // (an app's menu and Icon…: its tile in the colour it shows on the Apps page)
+    Rgb headC = pal.accent, headInk = pal.accentInk;
+#ifdef GF_ANDROID
+    if (appPage) {
+        const int t = appSheetTint();
+        if (t >= 0) headC = headInk = Rgb{ ((t >> 16) & 255) / 255.f, ((t >> 8) & 255) / 255.f, (t & 255) / 255.f };
+    }
+#endif
+    g.roundRect(hx, hy, 64, 64, 14, headC, 0.16f);
+    g.roundStroke(hx, hy, 64, 64, 14, 1, headC, 0.3f);
     SDL_Texture* srvArt = (page == Sheet::SrvMenu || page == Sheet::SrvLists) && !srvMenuSong_.cover.empty() ? serverCover(srvMenuSong_.cover) : nullptr;
     if (filePage && sheet.preview) g.image(sheet.preview, hx, hy, 64, 64, 14);   // an image shows itself
     else if (srvArt) g.image(srvArt, hx, hy, 64, 64, 14);   // a server track: its cover, as yours show theirs (the user, 2026-11-07)
-    else if (ownHead) g.icon(fileIcon, hx + 32, hy + 32, 28, pal.accentInk);
+    else if (ownHead) g.icon(fileIcon, hx + 32, hy + 32, 28, headInk);
     else
     g.icon(plp ? playlistIcon(sheet.recipe) : ask && sheet.askIcon ? sheet.askIcon : eqp ? ICON_EQ : actl || lacts ? ICON_GAME : rc ? rc->icon : plFile ? ICON_LIST : devs ? ICON_LINK : airp ? ICON_AIRPLAY : sleep ? ICON_MOON : jobs ? ICON_REFRESH : job ? (jb.icon ? jb.icon : jb.stop == Stoppable::Levels ? ICON_WAVE : ICON_IMAGE) : page == Sheet::Smart ? PLI_SMART : ICON_LIST,
            hx + 32, hy + 32, 28, pal.accentInk);

@@ -14,7 +14,7 @@
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
-    <!-- Devices, Listen together, AirPlay, Last.fm, Updates -->
+    <!-- Devices, Listen together, AirPlay, Updates -->
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- listening together: the delay, measured with the chirps (micmeasure.hpp); asked for the first time it is needed -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
@@ -44,9 +44,18 @@
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
     </queries>
+    <!-- Search › In your other music apps: the apps that play what is searched for (Android's play-from-search) -->
+    <queries>
+        <intent>
+            <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
+        </intent>
+    </queries>
     <!-- The HiBy R4 on the user's own ROM: its settings service (Settings › Sound & DAC, Appearance › Status LED). A normal
          permission, granted at install; on any other device nothing answers and Songate shows none of it -->
     <uses-permission android:name="com.andre.hibyr4.permission.HIBY_SETTINGS" />
+    <!-- SongateOS's system settings (Wi-Fi, Bluetooth, the audio output, power, updates: SysApi.java): granted only to Songate's own
+         signing certificates by the service (signature|knownSigner) -->
+    <uses-permission android:name="com.andre.hibyr4.permission.SYSTEM_SETTINGS" />
     <!-- Bit-perfect (BitPerfect.java): setPreferredMixerAttributes needs it, a USB DAC's as the HiBy R4's wired outputs'
          (refused without it: SongateOS, 2026-11-16). A normal permission, granted at install -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
@@ -60,7 +69,13 @@
         android:requestLegacyExternalStorage="true"
         android:theme="@style/Songate"
         android:hardwareAccelerated="true">
+        <!-- SongateOS (service v52): Songate has its own first-boot setup (view_setup.cpp), so the service waits for its
+             setup_done before it finishes Android's setup -->
+        <meta-data android:name="songateos.setup" android:value="true" />
+        <!-- directBootAware (SongateOS, 2026-11-16): Android shows Songate straight after the boot animation, with no placeholder
+             home before it; until the first unlock the activity only waits, black (SongateActivity.waitForUnlock) -->
         <activity android:name=".SongateActivity"
+            android:directBootAware="true"
             android:label="Songate"
             android:alwaysRetainTaskState="true"
             android:launchMode="singleInstance"
@@ -73,12 +88,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <!-- Songate as the home screen (Settings: "Use Songate as the home screen", 2.0.1): off until the switch enables it
-             (SongateActivity.homeSet), so Android does not offer Songate as a home app to those who never asked -->
+        <!-- Songate as the home screen (Settings: "Use Songate as the home screen", 2.0.1). ON in the manifest (SongateOS, 2026-11-16:
+             Songate is that image's only home app, and nothing could turn it on at its first boot); on any other device Songate turns
+             it off at its first start unless it was chosen (SongateActivity.homeEntryAtStart), so Android does not offer Songate as a
+             home app to those who never asked -->
         <activity-alias android:name=".HomeAlias"
             android:targetActivity=".SongateActivity"
             android:label="Songate"
-            android:enabled="false"
+            android:enabled="true"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -97,5 +114,15 @@
         <service android:name=".SongateService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
+        <!-- Other apps' music (Settings › Playback › Other apps): allowed in Notification access, it lets Songate see other apps'
+             media sessions; it reads no notification (MediaListener.java, OtherApps.java). SongateOS allows it by itself (v55) -->
+        <service android:name=".MediaListener"
+            android:label="Songate"
+            android:exported="true"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

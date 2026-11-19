@@ -47,6 +47,42 @@ public class SongateService extends Service {
 
     private static native void nativeCommand(int code, double arg);
 
+    // Pulling a 3.5 mm plug out can short its contacts into the headset button (the HiBy R4, 2026-11-20: the kernel's key 164
+    // 170 ms before the jack read out); Android holds a single press for its double-tap wait, so it reaches Songate after the
+    // headphones-out pause, as play. For a second after that pause, play and play/pause are not taken (the user: "Yes, build it")
+    private static long noisyAt = -10000;
+
+    /** Every press to the app, from the session, the notification, focus and the headphones: logged by code, and play and
+     *  play/pause left out for a second after the headphones came out. */
+    private static void press(int code, double arg) {
+        final boolean held = (code == PLAY || code == PLAY_PAUSE) && SystemClock.elapsedRealtime() - noisyAt < 1000;
+        if (fromSocket && !held) {   // the headphone socket's own keys: kept back a moment, dropped if the plug was coming out
+            android.util.Log.i("SongateService", "command " + code + " from the headphone socket: in " + SOCKET_WAIT_MS + " ms");
+            socketWait.postDelayed(() -> {
+                android.util.Log.i("SongateService", "command " + code + " (the socket's)");
+                nativeCommand(code, arg);
+            }, SOCKET_TOKEN, SOCKET_WAIT_MS);
+            return;
+        }
+        android.util.Log.i("SongateService", "command " + code + (held ? " not taken: headphones out under a second ago" : ""));
+        if (!held) nativeCommand(code, arg);
+    }
+
+    // ... and a plug coming out can also send Next straight away (the R4, 2026-11-20: the kernel's key 163 from its headphone
+    // socket, "soc:hiby,earpods_adc2", 0.2 s before the jack read out; the song skipped, then paused). Keys from that socket's
+    // device wait 0.4 s and are dropped if the headphones come out meanwhile; the R4's own buttons (gpio-keys) are not held
+    private static final long SOCKET_WAIT_MS = 400;
+    private static final Object SOCKET_TOKEN = new Object();
+    private static final Handler socketWait = new Handler(Looper.getMainLooper());
+    private static boolean fromSocket;
+
+    /** Whether a key came from the headphone socket (an inline remote's buttons, or a plug's contacts as it comes out). */
+    private static boolean socketKey(android.view.KeyEvent e) {
+        if (e == null) return false;
+        final android.view.InputDevice d = android.view.InputDevice.getDevice(e.getDeviceId());
+        return d != null && d.getName() != null && d.getName().contains("earpods");
+    }
+
     // What plays, as the app last said (the app's thread writes it, Android's reads it: each change is posted to the main thread)
     private static final Handler main = new Handler(Looper.getMainLooper());
     private static SongateService self;
@@ -69,7 +105,11 @@ public class SongateService extends Service {
     private final BroadcastReceiver noisy = new BroadcastReceiver() {
         @Override
         public void onReceive(Context c, Intent i) {
-            if (AudioManager.ACTION_AUDIO_BECOMING_NOISY.equals(i.getAction()) && playing) nativeCommand(PAUSE, 0);   // headphones out
+            if (!AudioManager.ACTION_AUDIO_BECOMING_NOISY.equals(i.getAction())) return;   // headphones out:
+            noisyAt = SystemClock.elapsedRealtime();   // (a stray press after this is not taken: press)
+            socketWait.removeCallbacksAndMessages(SOCKET_TOKEN);   // (and the socket's keys still waiting are dropped)
+            android.util.Log.i("SongateService", "headphones out");
+            press(PAUSE, 0);   // (always: the app pauses only what plays, and a press just before may have toggled it already)
         }
     };
 
@@ -87,15 +127,19 @@ public class SongateService extends Service {
     private static void makeSession(Context c) {
         session = new MediaSession(c, "Songate");
         session.setCallback(new MediaSession.Callback() {
-            @Override public void onPlay() { nativeCommand(PLAY, 0); }
-            @Override public void onPause() { nativeCommand(PAUSE, 0); }
-            @Override public void onSkipToNext() { nativeCommand(NEXT, 0); }
-            @Override public void onSkipToPrevious() { nativeCommand(PREVIOUS, 0); }
-            @Override public void onStop() { nativeCommand(PAUSE, 0); }
-            @Override public void onSeekTo(long ms) { nativeCommand(SEEK, ms / 1000.0); }
+            @Override public boolean onMediaButtonEvent(Intent i) {   // (the callbacks below run inside it: fromSocket marks theirs)
+                fromSocket = socketKey(i.getParcelableExtra(Intent.EXTRA_KEY_EVENT));
+                try { return super.onMediaButtonEvent(i); } finally { fromSocket = false; }
+            }
+            @Override public void onPlay() { press(PLAY, 0); }
+            @Override public void onPause() { press(PAUSE, 0); }
+            @Override public void onSkipToNext() { press(NEXT, 0); }
+            @Override public void onSkipToPrevious() { press(PREVIOUS, 0); }
+            @Override public void onStop() { press(PAUSE, 0); }
+            @Override public void onSeekTo(long ms) { press(SEEK, ms / 1000.0); }
             @Override public void onCustomAction(String action, android.os.Bundle extras) {
-                if (LIKE_ACTION.equals(action)) nativeCommand(LIKE, 0);
-                else if (ORDER_ACTION.equals(action)) nativeCommand(ORDER, 0);
+                if (LIKE_ACTION.equals(action)) press(LIKE, 0);
+                else if (ORDER_ACTION.equals(action)) press(ORDER, 0);
             }
         });
         Intent open = new Intent(c, SongateActivity.class).setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
@@ -239,11 +283,11 @@ public class SongateService extends Service {
         // the notification's own buttons (Android 12 and before draw these; later ones use the session's)
         String a = intent != null ? intent.getAction() : null;
         if (a != null) switch (a) {
-            case "songate.prev": nativeCommand(PREVIOUS, 0); break;
-            case "songate.playpause": nativeCommand(PLAY_PAUSE, 0); break;
-            case "songate.next": nativeCommand(NEXT, 0); break;
-            case LIKE_ACTION: nativeCommand(LIKE, 0); break;
-            case ORDER_ACTION: nativeCommand(ORDER, 0); break;
+            case "songate.prev": press(PREVIOUS, 0); break;
+            case "songate.playpause": press(PLAY_PAUSE, 0); break;
+            case "songate.next": press(NEXT, 0); break;
+            case LIKE_ACTION: press(LIKE, 0); break;
+            case ORDER_ACTION: press(ORDER, 0); break;
         }
         refresh();
         return START_NOT_STICKY;
@@ -271,14 +315,14 @@ public class SongateService extends Service {
         switch (change) {
             case AudioManager.AUDIOFOCUS_LOSS:   // another app plays: Songate stops for good
                 resumeOnGain = false;
-                if (playing) nativeCommand(PAUSE, 0);
+                if (playing) press(PAUSE, 0);
                 break;
             case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:   // a call, a voice message: back after it
                 resumeOnGain = playing;
-                if (playing) nativeCommand(PAUSE, 0);
+                if (playing) press(PAUSE, 0);
                 break;
             case AudioManager.AUDIOFOCUS_GAIN:
-                if (resumeOnGain) nativeCommand(PLAY, 0);
+                if (resumeOnGain) press(PLAY, 0);
                 resumeOnGain = false;
                 break;
             default: break;   // a short sound over it: Android lowers Songate itself
@@ -296,7 +340,7 @@ public class SongateService extends Service {
 
         // audio focus and the headphones, while playing
         if (playing) {
-            if (audio.requestAudioFocus(focus) == AudioManager.AUDIOFOCUS_REQUEST_FAILED) nativeCommand(PAUSE, 0);
+            if (audio.requestAudioFocus(focus) == AudioManager.AUDIOFOCUS_REQUEST_FAILED) press(PAUSE, 0);
             if (!noisyHeld) { registerReceiver(noisy, new IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)); noisyHeld = true; }
         } else if (noisyHeld) {
             unregisterReceiver(noisy);

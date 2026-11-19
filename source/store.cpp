@@ -171,6 +171,10 @@ void Store::load() {
         else if (k == "order") order = Order(std::clamp(atoi(v.c_str()), 0, 3));
         else if (k == "sidebarCollapsed") sidebarCollapsed = v == "1";
         else if (k == "motion") motion = v == "1";
+        else if (k == "keySound") keySound = v == "1";
+        else if (k == "keySoundKind") keySoundKind = std::clamp(atoi(v.c_str()), 0, 3);
+        else if (k == "keyVibe") keyVibe = atoi(v.c_str()) != 0;
+        else if (k == "keyVibeLevel") keyVibeLevel = std::clamp(atoi(v.c_str()), 1, 3);
         else if (k == "mixAnimNow") mixAnimNow = std::clamp(atoi(v.c_str()), 0, 2);
         else if (k == "mixAnimCanvas") mixAnimCanvas = std::clamp(atoi(v.c_str()), 0, 1);
         else if (k == "mixHint") mixHint = std::clamp(atoi(v.c_str()), 0, 2);
@@ -198,8 +202,31 @@ void Store::load() {
         else if (k == "theme") { theme = std::clamp(atoi(v.c_str()), 0, 4); if (theme == 2) theme = 1; }   // Grey is no longer offered: Dark
         else if (k == "brightness") brightness = std::clamp(atoi(v.c_str()), 0, 1);
         else if (k == "bgBlur") bgBlur = std::clamp(atoi(v.c_str()), 0, 1);
+        else if (k == "foldOpen") {   // page>card;page>card (a page's title, its open card's: neither holds ; or >)
+            foldOpen.clear();
+            size_t p = 0;
+            while (p < v.size()) {
+                size_t e = v.find(';', p);
+                if (e == std::string::npos) e = v.size();
+                const std::string part = v.substr(p, e - p);
+                const size_t gt = part.find('>');
+                if (gt != std::string::npos) foldOpen[part.substr(0, gt)] = part.substr(gt + 1);
+                p = e + 1;
+            }
+        }
         else if (k == "screenTurn") screenTurn = std::clamp(atoi(v.c_str()), 0, 2);
         else if (k == "appsTab") appsTab = v == "1";
+        else if (k == "sysThemeSongate") sysThemeSongate = v == "1";
+        else if (k == "otherMusic") { otherApps = v == "1"; otherAppsSaved = true; }
+        else if (k == "otherSpectrum") otherSpectrum = v == "1";
+        else if (k == "otherSpecAsked") otherSpecAsked = v == "1";
+        else if (k == "appsPage") {   // order size icons names find mine
+            int o = 0, s = 1, i = 0, n = 1, fd = 1, m = 0;
+            if (sscanf(v.c_str(), "%d %d %d %d %d %d", &o, &s, &i, &n, &fd, &m) >= 1) {
+                appsOrder = std::clamp(o, 0, 2); appsSize = std::clamp(s, 0, 2); appsIcons = std::clamp(i, 0, 1);
+                appsNames = n != 0; appsFind = fd != 0; appsMine = m != 0;
+            }
+        }
         else if (k == "sideOpacity") sideOpacity = std::clamp(float(atof(v.c_str())), 0.5f, 1.f);
         else if (k == "bgSmooth") bgSmooth = std::clamp(atoi(v.c_str()), 0, 2);
         else if (k == "saturation") saturation = std::clamp(float(atof(v.c_str())), 0.f, 1.f);   // was up to 150%, which changed nothing past 100%
@@ -217,9 +244,12 @@ void Store::load() {
         else if (k == "vizPeaks") vizPeaks = v == "1";
         else if (k == "seekWave") seekWave = v == "1";
         else if (k == "seekAnim") seekAnim = std::clamp(atoi(v.c_str()), 0, 2);
+        else if (k == "libFiles") libFiles = v == "1" ? 1 : 0;
         else if (k == "volPop") volPop = std::clamp(atoi(v.c_str()), 0, 1);
         else if (k == "volWhere") volWhere = std::clamp(atoi(v.c_str()), 0, 2);
         else if (k == "volNum") volNum = std::clamp(atoi(v.c_str()), 0, 1);
+        else if (k == "volStay") volStay = std::clamp(float(atof(v.c_str())), 0.5f, 10.f);
+        else if (k == "lyrUnder") lyrUnder = std::clamp(atoi(v.c_str()), 0, 2);
         else if (k == "r4LedAccent") r4LedAccent = v == "1";
         else if (k == "bitPerfect") bitPerfect = v != "0";
         else if (k == "matchRate") matchRate = v != "0";
@@ -286,6 +316,7 @@ void Store::load() {
         else if (k == "tagWrite") tagWrite = std::clamp(atoi(v.c_str()), 0, 2);
         else if (k == "crossfade") crossfade = std::clamp(float(atof(v.c_str())), 0.f, 12.f);
         else if (k == "xfadeNotInAlbum") xfadeNotInAlbum = v == "1";
+        else if (k == "playOnPlug") playOnPlug = v == "1";
         else if (k == "eqOn") this->eq.on = uint8_t(v == "1");
         else if (k == "eqAdvanced") this->eq.advanced = uint8_t(v == "1");
         else if (k == "eqPreset") this->eq.preset = int8_t(std::clamp(atoi(v.c_str()), -1, GFEQ_PRESETS + GFEQ_USER_MAX - 1));
@@ -342,7 +373,6 @@ void Store::load() {
         else if (k == "updateToasted") updateToasted = v;
         else if (k == "betas") betas = v == "1";
         else if (k == "reports") reports = v == "1";
-        else if (k == "lastfm") lastfm = v == "1";
         else if (k == "openingSound") openingSound = v == "1";
         else if (k == "opening") opening = v == "1";
         else if (k == "edgeMode") edgeMode = std::clamp(atoi(v.c_str()), 0, 3);
@@ -354,8 +384,6 @@ void Store::load() {
         else if (k == "libSource") libSource = std::clamp(atoi(v.c_str()), 0, 1);
         else if (k == "plSource") plSource = std::clamp(atoi(v.c_str()), 0, 1);
         else if (k == "serverDlPlace") serverDlPlace = std::clamp(atoi(v.c_str()), 0, 1);
-        else if (k == "lastfmScrobble") lastfmScrobble = v == "1";
-        else if (k == "lastfmNow") lastfmNow = v == "1";
         else if (k == "connections") connections = v == "1";
         else if (k == "connectAim") connectAim = v;
         else if (k == "syncKinds") syncKinds = unsigned(atoi(v.c_str())) & 111u;
@@ -380,6 +408,7 @@ void Store::load() {
         else if (k == "syncDeleteFrom") syncDeleteFrom = strtoull(v.c_str(), nullptr, 10);
     }
     if (!filesTabKnown) hiddenTabs |= 64u;   // Files stays hidden until Settings → Appearance shows it
+    if (libFiles < 0) libFiles = (hiddenTabs & 64u) ? 0 : 1;   // (as the sidebar's Files tab was, until set on its own)
     if (!lyricsKindKnown) syncKinds |= 32u;   // syncdata::KindLyrics: on, as the others came
     if (!moodsKindKnown) syncKinds |= 64u;    // syncdata::KindMoods: the same (the user, 2026-11-05: "Yes, with a switch")
     if (!linesKnown && std::none_of(tabOrder.begin(), tabOrder.end(), isLine)) {   // the line Files had, now one of yours
@@ -540,11 +569,14 @@ void Store::save() const {
     std::string f;
     appendf(f, "volume=%.3f\norder=%d\nsidebarCollapsed=%d\nmotion=%d\nspectrum=%d\ncanvasLayout=%d\ncanvasLyrics=%d\n", volume, int(order),
             sidebarCollapsed, motion, showSpectrum, canvasLayout, canvasLyrics);
+    appendf(f, "keySound=%d\nkeySoundKind=%d\nkeyVibe=%d\nkeyVibeLevel=%d\n", keySound, keySoundKind, keyVibe, keyVibeLevel);
     appendf(f, "vizSensitivity=%.3f\nvizSmoothing=%.3f\nvizBands=%d\nvizPeaks=%d\ncoverPulse=%.3f\nseekWave=%d\n", vizSensitivity, vizSmoothing, vizBands,
             vizPeaks, coverPulse, seekWave);
 #ifdef GF_ANDROID
     appendf(f, "seekAnim=%d\n", seekAnim);   // (Android's alone: no other build has that bar, so none keeps a line for it)
-    appendf(f, "volPop=%d\nvolWhere=%d\nvolNum=%d\n", volPop, volWhere, volNum);   // (the volume is Android's own: Android's alone)
+    appendf(f, "libFiles=%d\n", libFiles > 0 ? 1 : 0);   // (upright Android's Library: its Files row)
+    appendf(f, "lyrUnder=%d\n", lyrUnder);               // (upright Android's Now playing: lyrics under the cover)
+    appendf(f, "volPop=%d\nvolWhere=%d\nvolNum=%d\nvolStay=%.1f\n", volPop, volWhere, volNum, volStay);   // (the volume is Android's own: Android's alone)
     if (r4LedAccent) appendf(f, "r4LedAccent=1\n");   // (the HiBy R4's, and only while it is on)
     if (!matchRate) appendf(f, "matchRate=0\n");     // (the HiBy R4's, and only while it is off)
     if (!bitPerfect) appendf(f, "bitPerfect=0\n");    // (the HiBy R4's, and only while it is off)
@@ -558,8 +590,15 @@ void Store::save() const {
     appendf(f, "window=%d %d %d %d %d\n", winX, winY, winW, winH, int(winMax));
 #endif
     appendf(f, "bgBlur=%d\nbgSmooth=%d\nsideOpacity=%.2f\n", bgBlur, bgSmooth, double(sideOpacity));
+    {
+        std::string fo;
+        for (const auto& [page, card] : foldOpen) fo += (fo.empty() ? "" : ";") + page + ">" + card;
+        if (!fo.empty()) appendf(f, "foldOpen=%s\n", fo.c_str());
+    }
 #ifdef GF_ANDROID
-    appendf(f, "screenTurn=%d\nappsTab=%d\n", screenTurn, int(appsTab));
+    appendf(f, "screenTurn=%d\nappsTab=%d\nsysThemeSongate=%d\n", screenTurn, int(appsTab), int(sysThemeSongate));
+    appendf(f, "appsPage=%d %d %d %d %d %d\n", appsOrder, appsSize, appsIcons, int(appsNames), int(appsFind), int(appsMine));
+    appendf(f, "otherMusic=%d\notherSpectrum=%d\notherSpecAsked=%d\n", int(otherApps), int(otherSpectrum), int(otherSpecAsked));
 #endif
     appendf(f, "brightness=%d\nsaturation=%.2f\ncolourTransition=%.2f\ncustomBg=%d\ncustomAccent=%d\ncustomAccent2=%d\n", brightness, double(saturation),
             double(colourTransition), customBg, customAccent, customAccent2);
@@ -595,6 +634,7 @@ void Store::save() const {
     appendf(f, "lyricsOnline=%d\nlyricsOnlineWay=%d\nlyricsSaveTo=%d\n", lyricsOnline, lyricsOnlineWay, lyricsSaveTo);
     appendf(f, "levelMode=%d\nlevelTarget=%d\n", levelMode, levelTarget);
     appendf(f, "crossfade=%.1f\nxfadeNotInAlbum=%d\n", double(crossfade), xfadeNotInAlbum);
+    appendf(f, "playOnPlug=%d\n", playOnPlug ? 1 : 0);
     appendf(f, "eqEdited=%d\n", eq.edited);
     appendf(f, "eqOn=%d\neqAdvanced=%d\neqPreset=%d\neqPreamp=%.1f\neqBass=%.1f\neqTreble=%.1f\neqBands=", eq.on, eq.advanced, eq.preset,
             double(eq.preamp), double(eq.bass), double(eq.treble));
@@ -616,8 +656,7 @@ void Store::save() const {
                                 { "exportDir", &exportDir }, { "coverDir", &coverDir }, { "backupDir", &backupDir } })
         if (!v->empty()) appendf(f, "%s=%s\n", k, v->c_str());
     appendf(f, "updates=%d\nupdateAtStart=%d\nbetas=%d\nreports=%d\n", updates, updateAtStart, betas ? 1 : 0, reports ? 1 : 0);
-    appendf(f, "lastfm=%d\nlastfmScrobble=%d\nlastfmNow=%d\nopeningSound=%d\nopening=%d\n", lastfm ? 1 : 0, lastfmScrobble ? 1 : 0, lastfmNow ? 1 : 0, openingSound ? 1 : 0,
-            opening ? 1 : 0);
+    appendf(f, "openingSound=%d\nopening=%d\n", openingSound ? 1 : 0, opening ? 1 : 0);
     appendf(f, "edgeMode=%d\nedgeExtra=%.3f\nedgeCorners=%d\nuiSize=%d\nuiSizeUp=%d\nserverTab=%d\nlibSource=%d\nserverDlPlace=%d\nplSource=%d\n", edgeMode, edgeExtra, edgeCorners ? 1 : 0, uiSize, uiSizeUp, serverTab, libSource, serverDlPlace,
             plSource);
     appendf(f, "handoffFrom=%s\nairplayReceive=%d\nairplaySpeakers=%d\n", handoffFrom.c_str(), airplayReceive ? 1 : 0, airplaySpeakers ? 1 : 0);

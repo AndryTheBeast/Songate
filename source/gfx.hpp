@@ -102,11 +102,18 @@ public:
     int text(const std::string& s, Font f, float x, float y, const Rgb& c, float alpha = 1, Align a = Align::Left, int maxW = 0);
     /** Same, vertically centred on cy. */
     int textC(const std::string& s, Font f, float x, float cy, const Rgb& c, float alpha = 1, Align a = Align::Left, int maxW = 0);
+    /** Whether some face has every letter of s (HOS's button glyphs: the console's only) */
+    bool provides(const std::string& s);
+    /** Centred on cy by its letters as drawn, not the line's box (capitals sit low in it): a button's name in its small circle */
+    int textInkC(const std::string& s, Font f, float x, float cy, const Rgb& c, float alpha = 1, Align a = Align::Left);
     /**
      * One line of text in a box boxW wide, moved left by offset and cut at the box, its ends fading over
      * fadeL / fadeR px (Gatefold's mask-image fade, app.css .album-facts) instead of an ellipsis: the player
      * bar's long titles, which scroll. Returns the text's whole width.
      */
+    /** Text lit from its left up to fill (0..1 of its width; a soft edge of a few pixels), the rest dimmer: a lyric's word as
+     *  it is sung. Its width. */
+    int textFill(const std::string& s, Font f, float x, float y, float fill, const Rgb& c, float litA, float dimA);
     int textScroll(const std::string& s, Font f, float x, float y, float boxW, float offset, float fadeL, float fadeR, const Rgb& c,
                    float alpha = 1);
     /** Letter-spaced text (the uppercase kickers), spacing in em. Centred on cy. */
@@ -120,6 +127,10 @@ public:
     static int wordmarkW();
     static int wordmarkH();
     static float wordmarkMid();
+    /** SongateOS's wordmark (wordmark_os.inc, tools/brand/wordmark_os.py): "SongateOS" set as one word in Songate's letters,
+     *  drawn as wordmark() draws (its gradient across the whole word, its glow). Same height and middle as Songate's. */
+    void wordmarkOS(float x, float cy, const Rgb& a, const Rgb& b, const Rgb& c, const Rgb& glowC, float glowA, float shine, float alpha = 1, float big = 1);
+    static int wordmarkOSW();
     /** Over a textSpaced (left-aligned, drawn first): the same letters again in `c`, lit through a soft band bw wide at
      *  bx (its profile as band()'s), so a light passes through the letters only (the Automix playlist's kicker). */
     int textSpacedShine(const std::string& s, Font f, float x, float cy, float spacingEm, float bx, float bw, const Rgb& c, float alpha = 1);
@@ -265,6 +276,10 @@ private:
     SDL_Texture* wordBigTex_ = nullptr;    // … four times as many pixels, for the opening (the PC's wordTex_ is this one)
     SDL_Texture* starTex_ = nullptr;       // sparkle()'s
     SDL_Texture* wordGlowTex_ = nullptr;   // … and their blur
+    SDL_Texture* wordOSTex_ = nullptr;     // SongateOS's (four times as many pixels), made when first drawn
+    SDL_Texture* wordOSGlowTex_ = nullptr;
+    void drawWord(SDL_Texture* letters, SDL_Texture* glowTex, int wW, int wH, float wMid, float x, float cy, const Rgb& a, const Rgb& b, const Rgb& c,
+                  const Rgb& glowC, float glowA, float shine, float alpha, float big, float reveal);
     bool holdCache_ = false;
     SDL_Texture* veilTex_ = nullptr;
     SDL_Texture* vignetteTex_ = nullptr;

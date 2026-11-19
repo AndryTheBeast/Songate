@@ -185,20 +185,25 @@ void App::reportRows(std::vector<SheetRow>& rows) {
     kind.h = 56;
     rows.push_back(kind);
     rows.push_back({ Row::Name, nullptr, "Title", "", sheet.repTitle.empty() ? "Add a title" : sheet.repTitle, [this] {
-                         std::string t;
-                         if (keyboard("A short title", sheet.repTitle, t)) {
+                         // (Songate's card on the phone, the user 2026-11-16: "everything ... should have the songate keyboard";
+                         // the console's and the PC's own keyboards for now)
+                         askName("A short title", sheet.repTitle, [this](std::string t) {
                              while (!t.empty() && t.back() == ' ') t.pop_back();
                              sheet.repTitle = t;
-                         }
+                         });
                      } });
     rows.back().h = 48;
     rows.push_back({ Row::Name, nullptr, bug ? "What happened" : "The idea", "", sheet.repWhat.empty() ? "Tell us" : sheet.repWhat, [this, bug] {
+                         // (sentences: the card's field wraps them, three lines in sight)
+                         const char* title = bug ? "What happened, and what you expected" : "Your idea";
+                         if (askKb(KbKind::Long, title, sheet.repWhat, [this](const std::string& t) { sheet.repWhat = t; })) return;
                          std::string t;
-                         if (keyboard(bug ? "What happened, and what you expected" : "Your idea", sheet.repWhat, t)) sheet.repWhat = t;
+                         if (keyboard(title, sheet.repWhat, t)) sheet.repWhat = t;
                      } });
     rows.back().h = 48;
     if (bug) {
         rows.push_back({ Row::Name, nullptr, "Steps", "", sheet.repSteps.empty() ? "How to make it happen" : sheet.repSteps, [this] {
+                             if (askKb(KbKind::Long, "The steps that make it happen", sheet.repSteps, [this](const std::string& t) { sheet.repSteps = t; })) return;
                              std::string t;
                              if (keyboard("The steps that make it happen", sheet.repSteps, t)) sheet.repSteps = t;
                          } });

@@ -14,6 +14,7 @@
 #include <condition_variable>
 #include <cstdio>
 #include <deque>
+#include <map>
 #include <mutex>
 #include <thread>
 #include <cstring>
@@ -146,11 +147,6 @@ int backWatch(void*, SDL_Event* e) {
     return 0;
 }
 
-void openPad() {
-    if (padDev) return;
-    for (int i = 0; i < SDL_NumJoysticks(); i++)
-        if (SDL_IsGameController(i) && (padDev = SDL_GameControllerOpen(i))) return;
-}
 
 }  // namespace
 
@@ -178,6 +174,12 @@ void init() {
         if (FILE* f = fopen((dir + "test-jobs").c_str(), "r")) {
             fclose(f);
             setenv("GF_JOBS", "1", 1);
+        }
+        // test-tour: the tour's check (GF_TOURCHECK, tour.cpp) at the level written in it (0, 1 or 2): every step walked, logged
+        if (FILE* f = fopen((dir + "test-tour").c_str(), "r")) {
+            char v[8] = {};
+            if (fgets(v, sizeof v, f)) { v[strcspn(v, "\r\n")] = 0; if (*v) setenv("GF_TOURCHECK", v, 1); }
+            fclose(f);
         }
     }
 #endif
@@ -274,67 +276,24 @@ bool relaunch(const std::string& program) {
 
 // ---- input
 
-void padInit() {
-    SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER);
-    openPad();
-}
+// Android is touch only (the user, 2026-11-18: "remove any type of input (controller, keyboard) except touch"): Android's Back is
+// the one button read here; the volume keys and the media buttons (a headphone's or Bluetooth remote, the HiBy R4's own) are
+// Android's and SongateActivity's, as before. A keyboard's keys and a game pad do nothing in Songate
+void padInit() {}
 
 void padRead() {
     heldBefore = heldNow;
     uint64_t b = 0;
-    const Uint8* k = SDL_GetKeyboardState(nullptr);
-    const SDL_Keymod mod = SDL_GetModState();
     if (backHeld || backPressed) b |= BtnB;
     backPressed = false;
-    if (mod & KMOD_CTRL) {
-        if (k[SDL_SCANCODE_LEFT]) b |= BtnL;
-        if (k[SDL_SCANCODE_RIGHT]) b |= BtnR;
-        if (k[SDL_SCANCODE_F]) b |= BtnY;
-    } else if (mod & KMOD_SHIFT) {
-        if (k[SDL_SCANCODE_LEFT]) b |= BtnZL;
-        if (k[SDL_SCANCODE_RIGHT]) b |= BtnZR;
-    } else if (!SDL_IsTextInputActive()) {   // a hardware keyboard, as the PC's; not while typing into the text card
-        if (k[SDL_SCANCODE_LEFT]) b |= BtnLeft;
-        if (k[SDL_SCANCODE_RIGHT]) b |= BtnRight;
-        if (k[SDL_SCANCODE_UP]) b |= BtnUp;
-        if (k[SDL_SCANCODE_DOWN]) b |= BtnDown;
-        if (k[SDL_SCANCODE_RETURN] || k[SDL_SCANCODE_KP_ENTER]) b |= BtnA;
-        if (k[SDL_SCANCODE_ESCAPE]) b |= BtnB;
-        if (k[SDL_SCANCODE_SPACE]) b |= BtnX;
-        if (k[SDL_SCANCODE_APPLICATION]) b |= BtnPlus;
-        if (k[SDL_SCANCODE_C]) b |= BtnMinus;
-    }
-    const uint64_t fromKeys = b;
-    if (!padDev) openPad();
-    if (padDev && !SDL_GameControllerGetAttached(padDev)) {
-        SDL_GameControllerClose(padDev);
-        padDev = nullptr;
-    }
-    if (padDev) {
-        const std::pair<SDL_GameControllerButton, Button> map[] = {
-            { SDL_CONTROLLER_BUTTON_A, BtnA },           { SDL_CONTROLLER_BUTTON_B, BtnB },           { SDL_CONTROLLER_BUTTON_X, BtnX },
-            { SDL_CONTROLLER_BUTTON_Y, BtnY },           { SDL_CONTROLLER_BUTTON_LEFTSHOULDER, BtnL }, { SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, BtnR },
-            { SDL_CONTROLLER_BUTTON_START, BtnPlus },    { SDL_CONTROLLER_BUTTON_BACK, BtnMinus },    { SDL_CONTROLLER_BUTTON_DPAD_LEFT, BtnLeft },
-            { SDL_CONTROLLER_BUTTON_DPAD_UP, BtnUp },    { SDL_CONTROLLER_BUTTON_DPAD_RIGHT, BtnRight }, { SDL_CONTROLLER_BUTTON_DPAD_DOWN, BtnDown },
-        };
-        for (const auto& [from, to] : map) if (SDL_GameControllerGetButton(padDev, from)) b |= to;
-        if (SDL_GameControllerGetAxis(padDev, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 12000) b |= BtnZL;
-        if (SDL_GameControllerGetAxis(padDev, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 12000) b |= BtnZR;
-    }
-    if (fromKeys) padLast = false;
-    else if (b) padLast = true;
+    padLast = false;
     heldNow = b;
 }
 
 uint64_t padDown() { return heldNow & ~heldBefore; }
 uint64_t padHeld() { return heldNow; }
 
-Stick stick(int which) {
-    if (!padDev) return { 0, 0 };
-    const int x = SDL_GameControllerGetAxis(padDev, which ? SDL_CONTROLLER_AXIS_RIGHTX : SDL_CONTROLLER_AXIS_LEFTX);
-    const int y = SDL_GameControllerGetAxis(padDev, which ? SDL_CONTROLLER_AXIS_RIGHTY : SDL_CONTROLLER_AXIS_LEFTY);
-    return { std::clamp(x, -32767, 32767), std::clamp(-y, -32767, 32767) };
-}
+Stick stick(int) { return { 0, 0 }; }   // (touch only: no pad)
 
 // ---- typing
 
@@ -469,6 +428,34 @@ void screenRotation(int kind) {
     if (env->ExceptionCheck()) env->ExceptionClear();
 }
 
+void padRumble(int) {}   // (a phone: keyTap's tick)
+
+void keySounds(const std::vector<std::vector<int16_t>>& sounds, int rate) {
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
+    if (!env) return;
+    jclass cls = activityClass(env);
+    if (!cls) return;
+    jmethodID m = env->GetStaticMethodID(cls, "keyWave", "(I[SI)V");
+    if (!m) { if (env->ExceptionCheck()) env->ExceptionClear(); return; }
+    for (size_t k = 0; k < sounds.size(); k++) {
+        jshortArray a = env->NewShortArray(jsize(sounds[k].size()));
+        if (!a) break;
+        env->SetShortArrayRegion(a, 0, jsize(sounds[k].size()), sounds[k].data());
+        env->CallStaticVoidMethod(cls, m, jint(k), a, jint(rate));
+        env->DeleteLocalRef(a);
+        if (env->ExceptionCheck()) env->ExceptionClear();
+    }
+}
+
+void keyTap(bool click, int vibrate, int kind, bool overMusic) {
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
+    if (!env) return;
+    jclass cls = activityClass(env);
+    if (!cls) return;
+    if (jmethodID m = env->GetStaticMethodID(cls, "keyTap", "(ZIIZ)V")) env->CallStaticVoidMethod(cls, m, jboolean(click), jint(vibrate), jint(kind), jboolean(overMusic));
+    if (env->ExceptionCheck()) env->ExceptionClear();
+}
+
 bool homeHeld() {
     JNIEnv* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
     jclass cls = env ? activityClass(env) : nullptr;
@@ -506,6 +493,25 @@ std::vector<std::pair<std::string, std::string>> apps() {
     };
     const jsize n = env->GetArrayLength(arr);
     for (jsize i = 0; i + 1 < n; i += 2) out.emplace_back(str(i), str(i + 1));
+    env->DeleteLocalRef(arr);
+    return out;
+}
+
+std::vector<std::string> systemApps() {
+    std::vector<std::string> out;
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
+    jclass cls = env ? activityClass(env) : nullptr;
+    if (!cls) return out;
+    jmethodID m = env->GetStaticMethodID(cls, "systemApps", "()[Ljava/lang/String;");
+    auto arr = m ? static_cast<jobjectArray>(env->CallStaticObjectMethod(cls, m)) : nullptr;
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return out; }
+    if (!arr) return out;
+    const jsize n = env->GetArrayLength(arr);
+    for (jsize i = 0; i < n; i++)
+        if (auto s = static_cast<jstring>(env->GetObjectArrayElement(arr, i))) {
+            if (const char* c = env->GetStringUTFChars(s, nullptr)) { out.emplace_back(c); env->ReleaseStringUTFChars(s, c); }
+            env->DeleteLocalRef(s);
+        }
     env->DeleteLocalRef(arr);
     return out;
 }
@@ -965,6 +971,191 @@ void volumeKeysOwn(bool own) {
 
 unsigned resumes() { return resumeCount.load(); }
 
+std::atomic<unsigned> otherGenV{ 0 };
+unsigned otherGen() { return otherGenV.load(); }
+
+namespace {
+jmethodID otherMethod(JNIEnv*& env, jclass& cls, const char* name, const char* sig) {
+    env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
+    cls = env ? activityClass(env) : nullptr;
+    if (!cls) return nullptr;
+    jmethodID m = env->GetStaticMethodID(cls, name, sig);
+    if (!m) env->ExceptionClear();
+    return m;
+}
+}  // namespace
+
+bool otherAllowed() {
+    JNIEnv* env;
+    jclass cls;
+    jmethodID m = otherMethod(env, cls, "otherAllowed", "()Z");
+    if (!m) return false;
+    const bool r = env->CallStaticBooleanMethod(cls, m);
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return false; }
+    return r;
+}
+
+void otherAccess() {
+    JNIEnv* env;
+    jclass cls;
+    if (jmethodID m = otherMethod(env, cls, "otherAccess", "()V")) { env->CallStaticVoidMethod(cls, m); if (env->ExceptionCheck()) env->ExceptionClear(); }
+}
+
+bool otherWatch(bool on) {
+    JNIEnv* env;
+    jclass cls;
+    jmethodID m = otherMethod(env, cls, "otherWatch", "(Z)Z");
+    if (!m) return false;
+    const bool done = env->CallStaticBooleanMethod(cls, m, jboolean(on));
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return false; }
+    return done;
+}
+
+std::vector<PlaySearchApp> playSearchApps() {
+    JNIEnv* env;
+    jclass cls;
+    std::vector<PlaySearchApp> out;
+    jmethodID m = otherMethod(env, cls, "playSearchApps", "()Ljava/lang/String;");
+    if (!m) return out;
+    auto s = static_cast<jstring>(env->CallStaticObjectMethod(cls, m));
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return out; }
+    const std::string text = s ? fromJava(env, s) : std::string();
+    for (size_t at = 0; at < text.size();) {
+        size_t end = text.find('\n', at);
+        if (end == std::string::npos) end = text.size();
+        const std::string line = text.substr(at, end - at);
+        at = end + 1;
+        const size_t tab = line.find('\t'), tab2 = tab == std::string::npos ? tab : line.find('\t', tab + 1);
+        if (tab == std::string::npos || tab == 0) continue;
+        PlaySearchApp a;
+        a.component = line.substr(0, tab);
+        a.name = line.substr(tab + 1, tab2 == std::string::npos ? std::string::npos : tab2 - tab - 1);
+        out.push_back(std::move(a));
+    }
+    return out;
+}
+
+void playSearch(const std::string& component, const std::string& query) {
+    JNIEnv* env;
+    jclass cls;
+    jmethodID m = otherMethod(env, cls, "playSearch", "(Ljava/lang/String;[B)V");
+    if (!m) return;
+    jstring c = env->NewStringUTF(component.c_str());
+    jbyteArray q = bytes(env, query);
+    env->CallStaticVoidMethod(cls, m, c, q);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    env->DeleteLocalRef(c);
+    if (q) env->DeleteLocalRef(q);
+}
+
+std::string otherState() {
+    JNIEnv* env;
+    jclass cls;
+    jmethodID m = otherMethod(env, cls, "otherState", "()Ljava/lang/String;");
+    if (!m) return {};
+    auto s = static_cast<jstring>(env->CallStaticObjectMethod(cls, m));
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return {}; }
+    std::string out = s ? fromJava(env, s) : std::string();
+    // (fromJava lets the string go)
+    return out;
+}
+
+bool recordAllowed() {
+    JNIEnv* env;
+    jclass cls;
+    jmethodID m = otherMethod(env, cls, "recordAllowed", "()Z");
+    if (!m) return false;
+    const bool r = env->CallStaticBooleanMethod(cls, m);
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return false; }
+    return r;
+}
+
+void askRecord() {
+    JNIEnv* env;
+    jclass cls;
+    if (jmethodID m = otherMethod(env, cls, "askRecord", "()V")) { env->CallStaticVoidMethod(cls, m); if (env->ExceptionCheck()) env->ExceptionClear(); }
+}
+
+int recordAnswer() {
+    JNIEnv* env;
+    jclass cls;
+    jmethodID m = otherMethod(env, cls, "recordAnswer", "()I");
+    if (!m) return 0;
+    const int r = env->CallStaticIntMethod(cls, m);
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return 0; }
+    return r;
+}
+
+bool otherViz(std::vector<uint8_t>& wave, int& rateHz) {
+    JNIEnv* env;
+    jclass cls;
+    jmethodID m = otherMethod(env, cls, "otherViz", "([I)[B");
+    if (!m) return false;
+    jintArray r = env->NewIntArray(1);
+    if (!r) return false;
+    auto a = static_cast<jbyteArray>(env->CallStaticObjectMethod(cls, m, r));
+    if (env->ExceptionCheck()) { env->ExceptionClear(); env->DeleteLocalRef(r); return false; }
+    bool ok = false;
+    if (a) {
+        wave.resize(size_t(env->GetArrayLength(a)));
+        env->GetByteArrayRegion(a, 0, jsize(wave.size()), reinterpret_cast<jbyte*>(wave.data()));
+        jint hz = 0;
+        env->GetIntArrayRegion(r, 0, 1, &hz);
+        rateHz = hz;
+        env->DeleteLocalRef(a);
+        ok = !wave.empty() && hz > 0;
+    }
+    env->DeleteLocalRef(r);
+    return ok;
+}
+
+void otherVizStop() {
+    JNIEnv* env;
+    jclass cls;
+    if (jmethodID m = otherMethod(env, cls, "otherVizStop", "()V")) { env->CallStaticVoidMethod(cls, m); if (env->ExceptionCheck()) env->ExceptionClear(); }
+}
+
+std::vector<uint8_t> otherArt() {
+    JNIEnv* env;
+    jclass cls;
+    std::vector<uint8_t> out;
+    jmethodID m = otherMethod(env, cls, "otherArt", "()[B");
+    if (!m) return out;
+    auto a = static_cast<jbyteArray>(env->CallStaticObjectMethod(cls, m));
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return out; }
+    if (!a) return out;
+    out.resize(size_t(env->GetArrayLength(a)));
+    env->GetByteArrayRegion(a, 0, jsize(out.size()), reinterpret_cast<jbyte*>(out.data()));
+    env->DeleteLocalRef(a);
+    return out;
+}
+
+bool otherIcon(int size, std::vector<uint32_t>& argb) {
+    JNIEnv* env;
+    jclass cls;
+    jmethodID m = otherMethod(env, cls, "otherIcon", "(I)[I");
+    if (!m) return false;
+    auto arr = static_cast<jintArray>(env->CallStaticObjectMethod(cls, m, jint(size)));
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return false; }
+    if (!arr) return false;
+    const bool ok = env->GetArrayLength(arr) == size * size;
+    if (ok) {
+        argb.resize(size_t(size) * size_t(size));
+        env->GetIntArrayRegion(arr, 0, size * size, reinterpret_cast<jint*>(argb.data()));
+    }
+    env->DeleteLocalRef(arr);
+    return ok;
+}
+
+void otherControl(int cmd, double arg) {
+    JNIEnv* env;
+    jclass cls;
+    if (jmethodID m = otherMethod(env, cls, "otherControl", "(IJ)V")) {
+        env->CallStaticVoidMethod(cls, m, jint(cmd), jlong(arg));
+        if (env->ExceptionCheck()) env->ExceptionClear();
+    }
+}
+
 int hibyState() {
     int st = 0;
     callStatic("hibyState", "()I", [&st](JNIEnv* env, jclass cls, jmethodID m) { st = env->CallStaticIntMethod(cls, m); });
@@ -1018,6 +1209,12 @@ void bitPerfectEnd() {
 
 bool bitPerfectLost() { return bpLost.load(); }
 
+bool bitPerfectRouted() {
+    bool on = false;
+    callStatic("bitPerfectRouted", "()Z", [&on](JNIEnv* env, jclass cls, jmethodID m) { on = env->CallStaticBooleanMethod(cls, m) == JNI_TRUE; });
+    return on;
+}
+
 bool hibyDevice() {
     static int known = -1;   // asked once
     if (known < 0) {
@@ -1044,6 +1241,47 @@ std::string hibySet(const std::string& key, const std::string& value) {
         env->DeleteLocalRef(v);
     });
     return err;
+}
+
+std::string sysCall(const std::string& method, const std::string& arg, const std::string& extras) {
+    std::string out = "{\"ok\":false,\"error\":\"no_answer: no Java\"}";
+    callStatic("sysCall", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", [&](JNIEnv* env, jclass cls, jmethodID m) {
+        jstring a = env->NewStringUTF(method.c_str()), b = env->NewStringUTF(arg.c_str()), c = env->NewStringUTF(extras.c_str());
+        out = fromJava(env, static_cast<jstring>(env->CallStaticObjectMethod(cls, m, a, b, c)));
+        env->DeleteLocalRef(a);
+        env->DeleteLocalRef(b);
+        env->DeleteLocalRef(c);   // (a password's copy: Java's own string, gone with the call)
+    });
+    return out;
+}
+
+void sysWatch(const char* area, bool on) {
+    callStatic("sysWatch", "(Ljava/lang/String;Z)V", [&](JNIEnv* env, jclass cls, jmethodID m) {
+        jstring a = env->NewStringUTF(area);
+        env->CallStaticVoidMethod(cls, m, a, jboolean(on));
+        env->DeleteLocalRef(a);
+    });
+}
+
+void sysOpen(const char* which) {
+    callStatic("sysOpen", "(Ljava/lang/String;)V", [&](JNIEnv* env, jclass cls, jmethodID m) {
+        jstring a = env->NewStringUTF(which);
+        env->CallStaticVoidMethod(cls, m, a);
+        env->DeleteLocalRef(a);
+    });
+}
+
+namespace {
+std::mutex sysChangedMx;
+std::map<std::string, unsigned> sysChangedGen;
+}
+unsigned sysChanged(const char* area) {
+    std::lock_guard<std::mutex> g(sysChangedMx);
+    return sysChangedGen[area];
+}
+void sysBump(const std::string& area) {
+    std::lock_guard<std::mutex> g(sysChangedMx);
+    sysChangedGen[area]++;
 }
 
 bool hibyEqSet(const std::string& eq) {
@@ -1092,10 +1330,20 @@ extern "C" JNIEXPORT void JNICALL Java_io_github_andrythebeast_songate_SongateAc
     if (fromKey) plat::volKeys++;
 }
 
+/** SysApi.java's ContentObserver, on Android's main thread: the service says an area changed (Wi-Fi, Bluetooth, the output…). */
+extern "C" JNIEXPORT void JNICALL Java_io_github_andrythebeast_songate_SysApi_nativeSysChanged(JNIEnv* env, jclass, jstring area) {
+    plat::sysBump(plat::fromJava(env, area));
+}
+
 /** BitPerfect.java's listener, on Android's main thread: Android says whether Songate's bit-perfect claim holds. */
 extern "C" JNIEXPORT void JNICALL Java_io_github_andrythebeast_songate_BitPerfect_nativeBitPerfect(JNIEnv*, jclass, jboolean on) {
     if (!on) plat::bpLost = true;
     plat::bpConfirmed = bool(on);
+}
+
+/** OtherApps.java, on Android's main thread: what another app plays changed (its session, song or state). */
+extern "C" JNIEXPORT void JNICALL Java_io_github_andrythebeast_songate_OtherApps_nativeOtherChanged(JNIEnv*, jclass) {
+    plat::otherGenV++;
 }
 
 /** SongateActivity.onResume, on Android's UI thread. */

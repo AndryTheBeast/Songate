@@ -170,7 +170,7 @@ void App::selfTestStart(int level) {
     }
 
     static const char* const catNames[] = { "Appearance", "Playback", "Equalizer", "Library", "Storage", "Lyrics", "Canvas", "Visualizer", "Controls",
-                                            "Devices", "Last.fm", "Reset", "Updates", "Support" };
+                                            "Devices", "Reset", "Updates", "Support" };
 
     // ---- Basic: every page once
     go("Now playing", [](App& a) { a.navigate(View::Now); });
@@ -196,7 +196,7 @@ void App::selfTestStart(int level) {
         go(std::string("Library › ") + (k == 3 ? "Artists" : "Genres"), [k](App& a) { a.store.libTab = k; a.store.libSource = 0; a.navigate(View::Library); });
     go("Liked", [](App& a) { a.navigate(View::List, -1); });
     go("Playlists", [](App& a) { a.navigate(View::Playlists); });
-    for (int c : { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 })
+    for (int c = 0; c < int(std::size(catNames)); c++)
         go(std::string("Settings › ") + catNames[c], [c](App& a) { a.settingsCat = c; a.navigate(View::Settings); }, 0.7);
 
     // ---- Advanced: the views, sorts, sheets, Canvas, search, Files, the server
@@ -291,7 +291,7 @@ void App::selfTestStart(int level) {
         walk("Library › Tracks", [](App& a) { a.store.libTab = 1; a.store.libSource = 0; a.navigate(View::Library); });
         walk("Albums", [](App& a) { a.navigate(View::Albums); });
         walk("Liked", [](App& a) { a.navigate(View::List, -1); });
-        for (int c : { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 })
+        for (int c = 0; c < int(std::size(catNames)); c++)
             walk(std::string("Settings › ") + catNames[c], [c](App& a) { a.settingsCat = c; a.navigate(View::Settings); });
         if (subsonic.view().state == Subsonic::SignedIn)
             for (int k = 0; k < 5; k++) walk(std::string("Library › Server › ") + (k == 0 ? "Albums" : k == 1 ? "Artists" : k == 2 ? "Genres" : k == 3 ? "Folders" : "Tracks"), [k](App& a) { a.store.libSource = 1; a.store.serverTab = k; a.navigate(View::Library); });

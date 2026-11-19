@@ -7,6 +7,9 @@
 #include <switch.h>
 
 #include <algorithm>
+#include <condition_variable>
+#include <mutex>
+#include <atomic>
 #include <cmath>
 #include <chrono>
 #include <cstdio>
@@ -21,6 +24,7 @@ namespace { I2cSession gaugeSession{}; bool gaugeOpen = false; }   // the batter
 
 static_assert(u64(BtnA) == u64(HidNpadButton_A) && u64(BtnB) == u64(HidNpadButton_B) && u64(BtnX) == u64(HidNpadButton_X) && u64(BtnY) == u64(HidNpadButton_Y));
 static_assert(u64(BtnL) == u64(HidNpadButton_L) && u64(BtnR) == u64(HidNpadButton_R) && u64(BtnZL) == u64(HidNpadButton_ZL) && u64(BtnZR) == u64(HidNpadButton_ZR));
+static_assert(u64(BtnLStick) == u64(HidNpadButton_StickL) && u64(BtnRStick) == u64(HidNpadButton_StickR));
 static_assert(u64(BtnPlus) == u64(HidNpadButton_Plus) && u64(BtnMinus) == u64(HidNpadButton_Minus));
 static_assert(u64(BtnLeft) == u64(HidNpadButton_Left) && u64(BtnUp) == u64(HidNpadButton_Up) && u64(BtnRight) == u64(HidNpadButton_Right) && u64(BtnDown) == u64(HidNpadButton_Down));
 
@@ -152,7 +156,55 @@ void padInit() {
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     padInitializeDefault(&pad);
 }
-void padRead() { padUpdate(&pad); }
+// The Joy-Con's tick (a key of the keyboard card): HD Rumble used as the haptic it is, not as a motor (the user, 2026-11-18: "Light is
+// still too strong, this is a haptic engine, use it"): a short pulse on the high band, near the actuator's resonance (320 Hz), the
+// low band (the felt rumble) still.
+// No thread of its own: the console refused one more (std::thread threw, uncaught, and Songate closed at a key press: the crash
+// reports, 2026-11-18), so none is made for this.
+namespace {
+// Each controller as it is now: handheld, or player 1 as two Joy-Con, one Joy-Con or a Pro Controller (Bluetooth or not). The handles
+// follow its style (asked each time: cheap; a pair taken off the console becomes Joy-Con held apart, a Pro Controller has one
+// device). Before: handheld and two Joy-Con only, so a Pro Controller or a single Joy-Con never felt it
+struct Vib { HidNpadIdType id; uint32_t style = 0; int n = 0; HidVibrationDeviceHandle h[2]; };
+Vib vibs[2] = { { HidNpadIdType_Handheld }, { HidNpadIdType_No1 } };
+void vibSend(float lowAmp, float highAmp, float highFreq) {
+    HidVibrationValue v[2];
+    for (HidVibrationValue& x : v) { x.amp_low = lowAmp; x.freq_low = 160.f; x.amp_high = highAmp; x.freq_high = highFreq; }
+    for (Vib& d : vibs) {
+        const uint32_t st = hidGetNpadStyleSet(d.id);
+        if (st != d.style) {
+            d.style = st;
+            d.n = 0;
+            HidNpadStyleTag tag = HidNpadStyleTag_NpadFullKey;
+            int n = 0;
+            if (st & HidNpadStyleTag_NpadHandheld) { tag = HidNpadStyleTag_NpadHandheld; n = 2; }
+            else if (st & HidNpadStyleTag_NpadFullKey) { tag = HidNpadStyleTag_NpadFullKey; n = 1; }
+            else if (st & HidNpadStyleTag_NpadJoyDual) { tag = HidNpadStyleTag_NpadJoyDual; n = 2; }
+            else if (st & HidNpadStyleTag_NpadJoyLeft) { tag = HidNpadStyleTag_NpadJoyLeft; n = 1; }
+            else if (st & HidNpadStyleTag_NpadJoyRight) { tag = HidNpadStyleTag_NpadJoyRight; n = 1; }
+            if (n && R_SUCCEEDED(hidInitializeVibrationDevices(d.h, n, d.id, tag))) d.n = n;
+        }
+        if (d.n) hidSendVibrationValues(d.h, v, d.n);
+    }
+}
+}  // namespace
+
+void padRumble(int level) {
+    // A tap, not a buzz (the user, 2026-11-18: "more of a taptic sensation"): one short, strong impulse on the high band, stopped
+    // dead a few milliseconds later, here (the frame waits that long: no thread may be made for it). Light, Medium, Strong: firmer
+    // and a little longer each; the low band (the felt rumble) stays still.
+    // (before: 0.18 / 0.32 / 0.5 held for a frame, a soft buzz; 0.07 / 0.15 / 0.26, too light; 0.22 on both bands, too strong)
+    struct Pulse { float high; int us; };
+    static const Pulse pulses[4] = { { 0, 0 }, { 0.38f, 6000 }, { 0.58f, 8000 }, { 0.8f, 10000 } };
+    const Pulse& pl = pulses[level < 1 ? 1 : level > 3 ? 3 : level];
+    vibSend(0, pl.high, 320);
+    svcSleepThread(int64_t(pl.us) * 1000);
+    vibSend(0, 0, 320);
+}
+
+void padRead() {
+    padUpdate(&pad);
+}
 uint64_t padDown() { return padGetButtonsDown(&pad); }
 uint64_t padHeld() { return padGetButtons(&pad); }
 Stick stick(int which) {
@@ -516,7 +568,7 @@ std::string assetPath(const char* relative) { return std::string("romfs:/") + re
 std::vector<FontData> systemFonts() {
     std::vector<FontData> out;
     for (PlSharedFontType t : { PlSharedFontType_Standard, PlSharedFontType_ChineseSimplified, PlSharedFontType_ExtChineseSimplified,
-                                PlSharedFontType_ChineseTraditional, PlSharedFontType_KO }) {
+                                PlSharedFontType_ChineseTraditional, PlSharedFontType_KO, PlSharedFontType_NintendoExt }) {   // (Ext: HOS's button glyphs)
         PlFontData fd;
         if (R_SUCCEEDED(plGetSharedFontByType(&fd, t))) out.push_back({ fd.address, fd.size });
     }

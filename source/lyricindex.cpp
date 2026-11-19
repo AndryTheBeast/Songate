@@ -3,6 +3,7 @@
  * See lyricindex.hpp.
  */
 #include "lyricindex.hpp"
+#include "lrcwords.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -240,6 +241,12 @@ void LyricIndex::parse(const std::string& text, Song& into) {
         }
         while (!l.empty() && (l[0] == ' ' || l[0] == '\t')) l.erase(0, 1);
         while (!l.empty() && (l.back() == '\r' || l.back() == ' ')) l.pop_back();
+        if (l.find('<') != std::string::npos) {   // (word-synced: the words alone, lrcwords.hpp)
+            std::vector<LyricWord> words;
+            std::string plain;
+            lrcWords(l, words, plain);
+            l = plain;
+        }
         if (l.empty() || (meta && t < 0)) continue;
         into.addLine(t, l.data(), l.size());
         if (a > text.size()) break;

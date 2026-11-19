@@ -37,6 +37,8 @@ enum ItemFlags : uint8_t {
     NoUpDownEntry = 32,   // … Up/Down never land on it, only Left/Right (a playlist's join buttons, between its rows)
     NoDefault = 64,    // never the view's fallback focus when nothing claims it (Now playing's Lock pill, drawn before the track's
                        // buttons: at the launch it took the ring that Add to Liked had; the user, 2026-11-10)
+    Key = 128,         // a keyboard card's key: a finger types it as it lands, each finger its own, every tap kept in order
+                       // (fast typing lost keys while one finger's tap waited for its lift; the user, 2026-11-18)
 };
 
 struct ScrollArea {
@@ -60,6 +62,7 @@ public:
 
     // ---- registration ----
     void region(Region r) { region_ = r; }
+    Region region() const { return region_; }
     /** Registered here, not only through its items: a pane of plain text (About) must still scroll by touch and stick. */
     /** While a modal sheet is open, only its items (Region::Modal) register: focus and touch stay inside it. */
     void setModal(bool on) { modal_ = on; }
@@ -94,7 +97,8 @@ public:
     /** Where the D-pad goes from an item in one direction, when the layout would pick wrong (this frame; 0: nowhere). */
     void link(Id from, int dx, int dy, Id to) { linksCur_.push_back({ from, int8_t(dx), int8_t(dy), to }); }
     bool focused(Id id) const { return focus_ == id; }
-    bool pressed(Id id) const { return press_ == id || (holdPad_ && holding_ == id); }
+    int takeKeyDowns() { const int n = keyDowns_; keyDowns_ = 0; return n; }
+    bool pressed(Id id) const { return press_ == id || (holdPad_ && holding_ == id) || (keyLit_ == id && keyLitT_ > 0); }
     /** A Hold item held down for half a second: true for that one frame (its short press then never comes). */
     bool longPressed(Id id) const { return long_ && long_ == id; }
     /** Any other item a finger held still on for half a second: its id for that one frame, focused (the app opens what
@@ -115,14 +119,18 @@ public:
     int sliderStepY(Id id) const { return focus_ == id ? sliderStepY_ : 0; }
     float sliderDragY(Id id) const { return drag_ == id ? dragY_ : -1; }
 
-    void focus(Id id) { focus_ = id; scrollToFocus_ = true; wantDefault_ = false; }
+    void focus(Id id) { focus_ = id; scrollToFocus_ = true; wantDefault_ = wantDefaultNext_ = false; }   // (asked after a focusDefault: this one wins)
     /** Focus that follows the pointer: no scrolling to it, the pointer is already there. */
     void point(Id id) { if (id != focus_) { focus_ = id; padMode_ = true; } }
     Id focusedId() const { return focus_; }
     /** Moves focus to the DefaultFocus item of the next frame. Asked for mid-frame (a page switching while it
      *  draws), it must not be settled by this frame's end, when the new page's items do not exist yet. */
     void focusDefault() { wantDefaultNext_ = true; }
+#ifdef GF_ANDROID
+    bool showFocusRing() const { return false; }   // (Android is touch only: no focus ring, ever; the user, 2026-11-18)
+#else
     bool showFocusRing() const { return padMode_; }
+#endif
     bool hasItem(Id id) const;
     SDL_FRect rectOf(Id id) const;
     /** As rectOf, and also an item drawn under a modal (not focusable then); its scroll area if area is given. */
@@ -148,7 +156,7 @@ public:
     /** This frame's ←/→ is used up (a band handed it on: the next band, drawn after it, must not take it too). */
     void useSlide() { sliderStep_ = 0; }
     /** The topmost visible item of a scroll area (last frame's), 0 when none. */
-    Id firstIn(const ScrollArea* a) const;
+    Id firstIn(const ScrollArea* a, bool any = false) const;   // any: also below the visible part (a page whose top has nothing to focus)
     /** The item under a point (the stick's pointer), 0 when none. */
     Id itemAt(float x, float y) const;
     void touchDown(float x, float y, bool finger = false);   // finger: a touch screen (a slider waits for its way), not a mouse
@@ -204,6 +212,10 @@ private:
 
     Id focus_ = 0, activate_ = 0, activateNext_ = 0, engaged_ = 0;
     Id press_ = 0, drag_ = 0, released_ = 0, releasedNext_ = 0;
+    int keyDowns_ = 0;   // Key items touched since the app last asked (takeKeyDowns: the click and the tick)
+    std::vector<Id> keyTaps_;   // Key items tapped, oldest first: one handed out a frame (Ui::beginFrame)
+    Id keyLit_ = 0;
+    float keyLitT_ = 0;
     Id holding_ = 0, long_ = 0;   // a Hold item being pressed (by A when holdPad_, else a finger), and its long press this frame
     float holdT_ = 0;
     bool holdPad_ = false, holdFired_ = false;

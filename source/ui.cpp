@@ -63,6 +63,8 @@ void Ui::beginFrame(float dt) {
     if (tapRelease_ > 0 && --tapRelease_ == 0 && drag_) { releasedNext_ = drag_; drag_ = 0; }   // a tap on a slider: its one frame done
     activate_ = activateNext_;
     activateNext_ = 0;
+    if (!activate_ && !keyTaps_.empty()) { activate_ = keyTaps_.front(); keyTaps_.erase(keyTaps_.begin()); }   // (typed keys, in order)
+    if (keyLitT_ > 0) keyLitT_ -= dt;
     released_ = releasedNext_;
     releasedNext_ = 0;
     // A held Hold item: after half a second it is a long press, once
@@ -122,10 +124,10 @@ const Ui::Item* Ui::find(const std::vector<Item>& v, Id id) const {
 }
 
 bool Ui::hasItem(Id id) const { return find(cur_, id) || find(prev_, id); }
-Id Ui::firstIn(const ScrollArea* a) const {
+Id Ui::firstIn(const ScrollArea* a, bool any) const {
     const Item* best = nullptr;
     for (const Item& it : prev_) {
-        if (it.area != a || !shown(it)) continue;
+        if (it.area != a || (!any && !shown(it))) continue;
         if (!best || it.r.y < best->r.y - 1 || (std::fabs(it.r.y - best->r.y) <= 1 && it.r.x < best->r.x)) best = &it;
     }
     return best ? best->id : 0;
@@ -416,6 +418,12 @@ void Ui::touchDown(float x, float y, bool finger) {
         if ((it->flags & Slider) && (it->flags & Slider2D)) { drag_ = it->id; dragX_ = x; dragY_ = y; focus_ = it->id; return; }
         if ((it->flags & Slider) && !finger) { drag_ = it->id; dragX_ = x; dragY_ = y; focus_ = it->id; return; }   // a mouse: at once, as ever
         if (it->flags & Slider) { sliderWait_ = it->id; break; }   // a finger: which way it goes decides (touchMove)
+        if (it->flags & Key) {   // typed now: this frame when nothing waits (the draw after this input takes it), else after the others
+            if (!activate_ && keyTaps_.empty()) activate_ = it->id;
+            else keyTaps_.push_back(it->id);
+            keyLit_ = it->id; keyLitT_ = 0.12f; touching_ = false; keyDowns_++;
+            return;
+        }
         press_ = it->id;
         if (it->flags & Hold) { holding_ = it->id; holdPad_ = false; holdT_ = 0; holdFired_ = false; }
         break;

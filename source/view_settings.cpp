@@ -8,6 +8,7 @@
  */
 #include "words.hpp"
 #include <algorithm>
+#include <set>
 #include <cmath>
 #include <ctime>
 #include <functional>
@@ -16,11 +17,12 @@
 #include "app.hpp"
 #include "icons.inc"
 #include "hibyr4.hpp"
+#include "sysapi.hpp"
 #include "plicons.inc"
 #include "appicons.inc"
 
 #ifndef GF_VERSION
-#define GF_VERSION "2.0.0"
+#define GF_VERSION "2.1.0 BETA 1"
 #endif
 
 namespace {
@@ -29,6 +31,15 @@ std::string lowerAscii(std::string s) {
     for (char& c : s) c = char(tolower((unsigned char)c));
     return s;
 }
+
+/** A key for a row's control made of a name and a number (the system pages' networks and devices), kept for good: the rows hold
+ *  it as a pointer, frame after frame */
+#ifdef GF_ANDROID
+const char* uidKey(const char* base, int i) {
+    static std::set<std::string> keys;
+    return keys.insert(std::string(base) + "#" + std::to_string(i)).first->c_str();
+}
+#endif
 
 struct Row {
     std::string label, value, hint;   // value: shown after the label, like Gatefold's "Saturation 100%"
@@ -91,7 +102,11 @@ std::map<int, float> tabRowH;     // each tab row's height, last frame (what the
 std::map<int, float> tabSlide;    // each tab row's offset from its place, easing back to 0
 int tabHeld = -1;                 // the tab under the finger
 
-struct Card { std::string kicker; std::vector<Row> rows; };
+// with: the card it opens with when a page folds its cards (Custom with Interface colours: the user, 2026-11-16, "when the custom
+// theme is used the custom row should be opened too")
+struct Card { std::string kicker; std::vector<Row> rows; std::string with = {}; };
+// SongateOS's guide: updating from a computer, for a player without a microSD card (Settings › Updates' Guide)
+constexpr const char* kSongateOSGuide = "https://github.com/AndryTheBeast/SongateOS-HiBy_R4/blob/main/docs/03-install-os.md#updates-need-a-microsd-card";
 struct Section { const char* name; const char* icon; std::vector<Card> cards; };
 
 }  // namespace
@@ -177,8 +192,12 @@ std::string App::eqPresetName(int preset) const {
 void App::saveEqPreset(int into) {
     std::string name = "My preset " + std::to_string(store.eqUser.size() + 1);
     if (into >= int(store.eqUser.size())) into = -1;
-    if (into >= 0) name = store.eqUser[size_t(into)].name;   // updated where it is, under its name
-    else if (!keyboard("Name the preset", name, name)) return;
+    if (into >= 0) { saveEqPresetNamed(into, store.eqUser[size_t(into)].name); return; }   // updated where it is, under its name
+    askName("Name the preset", name, [this](const std::string& n) { saveEqPresetNamed(-1, n); });
+}
+
+void App::saveEqPresetNamed(int into, std::string name) {
+    if (into >= int(store.eqUser.size())) into = -1;
     while (!name.empty() && name.back() == ' ') name.pop_back();
     for (char& c : name) if (c == '\t') c = ' ';
     if (name.empty()) return;
@@ -210,13 +229,15 @@ void App::saveEqPreset(int into) {
 
 void App::renameEqPreset(int k) {
     if (k < 0 || k >= int(store.eqUser.size())) return;
-    std::string name = store.eqUser[size_t(k)].name;
-    if (!keyboard("Rename the preset", name, name)) return;
-    while (!name.empty() && name.back() == ' ') name.pop_back();
-    for (char& c : name) if (c == '\t') c = ' ';
-    if (name.empty()) return;
-    snprintf(store.eqUser[size_t(k)].name, sizeof store.eqUser[size_t(k)].name, "%s", name.c_str());
-    store.saveEqPresets();
+    const std::string old = store.eqUser[size_t(k)].name;
+    askName("Rename the preset", old, [this, k, old](std::string name) {
+        if (k >= int(store.eqUser.size()) || old != store.eqUser[size_t(k)].name) return;   // (gone or moved while typing)
+        while (!name.empty() && name.back() == ' ') name.pop_back();
+        for (char& c : name) if (c == '\t') c = ' ';
+        if (name.empty()) return;
+        snprintf(store.eqUser[size_t(k)].name, sizeof store.eqUser[size_t(k)].name, "%s", name.c_str());
+        store.saveEqPresets();
+    });
 }
 
 void App::deleteEqPreset(int k) {
@@ -585,7 +606,11 @@ void App::drawSettings(float x, float y, float w, float h) {
     // A category chosen last frame: its page was drawn then, so its first setting is known now
     if (settingsFocusFirst) {
         settingsFocusFirst = false;
-        if (const Id first = ui.firstIn(&area("settings.pane"))) ui.focus(first);
+        // (none shown: a page whose top is only words, as Controls' Buttons on the Switch and the PC: its first setting further down;
+        // the user, 2026-11-20: Controls did not take the focus as the other pages do)
+        Id first = ui.firstIn(&area("settings.pane"));
+        if (!first) first = ui.firstIn(&area("settings.pane"), true);
+        if (first) ui.focus(first);
     }
 
     // ------------------------------------------------------------ the rows, by category
@@ -628,19 +653,20 @@ void App::drawSettings(float x, float y, float w, float h) {
         return r;
     };
     // Two buttons on one row (the equalizer's Save / Save new): the first is the row's focus
-    struct Btn { const char* key; const char* icon; std::string text; std::function<void()> act; bool danger = false; };
+    // (w: at least this wide, its words centred: buttons in one column, one width; the user, 2026-11-16)
+    struct Btn { const char* key; const char* icon; std::string text; std::function<void()> act; bool danger = false; float w = 0; };
     auto buttonsRow = [&](const std::string& label, const std::string& hint, std::vector<Btn> btns) {
         float total = 0;
         std::vector<float> ws;
         for (const Btn& b : btns) {
-            ws.push_back(g.measure(b.text, { css::Sm, Weight::SemiBold }) + 32 + (b.icon ? 24 : 0));
+            ws.push_back(std::max(b.w, float(g.measure(b.text, { css::Sm, Weight::SemiBold }) + 32 + (b.icon ? 24 : 0))));
             total += ws.back() + (total > 0 ? 8 : 0);
         }
         Row r{ label, "", hint, total, [this, btns, ws, total](float rx, float cy) {
                   float bx = rx - total;
                   for (size_t i = 0; i < btns.size(); i++) {
                       bool c = false;
-                      button(uid(btns[i].key), btns[i].icon, btns[i].text, bx, cy - 17, false, &c, false, btns[i].danger);
+                      button(uid(btns[i].key), btns[i].icon, btns[i].text, bx, cy - 17, false, &c, false, btns[i].danger, 0, ws[i]);
                       if (c) btns[i].act();
                       bx += ws[i] + 8;
                   }
@@ -736,7 +762,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                              : tab == Store::TabFiles  ? "Everything " GF_ON_CARD ": open, rename, copy, move and delete, and what fits each file"
                                                        : "";
             Row r{ Store::tabName(tab), "", hint, sortWay ? sortW : 40 + 16 + mw, [this, tab, bit, i, mw, sortWay, sortCtl](float rx, float cy) {
-                      if (bit) {
+                      if (bit && !(r4Dev_ && tab == Store::TabApps)) {   // (the R4's Apps tab: always there, no switch)
                           const bool shown = !(store.hiddenTabs & bit);
                           if (toggle(uid("set.tab", int(bit)), rx - 40, cy, shown)) {
                               store.hiddenTabs ^= bit;
@@ -904,14 +930,16 @@ void App::drawSettings(float x, float y, float w, float h) {
         if (store.theme == 0 || store.theme == 4) colourRows.push_back(brightness);
         for (const Row& r : { saturation, transition, swatches }) colourRows.push_back(r);
         std::vector<Card> cards = { { "Interface colours", colourRows } };
-        if (!customRows.empty()) cards.push_back({ "Custom", customRows });   // only while Custom is chosen
-        cards.push_back({ "Layout",
-                          { toggleRow("Collapse the sidebar",
+        if (!customRows.empty()) cards.push_back({ "Custom", customRows, "Interface colours" });   // only while Custom is chosen
+        // Collapse the sidebar: the Sidebar card's first row (the user, 2026-11-18: "should be in the same row as sidebar and not
+        // layout"); Layout keeps what is left (Android's Size and Screen rotation), and goes where nothing is left
+        sidebarRows.insert(sidebarRows.begin(), toggleRow("Collapse the sidebar",
 #ifdef GF_WINDOWED
                                       // (narrow, it is folded whatever this says: said, so the switch is not taken for broken)
                                       narrow_ ? "This window is narrow, so it is folded for now: your choice is for a window with room" :
 #endif
-                                      "Icons only, more room for everything else", "set.side", store.sidebarCollapsed) } });
+                                      "Icons only, more room for everything else", "set.side", store.sidebarCollapsed));
+        cards.push_back({ "Layout", {} });
         const size_t layoutCard = cards.size() - 1;   // (Android adds its rows to it below: Screen rotation, and Size sideways)
         // Background, a card of its own (the user, 2026-11-13: "Layout should have Collapse setting and screen rotation. Background
         // (New row) should have Background motion, blur and smoothness")
@@ -945,8 +973,9 @@ void App::drawSettings(float x, float y, float w, float h) {
                                             }));
         }
         // The camera's cutouts and the rounded corners, whatever the phone or tablet has (the user, 2026-11-03: "works on every android
-        // or tablet ... give users lots of customisation options"): App::updateEdges
-        {
+        // or tablet ... give users lots of customisation options"): App::updateEdges. Not on the HiBy R4: no cutout, no camera, its
+        // corners square (the user, 2026-11-16)
+        if (!r4Dev_) {
             static const char* const edgeHints[] = {
                 "Only what a cutout would cover moves, by just enough",
                 "Nothing is placed on a cutout's side; Songate's colours still reach the edge",
@@ -1006,7 +1035,13 @@ void App::drawSettings(float x, float y, float w, float h) {
                                             [this] { store.sideOpacity = std::round((0.5f + sideOpShown * 0.5f) * 100) / 100; }));
         }
 #endif
-        cards.push_back({ "Sidebar", sidebarRows });
+        // (Android with the screen held upright for good, Layout › Screen rotation Portrait: no sidebar ever, so no card for it; the user,
+        // 2026-11-16. Upright's Library keeps its Files row by its own switch, Storage › Files)
+        bool sidebarEver = true;
+#ifdef GF_ANDROID
+        sidebarEver = store.screenTurn != 1;
+#endif
+        if (sidebarEver) cards.push_back({ "Sidebar", sidebarRows });
         {   // the #-to-Z rail down a list's right edge, per list and per library (the user, 2026-11-09: each library its own set, the
             // card listing the lists that library has; the title bar's switch says which): all on to begin with
             struct RailOpt { const char* name; const char* hint; unsigned bit; };
@@ -1025,7 +1060,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                       } };
                 railRows.push_back(r);
             }
-            cards.push_back({ "Letter rail · " + who, railRows });
+            cards.push_back({ set == 0 ? std::string("Letter rail") : "Letter rail · " + who, railRows });   // (the local library's: no word after it, the user 2026-11-16)
         }
 #ifdef GF_WINDOWED
         unsigned batteryNow = 0;
@@ -1098,7 +1133,7 @@ void App::drawSettings(float x, float y, float w, float h) {
             if (battery.infoOk && !(battery.info.missing >> 3 & 1))   // (no temperature read here: no unit to choose)
                 top.push_back(segRow("Temperature in", "", "set.batunit", { "°C", "°F" }, store.batteryFahrenheit ? 1 : 0,
                                      [this](int i) { store.batteryFahrenheit = i == 1; persistSoon(0.3f); }));
-            cards.push_back({ "Battery", top });
+            cards.push_back({ "Battery info", top });   // (the user, 2026-11-16: was "Battery")
 
             // each state: the battery as it will look (live), its colour, its animation
             static const char* stName[Store::BatteryStates] = { "On battery", "Low", "Charging slowly", "Charging", "Charging fast", "Charged" };
@@ -1198,7 +1233,7 @@ void App::drawSettings(float x, float y, float w, float h) {
             states.push_back(segRow("Pace", store.motion ? "How quickly the animations move. Charging, they follow the charger too"
                                                          : "Motion is off in Appearance: they stay still",
                                     "set.bapace", { "Calm", "Normal", "Lively" }, store.batteryAnimPace, [this](int i) { store.batteryAnimPace = i; persistSoon(0.3f); }));
-            cards.push_back({ "Battery states", states });
+            cards.push_back({ "Battery icon", states });   // (the user, 2026-11-16: was "Battery states")
         }
         if (r4::on()) {   // the HiBy R4's status LED (its ROM's service; hibyr4.hpp): that device only
             std::vector<Card> ledCards;
@@ -1374,6 +1409,124 @@ void App::drawSettings(float x, float y, float w, float h) {
             ledCards[0].kicker.clear();   // (the page's own title says it)
             r4LedCards = std::move(ledCards);
         }
+#ifdef GF_ANDROID
+        // System colours (SongateOS's theme_get / theme_set; the user chose B, 2026-11-16): the colour and darkness of Android's
+        // own screens (its questions, the installer, its settings). Songate's colour is copied once when chosen, never per cover:
+        // every change makes Android colour its screens again, Songate's restarting once. The R4 only.
+        if (r4Dev_ && sysapi::has("theme")) {
+            const sysapi::Theme t = sysapi::theme();
+            std::vector<Row> rows;
+            if (!t.known) rows.push_back(infoRow("Colour", "…"));
+            else {
+                auto hexRgb = [](const Rgb& c) {
+                    char b[8];
+                    snprintf(b, sizeof b, "#%02x%02x%02x", int(std::lround(c.r * 255)), int(std::lround(c.g * 255)), int(std::lround(c.b * 255)));
+                    return std::string(b);
+                };
+                const int way = t.colour.empty() || t.colour == t.def ? 0 : store.sysThemeSongate ? 1 : 2;
+                rows.push_back(segRow("Colour", "Android's own screens: its questions, the installer, its settings", "sys.themeway",
+                                      { "Android's", "Songate's", "Your own" }, way, [this, hexRgb](int i) {
+                                          store.sysThemeSongate = i == 1;
+                                          sysThemeOwn_ = i == 2;   // (the rounds only under Your own)
+                                          if (i == 0) sysapi::act("theme_set", "", { { "colour", "default" } }, "theme");
+                                          else if (i == 1) sysapi::act("theme_set", "", { { "colour", hexRgb(target.accent) } }, "theme");
+                                          else sysThemeOwn_ = true;   // (its colour picked below)
+                                      }));
+                if (way == 2 || sysThemeOwn_) {
+                    static const std::vector<int> choices = { 0xff3b30, 0xff9500, 0xffcc00, 0x34c759, 0x00c7be, 0x5ac8fa, 0x00a0ff, 0xaf52de, 0xff2d55 };
+                    const int cur = t.colour.size() == 7 ? int(strtol(t.colour.c_str() + 1, nullptr, 16)) : -1;
+                    Row r{ "Colour", "", "", (choices.size() + 1) * 30.f, [this, cur](float rx, float cy0) {
+                              const int n = int(choices.size()) + 1;
+                              auto send = [this](int v) {
+                                  char b[8];
+                                  snprintf(b, sizeof b, "#%06x", v & 0xffffff);
+                                  store.sysThemeSongate = false;
+                                  persistSoon(0.3f);
+                                  sysapi::act("theme_set", "", { { "colour", b } }, "theme");
+                              };
+                              for (int i = 0; i < int(choices.size()); i++) {
+                                  const Round at = roundAt(i, n, rx, cy0, settingsCtlMax_);
+                                  const float sx = at.x, cy = at.cy, d = at.d;
+                                  const int v = choices[i];
+                                  const Id id = uid("sys.themecol", i);
+                                  if (ui.item(id, { sx, cy - d / 2, d, d }, d / 2) && v != cur) send(v);
+                                  g.circle(sx + d / 2, cy, d / 2 - 1, Rgb{ ((v >> 16) & 255) / 255.f, ((v >> 8) & 255) / 255.f, (v & 255) / 255.f });
+                                  const bool on = cur == v, hot = ui.focused(id) && ui.showFocusRing();
+                                  if (on || hot) g.roundStroke(sx - 2, cy - d / 2 - 2, d + 4, d + 4, d / 2 + 2, on ? 2.f : 1.f, on ? pal.accent : pal.text, on ? 1.f : 0.4f);
+                              }
+                              // the wheel: your own colour, sent once the picker closes with it (App::sysTick: each change restarts screens)
+                              const Round at = roundAt(n - 1, n, rx, cy0, settingsCtlMax_);
+                              const float sx = at.x, cy = at.cy, d = at.d, k = d / 26;
+                              const Id id = uid("sys.themecol", 99);
+                              const bool own = cur >= 0 && std::find(choices.begin(), choices.end(), cur) == choices.end();
+                              if (ui.item(id, { sx, cy - d / 2, d, d }, d / 2)) {
+                                  sysThemePick_ = sysThemePickFrom_ = cur >= 0 ? cur : 0x00a0ff;
+                                  openColourPicker(&sysThemePick_, "System colours",
+                                                   Rgb{ ((sysThemePick_ >> 16) & 255) / 255.f, ((sysThemePick_ >> 8) & 255) / 255.f, (sysThemePick_ & 255) / 255.f });
+                              }
+                              if (SDL_Texture* wheel = wheelTexture()) g.imageStretched(wheel, sx + 1, cy - d / 2 + 1, d - 2, d - 2, 0);
+                              if (own) {
+                                  g.circle(sx + d / 2, cy, 8.5f * k, { 0, 0, 0 }, 0.35f);
+                                  g.circle(sx + d / 2, cy, 7 * k, Rgb{ ((cur >> 16) & 255) / 255.f, ((cur >> 8) & 255) / 255.f, (cur & 255) / 255.f });
+                              }
+                              const bool hot = ui.focused(id) && ui.showFocusRing();
+                              if (own || hot) g.roundStroke(sx - 2, cy - d / 2 - 2, d + 4, d + 4, d / 2 + 2, own ? 2.f : 1.f, own ? pal.accent : pal.text, own ? 1.f : 0.4f);
+                          } };
+                    r.rounds = int(choices.size()) + 1;
+                    rows.push_back(r);
+                }
+                rows.push_back(Row{ "Dark", "", "A change makes the screen go blank for a moment, while Android colours itself again", 40,
+                                    [this, dark = t.dark](float rx, float cy) {
+                                        if (toggle(uid("sys.themedark"), rx - 40, cy, dark)) sysapi::act("theme_set", "", { { "dark", dark ? "0" : "1" } }, "theme");
+                                    } });
+            }
+            // right below Interface colours (and its Custom card, which opens with it): the user, 2026-11-16
+            size_t at = 0;
+            while (at < cards.size() && (cards[at].kicker == "Interface colours" || cards[at].with == "Interface colours")) at++;
+            cards.insert(cards.begin() + long(at), { "System colours", rows });
+        }
+#endif
+#ifdef GF_ANDROID
+        // Screen (SongateOS's display_get / display_set; the user chose A, 2026-11-16): after the colours, how long the screen stays
+        // on first (Never there: Android's own way of staying awake, in place of Playback's Keep awake on the R4), then Android's
+        // own brightness. The R4 only
+        if (r4Dev_ && sysapi::has("display")) {
+            const sysapi::Display d = sysapi::display();
+            std::vector<Row> rows;
+            if (d.known) {
+                std::vector<std::string> opts;
+                int cur = -1;
+                for (size_t i = 0; i < d.timeouts.size(); i++) {
+                    const int s = d.timeouts[i];
+                    if (s == d.timeout) cur = int(i);
+                    opts.push_back(s == 0 ? std::string("Never") : s < 60 ? std::to_string(s) + " s" : std::to_string(s / 60) + " min");
+                }
+                rows.push_back(segRow("Turns off after", "", "sys.timeout", opts, cur, [ts = d.timeouts](int i) {
+                    sysapi::act("display_set", "timeout", { { "value", std::to_string(ts[size_t(i)]) } }, "display");
+                }));
+                // the brightness: Songate's slider while it is dragged (sent as it moves, ten times a second at most, and where it
+                // was let go), the service's value otherwise (the quick settings' slider moves it too)
+                const Id bid = uid("sys.bright");
+                if (!ui.engaged(bid)) {
+                    if (sysBrightSent_ < 0) {   // (let go since the last one sent)
+                        sysapi::act("display_set", "brightness", { { "value", std::to_string(int(std::lround(sysBright_ * 100))) } }, "display");
+                        sysBrightSent_ = 0;
+                    } else sysBright_ = std::clamp(d.brightness / 100.f, 0.f, 1.f);
+                }
+                rows.push_back(sliderRow("Screen brightness", pct(sysBright_), "The same as Android's own slider", "sys.bright", sysBright_, [this] {
+                    if (time - sysBrightSent_ >= 0.1) {
+                        sysapi::act("display_set", "brightness", { { "value", std::to_string(int(std::lround(sysBright_ * 100))) } }, "display");
+                        sysBrightSent_ = time;
+                    } else sysBrightSent_ = -1;   // (the last move: sent when let go)
+                }));
+            } else rows.push_back(infoRow("Turns off after", "", "…"));
+            size_t at = 0;
+            while (at < cards.size() && (cards[at].kicker == "Interface colours" || cards[at].with == "Interface colours" ||
+                                         cards[at].kicker == "System colours")) at++;
+            cards.insert(cards.begin() + long(at), { "Screen", rows });
+        }
+#endif
+        cards.erase(std::remove_if(cards.begin(), cards.end(), [](const Card& c) { return c.kicker == "Layout" && c.rows.empty(); }), cards.end());   // (the Switch and the PC: Layout had only Collapse)
         sections.push_back({ "Appearance", ICON_SPARKLE, cards });
     }
 
@@ -1493,6 +1646,12 @@ void App::drawSettings(float x, float y, float w, float h) {
                               : infoRow("Measured", measuredHint);
         measuredRow.value = std::to_string(measured) + " of " + std::to_string(lib.tracks.size());
         static const std::vector<std::string> orders = { "Default", "Repeat list", "Repeat song", "Shuffle" };
+        // (the HiBy R4 with SongateOS's screen settings: staying awake is Android's own, Appearance › Screen's Never; the user,
+        // 2026-11-16: Keep awake goes, Dim the screen follows it)
+        bool screenSetting = false;
+#ifdef GF_ANDROID
+        screenSetting = screenNeverOffered();   // (an older service with no Never: Keep awake stays)
+#endif
         sections.push_back(
             { "Playback", ICON_PLAY,
               { { "", { segRow("Order", automixQueue() ? "An Automix playlist keeps its own order: no Shuffle"
@@ -1557,7 +1716,8 @@ void App::drawSettings(float x, float y, float w, float h) {
                     toggleRow("Keep " GF_THE_CONSOLE " awake", "While Songate is open the screen does not dim and " GF_THE_CONSOLE " does not sleep by "
                                                         "itself. After a sleep timer ends, it may again.",
                               "set.awake", store.keepAwake),
-                    segRow("Dim the screen", store.keepAwake ? "After this long without input; any button brings it back"
+                    segRow("Dim the screen", keepAwakeOn() ? "After this long without input; any button brings it back"
+                                             : screenSetting ? "With the screen set never to turn off (Appearance › Screen); otherwise it turns off by itself"
                                                              : "With Keep " GF_THE_CONSOLE " awake on; otherwise " GF_THE_CONSOLE " dims by itself",
                            "set.dim", { "Off", "1", "2", "5", "10 min" },
                            store.dimAfter <= 0 ? 0 : store.dimAfter <= 1 ? 1 : store.dimAfter <= 2 ? 2 : store.dimAfter <= 5 ? 3 : 4,
@@ -1566,8 +1726,16 @@ void App::drawSettings(float x, float y, float w, float h) {
                                store.dimAfter = mins[i];
                                persistSoon(0.3f);
                            },
-                           store.keepAwake ? 0u : 0x1Fu) } },
+                           keepAwakeOn() ? 0u : 0x1Fu) } },
                 { GF_BG_CARD, bgRows } } });
+        if (screenSetting)
+            for (Card& c : sections.back().cards)
+                c.rows.erase(std::remove_if(c.rows.begin(), c.rows.end(), [](const Row& r) { return r.label == "Keep " GF_THE_CONSOLE " awake"; }),
+                             c.rows.end());
+        if (!sleepCardOffered())   // (Android but the HiBy R4 with SongateOS's power sleep: nothing puts the phone to sleep, so no countdown)
+            for (Card& c : sections.back().cards)
+                c.rows.erase(std::remove_if(c.rows.begin(), c.rows.end(), [](const Row& r) { return r.label == "Then sleep " GF_THE_CONSOLE; }),
+                             c.rows.end());
 #ifdef GF_ANDROID
         {   // Playback › Volume (Android; the user, 2026-11-15): the volume is Android's own music volume, in the device's steps (the
             // HiBy R4: its Volume steps); then how the volume keys show it. Line out on the R4 holds it at full: shown, not moved
@@ -1593,9 +1761,19 @@ void App::drawSettings(float x, float y, float w, float h) {
             };
             rows.push_back(segRow("Volume keys show", store.volPop ? "Android's own panel" : "Songate's own, while Songate is in front",
                                   "set.volpop", { "Songate", "Android" }, store.volPop, [this, shown](int i) { store.volPop = i; shown(); }));
-            if (!store.volPop)
+            if (!store.volPop) {
                 rows.push_back(segRow("Where", "Where it shows on the screen", "set.volwhere", { "Top", "Side", "Bottom" }, store.volWhere,
                                       [this, shown](int i) { store.volWhere = i; shown(); }));
+                // how long it stays after the last press (the user, 2026-11-17); 1.5 s as it always was
+                static const float stays[4] = { 1.f, 1.5f, 3.f, 5.f };
+                int si = 1;
+                for (int i = 0; i < 4; i++) if (std::fabs(store.volStay - stays[i]) < 0.05f) si = i;
+                rows.push_back(segRow("Stays for", "How long it shows after the last press", "set.volstay", { "1 s", "1.5 s", "3 s", "5 s" }, si,
+                                      [this](int i) {
+                                          store.volStay = stays[i];
+                                          if (store.volPop == 0) { volPopFrom_ = time; volPopUntil_ = time + stays[i]; }   // (as it now is)
+                                      }));
+            }
             rows.push_back(segRow("Volume as", store.volNum ? "0 to 100%" : "The device's steps: 0 to " + std::to_string(maxStep) + " here",
                                   "set.volnum", { "Steps", "Percent" }, store.volNum, [this, shown](int i) { store.volNum = i; shown(); }));
             pc.insert(pc.begin() + 1, Card{ "Volume", rows });
@@ -1613,24 +1791,32 @@ void App::drawSettings(float x, float y, float w, float h) {
         };
         // A ±12 dB value on a flat slider, in steps of 0.5 dB
         // curve: part of the curve (the preamp, as the bands): moved by hand it is Custom; bass and treble are global, a preset of yours keeps them
+        // (bass, treble and the preamp are Songate's own stages: greyed while another app's music is shown, which they never reach.
+        // The HiBy R4's bands are the ROM's equalizer, the whole device's, so they stay; the user, 2026-11-19)
         auto dbRow = [&](const std::string& label, const std::string& hint, const char* key, float GfbgEq::*field, bool curve = false) {
-            return Row{ label, dbText(store.eq.*field), hint, 180, [this, key, field, curve](float rx, float cy) {
+            Row r{ label, dbText(store.eq.*field), hint, 180, [this, key, field, curve](float rx, float cy) {
                            const float cur = (store.eq.*field + 12) / 24;
                            float nv = cur;
+                           const float was = g.fade();
+                           if (extApp_) g.setFade(was * 0.35f);
                            slider(uid(key), rx - setSliderW(), cy, setSliderW(), cur, &nv);
-                           if (nv != cur) {
+                           g.setFade(was);
+                           if (nv != cur && !extApp_) {
                                GfbgEq e = store.eq;
                                e.*field = std::round((nv * 24 - 12) * 2) / 2;
                                if (curve || e.preset >= GFEQ_PRESETS) gfEqKeepCustom(&e);   // (the user, 2026-11-08: the preamp did not make a Custom)
                                setEq(e);
                            }
                        } };
+            r.dim = extApp_;
+            return r;
         };
         const bool adv = store.eq.advanced != 0;
         const int own = store.eq.preset - GFEQ_PRESETS;   // ≥ 0: one of your saved presets
         const bool edited = own >= 0 && store.eq.edited;  // ... changed since it was saved
         const std::string preset = eqPresetName(store.eq.preset) + (edited ? " (edited)" : "");
-        Row onRow{ "Equalizer", "", GF_EQ_WHAT " Strong boosts lower the level a little to avoid distortion",
+        Row onRow{ "Equalizer", "", std::string(GF_EQ_WHAT " Strong boosts lower the level a little to avoid distortion") +
+                                        (r4::on() && store.bitPerfect ? ". While it is on, bit-perfect output is off" : ""),
                    40, [this](float rx, float cy) {
                        if (toggle(uid("set.eqon"), rx - 40, cy, store.eq.on != 0)) {
                            GfbgEq e = store.eq;
@@ -1681,8 +1867,8 @@ void App::drawSettings(float x, float y, float w, float h) {
             Row bands;
             // The ten bands as a curve (the user chose "A, the curve", session 20, for every device): a ground with the dB lines,
             // the curve through the points and the area to 0 dB under it; a band's value shows while it is held or picked
-            // Each band's value always shown, in a pill over the curve; held, it is typed (the user chose "A", 2026-11-15: "db info on
-            // each EQ slider", "hold the db number" to write it)
+            // Each band's value always shown, in a pill over the curve; tapped, it is typed (the user chose "A", 2026-11-15: "db info on
+            // each EQ slider"; a tap, not a hold, since 2026-11-19)
             constexpr float valH = 32;   // the values' row
             bands.blockH = 262 + valH;
             bands.block = [this](float bx, float by, float bw) {
@@ -1699,20 +1885,32 @@ void App::drawSettings(float x, float y, float w, float h) {
                     for (int i = 0; i < GFEQ_BANDS; i++) {
                         const float cx = px + col * (i + 0.5f), cw = std::min(col - 6, 46.f);
                         const Id vid = uid("set.eqval", i);
-                        ui.item(vid, { cx - cw / 2, vcy - 13, cw, 26 }, 13, Hold);
+                        const bool tapped = ui.item(vid, { cx - cw / 2, vcy - 13, cw, 26 }, 13);   // (a tap, no longer a hold: the user, 2026-11-19)
                         const bool hot = ui.pressed(vid) || (ui.focused(vid) && ui.showFocusRing());
                         const float v = store.eq.bands[i];
                         g.roundRect(cx - cw / 2, vcy - 13, cw, 26, 13, std::fabs(v) < 0.05f ? pal.text : pal.accent, hot ? 0.2f : std::fabs(v) < 0.05f ? 0.06f : 0.14f);
                         char b[8];
                         snprintf(b, sizeof b, std::fabs(v) < 0.05f ? "0" : "%+.0f", double(v));
                         g.textNumC(b, { css::Xs, Weight::SemiBold }, cx, vcy, std::fabs(v) < 0.05f ? pal.text2 : pal.accentInk, 1, Align::Center);
-                        if (ui.longPressed(vid)) {
+                        if (tapped) {
                             std::string out;
                             char hdr[40];
                             const size_t nl = strlen(names[i]);
                             if (names[i][nl - 1] == 'k') snprintf(hdr, sizeof hdr, "%.*s kHz, in dB (−12 to +12)", int(nl - 1), names[i]);
                             else snprintf(hdr, sizeof hdr, "%s Hz, in dB (−12 to +12)", names[i]);
-                            if (keyboard(hdr, b[0] == '+' ? b + 1 : b, out)) {
+                            // Songate's card (the pad upright): the band follows each key; cancelled, the EQ as it was (its preset too)
+                            const std::string ini = b[0] == '+' ? b + 1 : b;
+                            if (askKb(KbKind::Number, hdr, ini, nullptr, [this, i, ini, before = store.eq](const std::string& t) {
+                                    if (t == ini) { setEq(before); return; }
+                                    char* end = nullptr;
+                                    const double d = strtod(t.c_str(), &end);
+                                    if (end == t.c_str()) return;   // (nothing, or a minus alone: the band stays)
+                                    GfbgEq e = store.eq;
+                                    e.bands[i] = float(std::clamp(std::round(d), -12.0, 12.0));
+                                    gfEqKeepCustom(&e);
+                                    setEq(e);
+                                })) {}
+                            else if (keyboard(hdr, b[0] == '+' ? b + 1 : b, out)) {
                                 const char* s = out.c_str();
                                 while (*s == ' ' || *s == '+') s++;
                                 char* end = nullptr;
@@ -1863,20 +2061,60 @@ void App::drawSettings(float x, float y, float w, float h) {
         const std::string eqChip = store.eq.on ? "EQ " + eqPresetName(store.eq.preset) : std::string("EQ off");
         const std::string gainChip = lineOut ? (loGain ? "High line level" : "Low line level") : gainName[gain];
         const std::string filterChip = filterName[filter];
+        // What plays, as SongateOS says (output_get's active; the user, 2026-11-16, through the SongateOS session): Bluetooth
+        // headphones or a USB DAC named, with the codec and rate; what only the R4's own DAC does dimmed on the card (the
+        // headphones or the DAC decode the sound themselves), its settings still there to change, the equalizer as it is; and what
+        // else is connected, not playing, on a smaller line
+        bool btHead = false, usbHead = false;
+        std::string headWhat = what, headSub = sub, also;
+        if (sysapi::has("output")) {
+            const sysapi::Output o = sysapi::output();
+            std::string others;
+            for (const sysapi::Out& x : o.outs) {
+                if (x.id != o.active) { others += (others.empty() ? "" : ", ") + x.name; continue; }
+                if (x.kind == "bluetooth") {
+                    btHead = true;
+                    headWhat = x.name;
+                    const sysapi::Codec cd = sysapi::codec();
+                    headSub = "Bluetooth";
+                    const std::string c = cd.known && !cd.codec.empty() ? cd.codec : x.codec;
+                    if (!c.empty()) headSub += " · " + codecName(c);
+                    if (cd.known && cd.rate > 0 && cd.bits > 0) {
+                        char r[40];
+                        if (cd.rate % 1000 == 0) snprintf(r, sizeof r, " · %d kHz / %d-bit", cd.rate / 1000, cd.bits);
+                        else snprintf(r, sizeof r, " · %.1f kHz / %d-bit", cd.rate / 1000.0, cd.bits);
+                        headSub += r;
+                    }
+                } else if (x.kind == "usb_dac") {
+                    usbHead = true;
+                    headWhat = x.name;
+                    headSub = "USB DAC";
+                }
+            }
+            if (!others.empty()) also = "Also connected: " + others;
+            if (o.known && !o.connected) { headWhat = "Nothing plugged in"; headSub = "Headphones go in the 3.5 or 4.4 mm jack"; }
+        }
+        const bool away = btHead || usbHead;   // (the R4's own DAC not playing)
+        const char* awayHint = btHead ? "Not used while Bluetooth plays" : "Not used while a USB DAC plays";
         Row head;
-        head.blockH = 116;
-        head.block = [this, what, sub, gainChip, filterChip, eqChip](float bx, float by, float) {
+        head.blockH = also.empty() ? 116 : 140;
+        head.block = [this, what = headWhat, sub = headSub, gainChip, filterChip, eqChip, btHead, usbHead, away, also](float bx, float by, float) {
             g.roundRect(bx, by + 8, 60, 60, 16, pal.accent, 0.12f);
             g.glow(bx + 30, by + 38, 30, pal.glow, 0.5f);
-            g.icon(ICON_HEADPHONES, bx + 30, by + 38, 32, pal.accent);
+            g.icon(btHead ? outIcon("bluetooth") : usbHead ? outIcon("usb_dac") : ICON_HEADPHONES, bx + 30, by + 38, 32, pal.accent);
             g.text(what, { css::Xl, Weight::Bold }, bx + 76, by + 12, pal.text);
             g.text(sub, { css::Base }, bx + 76, by + 46, pal.text2);
+            if (!also.empty()) g.text(also, { css::Sm }, bx + 76, by + 72, pal.text3);
+            const float chipY = by + (also.empty() ? 84 : 108);
             float cx = bx;
+            int k = 0;
             for (const std::string& c : { gainChip, filterChip, eqChip }) {
                 const float cw = g.measure(c, { css::Sm, Weight::SemiBold }) + 24;
-                g.roundRect(cx, by + 84, cw, 28, 14, pal.text, 0.07f);
-                g.textC(c, { css::Sm, Weight::SemiBold }, cx + 12, by + 98, pal.text2);
+                const float ca = away && k < 2 ? 0.4f : 1.f;   // (dimmed: the DAC's own, not in effect now)
+                g.roundRect(cx, chipY, cw, 28, 14, pal.text, 0.07f * ca);
+                g.textC(c, { css::Sm, Weight::SemiBold }, cx + 12, chipY + 14, pal.text2, ca);
                 cx += cw + 8;
+                k++;
             }
         };
         cards.push_back({ "", { head } });
@@ -1892,10 +2130,10 @@ void App::drawSettings(float x, float y, float w, float h) {
                        if (v != balance) r4::set("balance", std::to_string(v));   // each step while dragged: the ROM eases it
                    } };
         cards.push_back({ "Sound",
-                          { segRow("Gain", "High drives harder headphones", "r4.gain", { "Low", "High" }, gain,
+                          { segRow("Gain", away ? awayHint : "High drives harder headphones", "r4.gain", { "Low", "High" }, gain,
                                    [](int i) { r4::set("gain", i ? "high" : "low"); }),
-                            segRow("Digital filter", "The DAC's filter. The difference is very slight", "r4.filter", { "Fast", "Slow", "Minimum phase" },
-                                   filter, [](int i) { r4::set("filter", filterKey[i]); }),
+                            segRow("Digital filter", away ? awayHint : "The DAC's filter. The difference is very slight", "r4.filter",
+                                   { "Fast", "Slow", "Minimum phase" }, filter, [](int i) { r4::set("filter", filterKey[i]); }),
                             balRow } });
         // Output: line out only after the question (the ROM's words); back to Headphone at once
         auto lineOutAsk = [this](bool on35) {
@@ -1918,11 +2156,45 @@ void App::drawSettings(float x, float y, float w, float h) {
                                  toggleRow("Each song at its own rate",
                                            "The 3.5 mm and 4.4 mm outputs play each song at its own rate, with a pause of two or three seconds when it changes",
                                            "r4.outrate", store.matchRate));
+        // The output switcher here too (SongateOS's output_get / output_set): first in Output, what media plays on now; Change opens
+        // the same list as the volume pop-up's line
+        if (sysapi::has("output")) {
+            const sysapi::Output o = sysapi::output();
+            const sysapi::Out* cur = nullptr;
+            for (const sysapi::Out& x : o.outs) if (x.id == o.active) cur = &x;
+            const std::string hint = cur ? cur->name + (cur->codec.empty() ? std::string() : " · " + codecName(cur->codec)) : std::string();
+            cards.back().rows.insert(cards.back().rows.begin(),
+                                     buttonRow("Plays on", hint, "r4.outpick", cur ? outIcon(cur->kind) : ICON_HEADPHONES, "Change", [this] {
+                                         outList_ = true;
+                                         outListWhere_ = -1;
+                                         outListAt_ = -1;
+                                     }));
+            // two or more connected (wired and Bluetooth at once, one plays: the user's choice): Plays on is a switch between them,
+            // the same choice as the volume pop-up's (output_set; the user, 2026-11-16, through the SongateOS session)
+            if (o.outs.size() >= 2) {
+                std::vector<std::string> opts, ids;
+                int at = 0;
+                for (const sysapi::Out& x : o.outs) {
+                    const std::string k = x.kind;
+                    if (x.id == o.active) at = int(opts.size());
+                    opts.push_back(k == "headphone_35" ? "3.5 mm" : k == "balanced_44" ? "4.4 mm" : k == "lineout_35" ? "Line out 3.5"
+                                 : k == "balanced_lineout_44" ? "Line out 4.4" : x.name);
+                    ids.push_back(x.id);
+                }
+                cards.back().rows[0] = segRow("Plays on", "", "r4.playson", opts, at, [ids, cur = o.active](int i) {
+                    if (ids[size_t(i)] != cur) sysapi::act("output_set", ids[size_t(i)], {}, "output");
+                });
+            }
+        }
         // Bit-perfect output (the user's ROM prompt and choices, 2026-11-15): each song to the DAC untouched when the output offers
         // its rate and depth (a USB DAC today, SongateOS's own outputs later), while nothing changes the sound
+        // (on, but the equalizer or levelling changes the sound: says so; the user, 2026-11-20)
+        const bool bpEq = store.bitPerfect && (store.eq.on || r4::eqOn()), bpLevel = store.bitPerfect && store.levelMode != 0;
         cards.back().rows.push_back(toggleRow("Bit-perfect output",
-                                              "Each song straight to the DAC, unchanged, while the equalizer, levelling and crossfades are off. "
-                                              "Its format's badge sparkles",
+                                              bpEq    ? "Off while the equalizer is on: it changes the sound. Turn the equalizer off to hear each song unchanged"
+                                              : bpLevel ? "Off while volume levelling is on: it changes the sound. Set Volume levelling to Off to hear each song unchanged"
+                                                        : "Each song straight to the DAC, unchanged, while the equalizer, levelling and crossfades are off. "
+                                                          "Its format's badge sparkles",
                                               "r4.bitperfect", store.bitPerfect));
         // Controls
         static const char* stepsKey[4] = { "15", "25", "50", "100" };
@@ -1980,6 +2252,8 @@ void App::drawSettings(float x, float y, float w, float h) {
               { { "", { buttonRow("Music folder", roots.empty() ? "Not chosen yet" : roots, "set.folder", ICON_FOLDER, "Change",
                                   [this] {
                                       folderFor = -1;
+                                      SDL_Log("Music folder: Change, the picker at %s%s", plat::parentDir(store.musicRoot).c_str(),
+                                              setupStep_ >= 0 ? " (the setup)" : "");
                                       navigate(View::PickFolder, -1, plat::parentDir(store.musicRoot));
                                   }),
                         infoRow("Songs", "Albums and artists come from the tags, however the folders are organised",
@@ -2083,6 +2357,29 @@ void App::drawSettings(float x, float y, float w, float h) {
                                        r.value = std::to_string(lp.read) + " of " + std::to_string(lp.total);
                                        return r;
                                    }() } } } });
+#ifdef GF_ANDROID
+    // Upright Now playing, a song with synced lyrics: after a few seconds without a touch, the line being sung under the cover in the
+    // buttons' place; a touch brings them back (the user, 2026-11-17, from a recording of a streaming app's; both ways, a choice here)
+    if (css::Phone)   // (upright only: sideways has no button row under the cover; the user, 2026-11-17)
+    sections.back().cards[0].rows.insert(sections.back().cards[0].rows.begin() + 1,
+        segRow("Under the cover",
+               store.lyrUnder == 0 ? "Off: the buttons always stay"
+               : store.lyrUnder == 1 ? "After 4 s without a touch, the line being sung in place of the buttons; a touch brings them back"
+                                     : "As This line, with the next one under it, dimmed",
+               "set.lyrunder", { "Off", "This line", "And the next" }, store.lyrUnder, [this](int i) { store.lyrUnder = i; }));
+#endif
+    // The page in titled cards (the user, 2026-11-17: "organize the lyrics page better"): General (where they show and where they come
+    // from, together), Timing, then Online below; three titled cards, so it folds, one open at a time
+    {
+        std::vector<Row> all = sections.back().cards[0].rows, show, timing, from;
+        for (const Row& r : all) {
+            if (r.label == "Lyrics in the Canvas" || r.label == "Under the cover") show.push_back(r);
+            else if (r.label == "Timing control" || r.label == "Show it for") timing.push_back(r);
+            else from.push_back(r);
+        }
+        show.insert(show.end(), from.begin(), from.end());
+        sections.back().cards = { { "General", show }, { "Timing", timing } };
+    }
     // Online (BETA 3, lyrics_online.cpp): off until turned on; what is sent, said where it is turned on
     sections.back().cards.push_back(
         { "Online",
@@ -2252,6 +2549,62 @@ void App::drawSettings(float x, float y, float w, float h) {
             controlCards.push_back({ "Pocket lock", pk });
         }
 #endif
+#ifdef GF_ANDROID
+        // The HiBy R4: its hold switch (SongateOS's hold_get / hold_set, service v45) in place of Buttons and Pointer, which it does not
+        // need: touch only (the user, 2026-11-17)
+        // (and every Android device: touch only, so no Buttons and no Pointer; the user, 2026-11-18. A phone's Controls is then empty
+        // and not listed)
+        controlCards.clear();
+        if (r4Dev_) {
+            if (sysapi::has("hold")) {
+                const sysapi::Hold h = sysapi::hold();
+                static const char* key[3] = { "media", "volume", "all" };
+                static const char* hints[3] = { "Play, pause and skip; the volume and power still work",
+                                                "Play, pause, skip and the volume; power still turns the screen on and off",
+                                                "Every button, until you slide it back" };
+                const int lv = h.level == "media" ? 0 : h.level == "all" ? 2 : 1;
+                std::vector<Row> rows = { infoRow("Hold switch", "On top of the player", !h.known ? "…" : h.locked ? "On" : "Off"),
+                                          segRow("Locks", hints[lv], "sys.holdlevel", { "Media", "Volume", "All" }, lv,
+                                                 [](int i) { sysapi::act("hold_set", "", { { "level", key[i] } }, "hold"); }),
+                                          Row{ "Sleep when locked", "", "The screen turns off as you lock and on as you unlock", 40,
+                                               [this, on = h.sleep](float rx, float cy) {
+                                                   if (toggle(uid("sys.holdsleep"), rx - 40, cy, on))
+                                                       sysapi::act("hold_set", "", { { "sleep", on ? "0" : "1" } }, "hold");
+                                               } } };
+                controlCards.push_back({ "Hold switch", rows });
+            }
+        }
+#endif
+        if (!r4Dev_) {
+#if defined(__SWITCH__) || defined(GF_PREVIEW)
+            const char* vibeHint = "The Joy-Con buzz as each key is pressed";
+#elif defined(GF_ANDROID)
+            const char* vibeHint = "A tick as each key is pressed";
+#else
+            const char* vibeHint = "The controller buzzes as each key is pressed";
+#endif
+            Card kb{ "Keyboard", { toggleRow("Key sound", "A sound as each key is pressed", "set.keysound", store.keySound),
+                                   toggleRow("Key vibration", vibeHint, "set.keyvibe", store.keyVibe) } };
+            // which sound, under Key sound while it is on (the user chose them and the words, 2026-11-18); a pick plays it
+            if (store.keySound)
+                kb.rows.insert(kb.rows.begin() + 1, segRow("Sound", "How each key sounds", "set.keysoundkind", { "Soft", "Tick", "Pop", "Clack" },
+                                                           std::clamp(store.keySoundKind, 0, 3), [this](int i) {
+                                                               store.keySoundKind = i;
+                                                               keyClickPlay(true);
+                                                           }));
+            // its strength, under it while it is on (the user, 2026-11-18)
+            if (store.keyVibe)
+                kb.rows.push_back(segRow("Strength", "How strongly, each key", "set.keyvibelevel", { "Light", "Medium", "Strong" },
+                                         std::clamp(store.keyVibeLevel, 1, 3) - 1, [this](int i) {
+                                             store.keyVibeLevel = i + 1;
+                                             keyFeedback();   // (a taste of it)
+                                         }));
+            // above Pocket lock (the user, 2026-11-18)
+            auto at = std::find_if(controlCards.begin(), controlCards.end(), [](const Card& c) { return c.kicker == "Pocket lock"; });
+            controlCards.insert(at, kb);
+        }
+        // the buttons' list last: only words, so the page opens on its first setting at the top (the user, 2026-11-20)
+        std::stable_partition(controlCards.begin(), controlCards.end(), [](const Card& c) { return c.kicker != "Buttons"; });
         sections.push_back({ "Controls", ICON_SLIDERS, controlCards });
     }
 
@@ -2306,10 +2659,101 @@ void App::drawSettings(float x, float y, float w, float h) {
         }
     }
     // Storage (the SD card: where browsers open, Files, what Gatefold keeps); Reset is its own category after Updates
+    std::vector<Row> filesRows = { toggleRow("Show hidden files", "Names that start with a dot, in Files", "set.hidden", store.showHidden) };
+#ifdef GF_ANDROID
+    // Files on the Library page held upright, between Folders and Liked (the user, 2026-11-16: its own switch here, every Android device;
+    // it was the sidebar's Files tab's, and the Sidebar card goes when the screen is held upright)
+    filesRows.push_back(Row{ "Files in Library", "", "A Files row on the Library page, held upright", 40, [this](float rx, float cy) {
+                                 const bool on = store.libFiles > 0;
+                                 if (toggle(uid("set.libfiles"), rx - 40, cy, on)) { store.libFiles = on ? 0 : 1; persistSoon(0.3f); }
+                             } });
+#endif
     sections.push_back({ "Storage", ICON_FOLDER,
                          { { "Where browsers open", folderRows },
-                           { "Files", { toggleRow("Show hidden files", "Names that start with a dot, in Files", "set.hidden", store.showHidden) } },
+                           { "Files", filesRows },
                            { "Kept " GF_ON_CARD, keptRows } } });
+#ifdef GF_ANDROID
+    // The player's own storage first (SongateOS's storage_get; the user's pick, 2026-11-16): each with its room left, a card or drive
+    // ejected (the music paused first: Songate's library may be on it) or used again; then USB (usb_get / usb_set; the user chose
+    // B: here). The R4 only
+    if (r4Dev_ && sysapi::has("storage")) {
+        const sysapi::Storage st = sysapi::storage();
+        std::vector<Row> volRows;
+        auto gb = [](long long b) {
+            const double v = double(b) / 1e9;
+            char s[24];
+            snprintf(s, sizeof s, v < 100 ? "%.1f GB" : "%.0f GB", v);
+            return std::string(s);
+        };
+        const bool anyBtn = std::any_of(st.vols.begin(), st.vols.end(), [](const sysapi::Volume& v) { return v.kind != "internal"; });
+        for (size_t i = 0; i < st.vols.size(); i++) {
+            const sysapi::Volume v = st.vols[i];
+            const bool card = v.kind != "internal", mounted = v.state == "mounted";
+            const char* kindName = v.kind == "sd" ? "microSD card" : v.kind == "usb" ? "USB drive" : "";
+            std::string sub = card && v.label != kindName ? std::string(kindName) : std::string();
+            const std::string state = mounted ? (v.total > 0 ? gb(v.free) + " free of " + gb(v.total) : std::string())
+                                    : v.state == "ejecting" ? "Ejecting…" : v.state == "checking" ? "Checking…" : std::string("Ejected");
+            if (!state.empty()) sub += (sub.empty() ? "" : " · ") + state;
+            const float used = mounted && v.total > 0 ? 1 - float(double(v.free) / double(v.total)) : -1;
+            const char* btn = !card ? nullptr : mounted ? "Eject" : v.state == "unmounted" ? "Mount" : nullptr;
+            Row r;
+            r.blockH = 64;
+            r.block = [this, v, sub, used, btn, i, anyBtn, icon = !card ? ICON_FOLDER : v.kind == "usb" ? ICON_USB : ICON_SDCARD](float bx, float by, float bw) {
+                g.icon(icon, bx + 14, by + 20, 22, pal.text2);
+                const float tx = bx + 42;
+                const Font ef{ css::Sm, Weight::SemiBold };
+                float ew = 0;
+                for (const char* t : { "Eject", "Mount" }) ew = std::max(ew, float(g.measure(t, ef)) + 32);   // (one width, either word)
+                const float room = bw - 42 - (btn ? ew + 12 : 0);
+                g.text(v.label, { css::Md, Weight::SemiBold }, tx, by + 2, pal.text, 1, Align::Left, int(room));
+                g.text(sub, { css::Sm }, tx, by + 26, pal.text3, 1, Align::Left, int(room));
+                if (used >= 0) {
+                    const float barW = bw - 42 - (anyBtn ? ew + 16 : 0);   // (every bar one length, whether its row has a button or not)
+                    g.roundRect(tx, by + 54, barW, 6, 3, pal.text, 0.12f);
+                    g.roundRectH(tx, by + 54, std::max(6.f, barW * used), 6, 3, pal.accent2, pal.accent, 1);
+                }
+                if (btn) {
+                    bool c = false;
+                    button(uid("sys.vol", int(i)), nullptr, btn, bx + bw - ew, by + 14, false, &c, false, false, 0, ew);
+                    if (c) {
+                        if (!strcmp(btn, "Eject") && isPlaying()) player.togglePause();
+                        sysapi::act(!strcmp(btn, "Eject") ? "storage_eject" : "storage_mount", v.id, {}, "storage");
+                    }
+                }
+            };
+            volRows.push_back(r);
+        }
+        if (volRows.empty()) volRows.push_back(infoRow("Internal storage", "", "…"));
+        sections.back().cards.insert(sections.back().cards.begin(), { "On this player", volRows });
+    }
+    if (r4Dev_ && sysapi::has("usb")) {
+        const sysapi::Usb u = sysapi::usb();
+        static const char* usbKey[4] = { "charge", "mtp", "ptp", "midi" };
+        static const char* usbName[4] = { "Charging", "Files", "Photos", "MIDI" };
+        std::vector<std::string> opts, keys;
+        int cur = 0;
+        for (int i = 0; i < 4; i++)
+            if (u.modes.empty() || std::find(u.modes.begin(), u.modes.end(), usbKey[i]) != u.modes.end()) {
+                if (u.mode == usbKey[i]) cur = int(opts.size());
+                opts.push_back(usbName[i]);
+                keys.push_back(usbKey[i]);
+            }
+        std::vector<Row> usbRows = { infoRow("Computer", "", !u.known ? "…" : u.connected ? "Connected" : "Not connected"),
+                                     segRow("Use it for", "", "sys.usb", opts, cur, [keys](int i) { sysapi::act("usb_set", keys[size_t(i)], {}, "usb"); },
+                                            u.connected ? 0u : 0xFFu) };   // (only with a computer connected: the service's rule)
+        auto& sc = sections.back().cards;
+        const size_t usbAt = sysapi::has("storage") ? 1 : 0;
+        sc.insert(sc.begin() + long(usbAt), { "USB", usbRows });
+        // Files right below USB (the user, 2026-11-16)
+        for (size_t k = usbAt + 1; k < sc.size(); k++)
+            if (sc[k].kicker == "Files" && k != usbAt + 1) {
+                Card f = sc[k];
+                sc.erase(sc.begin() + long(k));
+                sc.insert(sc.begin() + long(usbAt + 1), f);
+                break;
+            }
+    }
+#endif
     // Reset's buttons are one column, one width (the user, 2026-10-28: Reset sat narrower than Back up, Restore and Choose)
     float resetW = 0;
     for (const char* t : { "Back up", "Restore", "Reset", "Choose" }) resetW = std::max(resetW, float(g.measure(t, { css::Sm, Weight::SemiBold })) + 32 + 24);
@@ -2465,6 +2909,248 @@ void App::drawSettings(float x, float y, float w, float h) {
             cards.push_back({ "Automix models", mods });
         }
         cards.push_back({ "Backups", { infoRow("Before every install", "Your settings are backed up first; Settings › Reset puts them back") } });
+#ifdef GF_ANDROID
+        // SongateOS's updates: the page is the OS's alone (the user, 2026-11-18: Songate updates only with the OS, so no Songate tab,
+        // no check of its own, no APK; before, a pill between the two). The service's updater (ota_status, watched always: App::sysTick)
+        if (r4Dev_ && sysapi::has("ota")) {
+            updTab_ = 1;
+            {
+                const sysapi::Ota o = sysapi::ota();
+                auto bytes = [](long long b) {
+                    char s[32];
+                    if (b >= 1000LL * 1000 * 1000) snprintf(s, sizeof s, "%.1f GB", double(b) / 1e9);
+                    else snprintf(s, sizeof s, "%d MB", int(std::lround(double(b) / 1e6)));
+                    return std::string(s);
+                };
+                std::vector<Card> os;
+                const std::string& st = o.state;
+                const bool found = st == "available" || st == "downloading" || st == "verifying" || st == "ready" || st == "staging";
+                if (!o.known) {
+                    os.push_back({ "", { infoRow("SongateOS", "…") } });
+                } else if (st == "available") {
+                    std::string hint = bytes(o.size) + (o.prerelease ? " · a beta" : "") + " · you have " + o.current;
+                    os.push_back({ "", { buttonRow("SongateOS " + o.latest + " is out", hint, "set.ota.dl", ICON_DOWNLOAD, "Download",
+                                                   [] { sysapi::act("ota_download", "", {}, "ota"); }) } });
+                } else if (st == "downloading" || st == "verifying") {
+                    const std::string hint = bytes(o.progress) + " of " + bytes(o.size);
+                    Row dl = buttonRow("Downloading SongateOS " + o.latest, hint, "set.ota.pause", nullptr, "Pause", [] { sysapi::act("ota_cancel", "", {}, "ota"); });
+                    Row bar;
+                    bar.blockH = 18;
+                    const float f = o.size > 0 ? std::clamp(float(double(o.progress) / double(o.size)), 0.f, 1.f) : 0.f;
+                    bar.block = [this, f](float bx, float by, float bw) {
+                        g.roundRect(bx, by + 6, bw, 6, 3, pal.text, 0.12f);
+                        if (f > 0.005f) g.roundRectH(bx, by + 6, std::max(6.f, bw * f), 6, 3, pal.accent2, pal.accent);
+                    };
+                    os.push_back({ "", { dl, bar } });
+                } else if (st == "ready" || st == "staging") {
+                    // Install: the service's checks first (battery, recovery, the file: App::sysTick asks the question once they pass)
+                    os.push_back({ "", { buttonRow("SongateOS " + o.latest + " is ready", "The player restarts to install it", "set.ota.install", nullptr, "Install",
+                                                   [this, v = o.latest] { installAsked_ = v; sysapi::preflight(); }) } });
+                } else {   // idle, checking, up to date, an error
+                    std::string hint;
+                    if (st == "error" && !o.error.empty()) hint = o.error;
+                    else if (o.lastCheck > 0) {
+                        char b[64];
+                        const time_t t = time_t(o.lastCheck / 1000);
+                        strftime(b, sizeof b, "Last checked %d %b, %H:%M", localtime(&t));
+                        hint = std::string(b) + " · up to date";
+                    }
+                    const bool checking = st == "checking";
+                    os.push_back({ "", { buttonRow("SongateOS " + o.current, hint, "set.ota.check", ICON_REFRESH, checking ? "…" : "Check",
+                                                   [checking] { if (!checking) sysapi::act("ota_check", "", {}, "ota"); }) } });
+                }
+                if (o.known && !o.card && !os.empty()) {
+                    // no microSD card (service v97): updates are kept on it, so none come to the player without one; the guide says
+                    // how to update from a computer (the user chose A, a Guide button, 2026-11-19)
+                    os.front().rows.push_back(buttonRow("Updates need a microSD card", "Without one, you can update from a computer", "set.ota.card",
+                                                        ICON_SDCARD, "Guide", [] { plat::openUrl(kSongateOSGuide); }));
+                }
+                if (o.known && !o.recovery.empty() && o.recovery.rfind("ok:", 0) != 0)
+                    os.push_back({ "Recovery", { buttonRow("Not ready for updates", "The recovery changed since it was last checked", "set.ota.rec", nullptr,
+                                                           "Check it", [] { sysapi::act("power", "recovery_check", {}, "ota"); }) } });
+                if (!o.notes.empty() && !setupPane_) {
+                    // the release's notes (GitHub's Markdown: App::mdBlock), as tall as they are (wrapped to the card's text width:
+                    // the page's, less its margins); none when the service has none
+                    const float tw = (w < kNarrowList ? w : w - 300) - 2 * 48;   // (upright the page's width; sideways beside the categories)
+                    Row notes;
+                    notes.blockH = 8 + mdBlock(o.notes, 0, 0, tw, false);
+                    notes.block = [this, text = o.notes](float bx, float by, float bw) { mdBlock(text, bx, by + 4, bw, true); };
+                    os.push_back({ "What's new", { notes } });
+                }
+                (void)found;
+                if (o.known) {
+                    auto optRow = [this](const std::string& label, const std::string& hint, const char* key, bool on, const char* which) {
+                        return Row{ label, "", hint, 40, [this, key, on, which](float rx, float cy) {
+                                       if (toggle(uid(key), rx - 40, cy, on)) sysapi::act("ota_set", which, { { "value", on ? "0" : "1" } }, "ota");
+                                   } };
+                    };
+                    os.push_back({ "Options", { optRow("Check every day", "On Wi-Fi; a newer version shows here", "set.ota.auto", o.autoCheck, "auto"),
+                                                optRow("Beta versions", "New features before their release. They can be unstable", "set.ota.beta", o.beta, "beta") } });
+                    if (setupPane_)   // (the first-boot setup's Updates screen: view_setup.cpp)
+                        os.push_back({ "Setup updates", { optRow("Check for updates automatically", "On Wi-Fi, once a day", "setup.ota.auto", o.autoCheck, "auto"),
+                                                          optRow("Beta updates", "New features first. They can be unstable", "setup.ota.beta", o.beta, "beta") } });
+                } else if (setupPane_)
+                    os.push_back({ "Setup updates", { infoRow("Updates", "", "…") } });
+                // Recovery and Root, a card each after the version's (SongateOS's recovery switch, v46, and root, v47; the user chose
+                // A, 2026-11-17). Busy: what it is doing in the line; failed: the service's own words
+                {
+                    auto newer = [](const std::string& a, const std::string& b) {   // a dotted version newer than b
+                        size_t i = 0, k = 0;
+                        while (i < a.size() || k < b.size()) {
+                            long x = 0, y = 0;
+                            while (i < a.size() && isdigit(uint8_t(a[i]))) x = x * 10 + (a[i++] - '0');
+                            while (k < b.size() && isdigit(uint8_t(b[k]))) y = y * 10 + (b[k++] - '0');
+                            if (x != y) return x > y;
+                            if (i < a.size()) i++;
+                            if (k < b.size()) k++;
+                        }
+                        return false;
+                    };
+                    size_t at = std::min<size_t>(1, os.size());   // (after the version, and after What's new when there are notes)
+                    for (size_t k = 0; k < os.size(); k++) if (os[k].kicker == "What's new") at = k + 1;
+                    std::vector<Card> add;
+                    if (sysapi::has("recovery")) {
+                        const sysapi::Recovery r = sysapi::recovery();
+                        if (r.known) {
+                            auto name = [](const std::string& k) { return k == "twrp" ? std::string("TWRP") : k == "orangefox" ? std::string("OrangeFox")
+                                                                          : k == "none" ? std::string("No recovery") : std::string("Another recovery"); };
+                            const bool busy = r.state == "checking" || r.state == "downloading" || r.state == "verifying" || r.state == "switching";
+                            std::string hint = r.ready ? "Ready for SongateOS updates" : "Not ready for SongateOS updates";
+                            if (r.state == "checking") hint = "Looking for recovery packages…";
+                            else if (r.state == "downloading") {
+                                const long long size = r.installed == "twrp" ? r.foxSize : r.twrpSize;
+                                hint = size > 0 ? "Downloading… " + std::to_string(int(std::min(100.0, 100.0 * double(r.progress) / double(size)))) + "%"
+                                                : std::string("Downloading…");
+                            } else if (r.state == "verifying") hint = "Checking the package…";
+                            else if (r.state == "switching") hint = "Putting it in place…";
+                            else if (r.state == "error" && !r.error.empty()) hint = r.error;
+                            const std::string other = r.installed == "twrp" ? "orangefox" : "twrp";
+                            const std::string otherVer = other == "twrp" ? r.twrpVersion : r.foxVersion;
+                            // the one in place, Update on it when a newer build is offered (else Check); the other one's build below
+                            // with Switch (the user, 2026-11-18: "Put the update button on the first one and list orangefox build with a
+                            // button to switch")
+                            std::vector<Row> rows;
+                            const std::string title = name(r.installed) + (r.version.empty() ? std::string() : " " + r.version);
+                            const std::string mine = r.installed == "twrp" ? r.twrpVersion : r.installed == "orangefox" ? r.foxVersion : std::string();
+                            if (busy) rows.push_back(infoRow(title, hint));
+                            else if (!mine.empty() && newer(mine, r.version))
+                                rows.push_back(buttonRow(title, hint + " · " + mine + " is out", "sys.rec.update", ICON_DOWNLOAD, "Update",
+                                                         [kind = r.installed] { sysapi::act("recovery_switch", kind, {}, "recovery"); }));
+                            else
+                                rows.push_back(buttonRow(title, hint, "sys.rec.check", ICON_REFRESH, "Check",
+                                                         [] { sysapi::act("recovery_check", "", {}, "recovery"); }));
+                            if (!busy && !otherVer.empty())
+                                rows.push_back(buttonRow(name(other) + " " + otherVer, "", "sys.rec.switch", nullptr, "Switch",
+                                                         [other] { sysapi::act("recovery_switch", other, {}, "recovery"); }));
+                            add.push_back({ "Recovery", rows });
+                        } else add.push_back({ "Recovery", { infoRow("Recovery", "", "…") } });
+                    }
+                    if (sysapi::has("root")) {
+                        const sysapi::Root rt = sysapi::root();
+                        std::vector<Row> rows;
+                        if (!rt.known) rows.push_back(infoRow("Root", "", "…"));
+                        else if (rt.state == "restart")
+                            rows.push_back(buttonRow(rt.installed ? "Magisk " + rt.version : std::string("Root"), "Restart the player to finish", "sys.root.restart",
+                                                     ICON_REFRESH, "Restart now", [] { sysapi::act("power", "restart", {}, "root"); }));
+                        else if (rt.state == "checking" || rt.state == "downloading" || rt.state == "verifying" || rt.state == "installing" ||
+                                 rt.state == "removing") {
+                            const char* s = rt.state == "checking" ? "Looking for Magisk…" : rt.state == "downloading" ? "Downloading Magisk…"
+                                          : rt.state == "verifying" ? "Checking Magisk…" : rt.state == "installing" ? "Installing…" : "Removing…";
+                            rows.push_back(infoRow(rt.installed ? "Magisk " + rt.version : std::string("Root"), s));
+                        } else if (!rt.installed) {
+                            const std::string v = rt.latest;
+                            rows.push_back(buttonRow("Root", rt.state == "error" && !rt.error.empty() ? rt.error : std::string("Off"), "sys.root",
+                                                     nullptr, "Install Magisk", [this, v] {
+                                confirm(ICON_LOCK, "Updates", v.empty() ? std::string("Magisk") : "Magisk " + v, "", "Install Magisk?",
+                                        "Root apps can change anything on the player, its sound and its files too. The player restarts once when it's done. "
+                                        "Remove puts the original back.", "Install", [] { sysapi::act("root_install", "", {}, "root"); });
+                                sheet.askSafe = true;   // (an install, not a loss: the accent button, the download symbol)
+                                sheet.askYesIcon = ICON_DOWNLOAD;
+                            }));
+                        } else {
+                            const std::string v = rt.version;
+                            rows.push_back(buttonRow("Magisk " + v, rt.state == "error" && !rt.error.empty() ? rt.error : std::string("Root is on"), "sys.root",
+                                                     nullptr, "Remove", [this, v] {
+                                confirm(ICON_LOCK, "Updates", "Magisk " + v, "", "Remove Magisk?",
+                                        "The player's original start-up is put back. It restarts once when it's done.", "Remove",
+                                        [] { sysapi::act("root_remove", "", {}, "root"); });
+                            }));
+                            rows.push_back(Row{ "Keep root after updates", "", "A SongateOS update keeps Magisk", 40, [this, on = rt.keep](float rx, float cy) {
+                                                   if (toggle(uid("sys.root.keep"), rx - 40, cy, on)) sysapi::act("root_set", "", { { "keep", on ? "0" : "1" } }, "root");
+                                               } });
+                        }
+                        add.push_back({ "Root", rows });
+                    }
+                    if (sysapi::has("gapps")) {
+                        const sysapi::Gapps ga = sysapi::gapps();
+                        auto mb = [](long long b) {
+                            char s[32];
+                            snprintf(s, sizeof s, "%d MB", int(std::lround(double(b) / 1e6)));
+                            return std::string(s);
+                        };
+                        const std::string& st = ga.state;
+                        std::string which;
+                        for (const sysapi::GappsVariant& v : ga.variants) if (v.id == ga.installed) which = v.name;
+                        if (which.empty()) which = ga.installed == "core" ? "Core" : ga.installed == "basic" ? "Basic" : ga.installed;
+                        const std::string name = ga.installed.empty() ? std::string("Google apps") : "Google apps " + which;
+                        std::vector<Row> rows;
+                        const bool noCard = o.known && !o.card;   // (kept on the microSD card too: none without one)
+                        if (!ga.known) rows.push_back(infoRow("Google apps", "", "…"));
+                        else if (noCard && ga.installed.empty()) {
+                            Row r = infoRow("Google apps", "Needs a microSD card");
+                            r.dim = true;
+                            rows.push_back(r);
+                        } else if (noCard) {
+                            Row r = infoRow(name, "Needs a microSD card");
+                            r.dim = true;
+                            rows.push_back(r);
+                        }
+                        else if (st == "checking" || st == "downloading" || st == "ready" || st == "installing") {
+                            const std::string s = st == "checking" ? "Looking for Google apps…"
+                                                : st == "downloading" ? (ga.progress > 0 ? "Downloading… " + std::to_string(ga.progress) + "%" : std::string("Downloading…"))
+                                                : st == "ready" ? "Restarting into the recovery…" : "Installing…";
+                            rows.push_back(infoRow(name, s));
+                        } else if (ga.installed.empty()) {
+                            rows.push_back(infoRow("Google apps", st == "error" && !ga.error.empty() ? ga.error
+                                                                  : "Play Store and Google services. Some apps may still refuse to run on SongateOS"));
+                            static const char* const keys[] = { "sys.gapps.v0", "sys.gapps.v1", "sys.gapps.v2", "sys.gapps.v3" };
+                            for (size_t i = 0; i < ga.variants.size() && i < 4; i++) {
+                                const sysapi::GappsVariant& v = ga.variants[i];
+                                rows.push_back(buttonRow(v.name, v.summary + (v.size > 0 ? " · " + mb(v.size) : std::string()), keys[i], nullptr, "Install",
+                                                         [this, v] {
+                                    confirm(ICON_DOWNLOAD, "Updates", "Google apps " + v.name, "", "Install Google apps " + v.name + "?",
+                                            "Downloaded, then put in place from the recovery: the player restarts into it and back. Remove takes them out again.",
+                                            "Install", [id = v.id] { sysapi::act("gapps_install", id, {}, "gapps"); });
+                                    sheet.askSafe = true;   // (an install, not a loss: the accent button, the download symbol)
+                                    sheet.askYesIcon = ICON_DOWNLOAD;
+                                }));
+                            }
+                            if (ga.variants.empty())
+                                rows.push_back(buttonRow("Nothing listed yet", "", "sys.gapps.check", ICON_REFRESH, "Check",
+                                                         [] { sysapi::act("gapps_check", "", {}, "gapps"); }));
+                        } else {
+                            rows.push_back(buttonRow(name, st == "error" && !ga.error.empty() ? ga.error : ga.installedVersion, "sys.gapps", nullptr, "Remove",
+                                                     [this, name] {
+                                confirm(ICON_DOWNLOAD, "Updates", name, "", "Remove Google apps?",
+                                        "Taken out from the recovery: the player restarts into it and back. Their apps and what they keep go too.", "Remove",
+                                        [] { sysapi::act("gapps_remove", "", {}, "gapps"); });
+                            }));
+                            rows.push_back(Row{ "Keep Google apps after updates", "", "A SongateOS update keeps them", 40, [this, on = ga.keep](float rx, float cy) {
+                                                   if (toggle(uid("sys.gapps.keep"), rx - 40, cy, on))
+                                                       sysapi::act("gapps_set", "keep", { { "value", on ? "0" : "1" } }, "gapps");
+                                               } });
+                        }
+                        add.push_back({ "Google apps", rows });
+                    }
+                    if (!add.empty()) {   // (the old Recovery card's line is part of this one now)
+                        for (size_t k = 0; k < os.size(); k++) if (os[k].kicker == "Recovery") { os.erase(os.begin() + long(k)); break; }
+                        os.insert(os.begin() + long(std::min(at, os.size())), add.begin(), add.end());
+                    }
+                }
+                cards = os;
+            }
+        }
+#endif
         sections.push_back({ "Updates", ICON_DOWNLOAD, cards });
     }
     // Reset: the backups (made by hand, before each install, before a restore) are listed here and put back from here,
@@ -2567,94 +3253,6 @@ void App::drawSettings(float x, float y, float w, float h) {
                             infoRow("Playing", "Its format only, never its name", playing),
                             infoRow("Library", "", std::to_string(lib.tracks.size()) + " tracks") } });
         sections.push_back({ "Support", ICON_HELP, cards });
-    }
-
-    // Last.fm (lastfm.hpp, view_lastfm.cpp): off until allowed, as Updates; a tab of its own, after Devices (the user, 2026-10-31)
-    {
-        std::vector<Card> cards;
-        const Lastfm::View lf = lastfm.view();
-        std::vector<Row> top;
-        if (Lastfm::available()) {
-            Row onRow{ "Last.fm", "", store.lastfm ? "Songate tells Last.fm what you play, and nothing else"
-                                                   : lf.signedIn ? "Off: nothing is sent, and you stay signed in"
-                                                                 : "Off: nothing is sent. Turned on, Songate asks you first, then you sign in",
-                       40, [this](float rx, float cy) {
-                           if (toggle(uid("set.lfon"), rx - 40, cy, store.lastfm)) {
-                               if (store.lastfm) {
-                                   store.lastfm = false;
-                                   lastfm.cancelSignIn();
-                                   persistSoon(0.3f);
-                                   toast("Last.fm off: nothing is sent");
-                               } else {
-                                   allowLastfm();
-                               }
-                           }
-                       } };
-            onRow.focus = uid("set.lfon");
-            top.push_back(onRow);
-        } else {
-            top.push_back(infoRow("Last.fm cannot be used in this build", "This build was made without Songate's Last.fm key"));
-        }
-        cards.push_back({ "", top });
-        if (Lastfm::available() && store.lastfm) {
-            if (lf.sign == Lastfm::Sign::Asking) {
-                cards.push_back({ "Sign in", { infoRow("Asking Last.fm…", "") } });
-            } else if (lf.sign == Lastfm::Sign::Waiting) {
-                std::vector<Row> in;
-                const int left = std::max(1, int((lf.expires - int64_t(std::time(nullptr))) / 60));
-                const std::string minutes = "It works for the next " + std::to_string(left) + (left == 1 ? " minute." : " minutes.");
-#ifdef GF_WINDOWED
-                if (lfmOpened != lf.url) {
-                    lfmOpened = lf.url;
-                    plat::openUrl(lf.url);
-                }
-                in.push_back(buttonRow("Allow Songate in your browser", "Last.fm opened there. Sign in, and allow Songate. This page moves on by itself once you have. " + minutes,
-                                       "set.lfopen", ICON_REFRESH, "Open it again", [url = lf.url] { plat::openUrl(url); }));
-#else
-                Row qr{ "", "", "", 0, nullptr };
-                qr.blockH = 288;
-                qr.block = [this, minutes](float bx, float by, float) {
-                    int side = 0;
-                    SDL_Texture* t = lastfmCode(side);
-                    constexpr float kMost = 268;
-                    const float cell = side > 0 ? std::max(1.f, std::floor(kMost / float(side))) : 1, s = float(side) * cell;
-                    if (t) g.image(t, bx + 12, by + 10, s, s, 0);
-                    const float tx = bx + 12 + kMost + 32;
-                    g.text("Scan this with your phone", { css::Lg, Weight::SemiBold }, tx, by + 40, pal.text, 1);
-                    g.text("Last.fm opens there. Sign in, and allow Songate.", { css::Md }, tx, by + 84, pal.text2, 1);
-                    g.text("This page moves on by itself once you have.", { css::Md }, tx, by + 112, pal.text2, 1);
-                    g.text(minutes, { css::Sm }, tx, by + 156, pal.text3, 1);
-                };
-                in.push_back(qr);
-#endif
-                if (lfmShowUrl) in.push_back(infoRow("The address", lf.url));
-                else in.push_back(buttonRow("Having trouble?", "Open the same page on any device", "set.lfurl", nullptr, "Show the address", [this] { lfmShowUrl = true; }));
-                in.push_back(buttonRow("Stop signing in", "", "set.lfstop", ICON_X, "Cancel", [this] {
-                    lastfm.cancelSignIn();
-                    lfmShowUrl = false;
-                }));
-                cards.push_back({ "Sign in", in });
-            } else if (!lf.signedIn) {
-                const std::string hint = !lf.error.empty() ? "Last try: " + lf.error
-                                       : lf.lapsed ? "Last.fm no longer takes this sign-in. What is waiting stays here until you sign in again"
-                                                   : "On Last.fm's own page. Your password is never typed into Songate";
-                cards.push_back({ "Account", { buttonRow(lf.lapsed ? "Sign in again" : "Sign in to Last.fm", hint, "set.lfsign", ICON_MUSIC, "Sign in", [this] {
-                    lfmShowUrl = false;
-                    lastfm.signIn();
-                }) } });
-            } else {
-                cards.push_back({ "Account", { infoRow("Signed in as", "", lf.user),
-                                               buttonRow("Sign out", "What is waiting stays here until you sign in again", "set.lfout", ICON_X, "Sign out", [this] {
-                                                   lastfm.signOut();
-                                                   toast("Signed out of Last.fm");
-                                               }) } });
-                cards.push_back({ "Sending", { toggleRow("Scrobbling", "Each tagged song, after half of it or 4 minutes", "set.lfscrob", store.lastfmScrobble),
-                                               toggleRow("Now playing", "Shows the song on your Last.fm profile while it plays", "set.lfnow", store.lastfmNow) } });
-            }
-            if (lf.signedIn || lf.lapsed || lf.waiting > 0)
-                cards.push_back({ "Waiting", { infoRow("Waiting to be sent", lf.status.empty() ? "Sent oldest first, as soon as Last.fm can be reached" : lf.status, std::to_string(lf.waiting)) } });
-        }
-        sections.push_back({ "Last.fm", ICON_MUSIC, cards });
     }
 
     // Devices: other Songates, paired and synced (connect.hpp, view_connect.cpp): off until allowed
@@ -3032,7 +3630,8 @@ void App::drawSettings(float x, float y, float w, float h) {
             g.icon(ICON_BRAND_ARCH, bx + 30, by + 38, 34, pal.accent);
             g.icon(ICON_BRAND_NOTE, bx + 30, by + 38, 34, note);
 
-            g.text("Songate for " GF_PLATFORM, { css::Xl, Weight::Bold }, bx + 76, by + 12, pal.text);
+            // (the R4: SongateOS, the system it is; This player has no SongateOS row: the user, 2026-11-19)
+            g.text(r4Dev_ ? "SongateOS" : "Songate for " GF_PLATFORM, { css::Xl, Weight::Bold }, bx + 76, by + 12, pal.text);
             g.text("Version " GF_VERSION, { css::Base }, bx + 76, by + 46, pal.text2);
             g.text("by AndryTheBeast", { css::Sm }, bx + 76, by + 68, pal.text3);   // (its own line: upright it ran off the side)
         };
@@ -3051,7 +3650,6 @@ void App::drawSettings(float x, float y, float w, float h) {
                     infoRow("SDL 2", "Graphics, sound, fonts and images: SDL, SDL_mixer, SDL_ttf, SDL_image. zlib licence"),
                     infoRow("libFLAC, mpg123, Opus, Tremor", "SDL_mixer's decoders, for a file FFmpeg cannot open. BSD and LGPL licences"),
                     infoRow("libcurl and zlib", "Updates: the connection to GitHub, over " GF_THE_CONSOLE "'s own secure connection. curl and zlib licences"),
-                    infoRow("QR Code generator", "The Last.fm sign-in code. © Project Nayuki, MIT licence"),
                     infoRow("Monocypher", "The encryption between your devices. © Loup Vaillant and contributors, BSD or CC0 licence"),
                     infoRow("libjpeg-turbo and stb_image", "Covers, decoded quickly. libjpeg-turbo's IJG and BSD licences; stb_image, public "
                                                            "domain or MIT"),
@@ -3070,13 +3668,48 @@ void App::drawSettings(float x, float y, float w, float h) {
                                                  "the overlay is built on sys-tune's, with libultrahand (GPL 2)")
 #endif
                   } } } });
+#ifdef GF_ANDROID
+        // The player, after Songate's own (SongateOS's about; the user chose A, 2026-11-16: one card). Nothing personal: the service
+        // gives no serial. The R4 only
+        if (r4Dev_ && sysapi::has("about")) {
+            const sysapi::About ab = sysapi::about();
+            std::vector<Row> rows;
+            if (ab.known) {
+                if (!ab.device.empty()) rows.push_back(infoRow("Device", "", ab.device));
+                if (!ab.android.empty()) {
+                    std::string h = ab.patch.empty() ? std::string() : "Security update " + ab.patch;
+                    if (!ab.vendorPatch.empty()) h += (h.empty() ? "" : " · ") + std::string("HiBy's ") + ab.vendorPatch;
+                    rows.push_back(infoRow("Android", h, ab.android));
+                }
+                if (!ab.build.empty()) rows.push_back(infoRow("Build", ab.build));
+                if (!ab.kernel.empty()) rows.push_back(infoRow("Kernel", ab.kernel));
+                // (the recovery as the updater reads it, "ok:TWRP" or "changed:TWRP:…": its name)
+                if (const size_t c = ab.recovery.find(':'); c != std::string::npos) {
+                    const std::string name = ab.recovery.substr(c + 1, ab.recovery.find(':', c + 1) - c - 1);
+                    if (!name.empty()) rows.push_back(infoRow("Recovery", "", name));
+                }
+                if (!ab.service.empty()) rows.push_back(infoRow("Settings service", "", ab.service));
+                if (ab.ram > 0) rows.push_back(infoRow("Memory", "", std::to_string(int(std::lround(double(ab.ram) / (1024.0 * 1024 * 1024)))) + " GB"));
+                if (ab.battery >= 0) {
+                    char t[24];
+                    snprintf(t, sizeof t, "%.1f °C", ab.batteryTemp / 10.0);
+                    const std::string st = ab.batteryStatus == "charging" ? "Charging · " : ab.batteryStatus == "full" ? "Full · " : "";
+                    rows.push_back(infoRow("Battery", st + t, std::to_string(ab.battery) + "%"));
+                }
+            } else rows.push_back(infoRow("Device", "", "…"));
+            sections.back().cards.insert(sections.back().cards.begin() + 1, { "This player", rows });
+        }
+#endif
     }
 #ifdef GF_ANDROID
     // Home screen (the user, 2026-11-13: "turn songate into kinda of a launcher ... an awesome feature for people that have DAPs
     // like the hiby and don't want to see the android OS"). Android's own word is the truth (plat::homeHeld, asked once a second
     // while Settings is open): the switch asks Android, which asks the user in its own dialog. While Songate is the home screen
     // the device's other apps are listed here, Android's Settings among them: the way out of Songate.
-    {
+    // The HiBy R4: no Home screen page (the user, 2026-11-16: Songate is its only launcher, the app drawer always on). The section
+    // stays, empty and not listed, so the categories keep their numbers (SetFirst); hidden apps come back from the Apps page's menu
+    if (r4Dev_) sections.push_back({ "Home screen", ICON_HOMESCREEN, {} });
+    else {
         const bool held = homeHeld();
         Row sw{ "Use Songate as the home screen", "",
                 "Songate opens when the device starts and at the home button. For players used only for music", 40,
@@ -3104,6 +3737,47 @@ void App::drawSettings(float x, float y, float w, float h) {
         sections.push_back({ "Home screen", ICON_HOMESCREEN, { { "", homeRows } } });
     }
 #endif
+#ifdef GF_ANDROID
+    // Other apps' music (the user's mock-up, 2026-11-18): a card of Playback's
+    {
+        auto pb = std::find_if(sections.begin(), sections.end(), [](const Section& s) { return std::string(s.name) == "Playback"; });
+        if (pb != sections.end()) {
+            // the HiBy R4: headphones in start the music (the user, 2026-11-20), under Stop after the current song
+            if (r4Dev_ && !pb->cards.empty() && pb->cards[0].rows.size() >= 2)
+                pb->cards[0].rows.insert(pb->cards[0].rows.begin() + 2,
+                                         toggleRow("Play when plugged in", "Plugging headphones into either jack starts the music where it is",
+                                                   "set.playonplug", store.playOnPlug));
+            const bool allowed = plat::otherAllowed();
+            Row note;   // (the rule, under the switch)
+            note.blockH = 40;
+            note.block = [this](float bx, float by, float bw) {
+                float ly = by + 4;
+                for (const auto& l : g.wrap("Songate's own music always comes first: another app shows only while Songate is paused", { css::Sm }, int(bw), 2)) {
+                    g.text(l, { css::Sm }, bx, ly, pal.text3);
+                    ly += 18;
+                }
+            };
+            // the bars for another app's music (the user chose B, 2026-11-19): on, Android's audio recording permission asked
+            const Row specRow{ "Spectrum for other apps", "", "Songate hears what they play, for the bars only. Android asks to allow audio recording", 40,
+                               [this](float rx, float cy) {
+                                   if (!toggle(uid("set.otherspec"), rx - 40, cy, store.otherSpectrum)) return;
+                                   if (store.otherSpectrum) {
+                                       store.otherSpectrum = false;
+                                       store.otherSpecAsked = true;
+                                       persistSoon(0.3f);
+                                   } else otherSpecAllow();
+                               } };
+            // between Sleep and Closing Songate (the user, 2026-11-19), else at the end
+            auto closing = std::find_if(pb->cards.begin(), pb->cards.end(), [](const Card& c) { return c.kicker == GF_BG_CARD; });
+            pb->cards.insert(closing, { "Other apps", { toggleRow("Show other apps' music", "What another app plays shows in Songate, with its controls", "set.otherapps",
+                                                                   store.otherApps),
+                                                         specRow,
+                                                         buttonRow("Notification access", allowed ? "Allowed: Songate reads only what plays" : "Android asks once; Songate reads only what plays",
+                                                                   "set.otheraccess", nullptr, allowed ? "Change" : "Allow", [] { plat::otherAccess(); }),
+                                                         note } });
+        }
+    }
+#endif
     // Storage goes with Library (your music, then where it and Gatefold's own files are): built later, placed after it
     {
         auto st = std::find_if(sections.begin(), sections.end(), [](const Section& s) { return std::string(s.name) == "Storage"; });
@@ -3124,9 +3798,8 @@ void App::drawSettings(float x, float y, float w, float h) {
             sections.insert(up, std::move(s));
         }
     }
-    // Devices and Last.fm after Controls: what you use above, the upkeep from Reset down (the user, 2026-10-31), as App::SetDevices and
-    // SetLastfm number them
-    for (const char* name : { "Devices", "Last.fm" }) {
+    // Devices after Controls: what you use above, the upkeep from Reset down (the user, 2026-10-31), as App::SetDevices numbers it
+    for (const char* name : { "Devices" }) {
         auto cn = std::find_if(sections.begin(), sections.end(), [&](const Section& s) { return std::string(s.name) == name; });
         if (cn != sections.end()) {
             Section s = std::move(*cn);
@@ -3147,16 +3820,431 @@ void App::drawSettings(float x, float y, float w, float h) {
     int r4Pages = 0;
     if (soundDac.name) { sections.push_back(soundDac); r4Pages++; }
     if (!r4LedCards.empty()) { sections.push_back({ "Status LED", ICON_LED, r4LedCards }); r4Pages++; }
+#ifdef GF_ANDROID
+    // SongateOS's system pages (session 21, phase 1; the SongateOS session's system API, sysapi.hpp): Connectivity (Wi-Fi and
+    // Bluetooth, one page, a pill between them: the user, 2026-11-16) and System (update, power). The R4 only. A part the service
+    // does not offer (an older one), or refuses Songate, opens Android's own page instead.
+    if (r4Dev_) {
+        // a network's signal: four bars, as many lit as it has (0..4)
+        auto bars = [this](float rx, float cy, int level) {
+            for (int b = 0; b < 4; b++) {
+                const float h = 5.f + b * 3.f;
+                g.roundRect(rx + b * 5.f, cy + 7 - h, 3, h, 1.5f, pal.text, b < level ? 0.85f : 0.18f);
+            }
+        };
+        // the buttons down the right of Wi-Fi's page, one width (Forget, Connect, Open, Add); Bluetooth's two columns likewise
+        // (the user, 2026-11-16: "they are in the same column so it stays consistent")
+        const Font bf{ css::Sm, Weight::SemiBold };
+        float wifiBtnW = float(g.measure("Add", bf)) + 32 + 24;
+        for (const char* t : { "Forget", "Connect", "Open" }) wifiBtnW = std::max(wifiBtnW, float(g.measure(t, bf)) + 32);
+        float btCol1 = 0, btCol2 = 0;
+        for (const char* t : { "Disconnect", "Connect" }) btCol1 = std::max(btCol1, float(g.measure(t, bf)) + 32);
+        for (const char* t : { "Forget", "Look", "Stop", "Pair" }) btCol2 = std::max(btCol2, float(g.measure(t, bf)) + 32);
+        auto netRow = [this, bars, wifiBtnW](const std::string& ssid, const std::string& hint, int level, bool lock, const char* key, const char* btn,
+                                             std::function<void()> act) {
+            const float bw = wifiBtnW;
+            Row r{ ssid, "", hint, 22 + 14 + 18 + 12 + bw, [this, bars, level, lock, key, btn, bw, act](float rx, float cy) {
+                      const float bx = rx - bw - 12 - 18;
+                      if (level >= 0) bars(bx, cy, level);
+                      if (lock) g.icon(ICON_LOCK, bx - 12, cy, 14, pal.text3);
+                      bool c = false;
+                      button(uid(key), nullptr, btn, rx - bw, cy - 17, false, &c, false, false, 0, bw);
+                      if (c && act) act();
+                  } };
+            r.focus = uid(key);
+            return r;
+        };
+        auto onRow = [this](const std::string& label, const std::string& hint, const char* key, bool on, const char* method, const char* area) {
+            return Row{ label, "", hint, 40, [this, key, on, method, area](float rx, float cy) {
+                           if (toggle(uid(key), rx - 40, cy, on)) sysapi::act(method, "", { { "value", on ? "0" : "1" } }, area);
+                       } };
+        };
+        // ---- Wi-Fi
+        std::vector<Card> wifi;
+        if (!sysapi::has("wifi")) {
+            wifi.push_back({ "", { buttonRow("Wi-Fi", "Open in Android settings", "sys.wifi.android", nullptr, "Open", [] { plat::sysOpen("wifi"); }) } });
+        } else {
+            const sysapi::Wifi w = sysapi::wifi();
+            wifi.push_back({ "", { onRow("Wi-Fi", "", "sys.wifion", w.enabled, "wifi_set_enabled", "wifi") } });
+            if (w.enabled) {
+                // joining a network: a saved one at once, an open one at once, else its password on Songate's own card, as dots,
+                // passed once to the service and kept nowhere (the API's rule); again after a wrong one (ask: the password asked anyway)
+                auto connectTo = [this](const sysapi::Net& n, bool ask) {
+                    const bool open = n.security == "open" || n.security == "owe";
+                    joinSsid_ = n.ssid;
+                    if (n.saved && !ask) { sysapi::act("wifi_connect_saved", n.key, {}, "wifi"); return; }
+                    if (open) { sysapi::act("wifi_connect", "", { { "ssid", n.ssid }, { "security", n.security }, { "hidden", "0" } }, "wifi"); return; }
+                    askName(("Password for " + n.ssid).c_str(), "", [n](const std::string& pw) {
+                        if (pw.empty()) return;
+                        sysapi::act("wifi_connect", "", { { "ssid", n.ssid }, { "security", n.security.empty() ? "psk" : n.security }, { "password", pw },
+                                                          { "hidden", "0" } }, "wifi");
+                    }, true);
+                };
+                // the network in use (or being joined): its state in its line; Forget asks first (the API's rule); after a failure,
+                // Connect again (a wrong password asked anew)
+                const bool joining = w.link == "connecting" || w.link == "authenticating" || w.link == "obtaining_ip";
+                const bool failed = w.link == "failed";
+                if (w.hasCur || joining || failed) {
+                    sysapi::Net n = w.cur;
+                    if (!w.hasCur) {   // (no network in use yet: the one being joined, from the list by its name)
+                        n.ssid = joinSsid_;
+                        for (const sysapi::Net& x : w.nets) if (x.ssid == joinSsid_) n = x;
+                    }
+                    const std::string state = joining ? std::string("Connecting…")
+                                            : failed ? (w.fail == "wrong_password" ? std::string("Wrong password") : std::string("Not connected"))
+                                                     : "Connected" + (n.ip.empty() ? std::string() : " · " + n.ip);
+                    const bool lock = n.security != "open" && n.security != "owe" && !n.security.empty();
+                    if (failed)
+                        wifi.push_back({ "Connected", { netRow(n.ssid, state, n.level, lock, "sys.wifi.cur", "Connect",
+                                                               [connectTo, n, wrong = w.fail == "wrong_password"] { connectTo(n, wrong); }) } });
+                    else
+                        wifi.push_back({ "Connected", { netRow(n.ssid, state, n.level, lock, "sys.wifi.cur", "Forget", [this, n] {
+                                                               if (n.key.empty()) return;
+                                                               confirm(ICON_WIFI, "Connectivity", n.ssid, "", "Forget this network?",
+                                                                       "The player stops joining it by itself.", "Forget",
+                                                                       [key = n.key] { sysapi::act("wifi_forget", key, {}, "wifi"); });
+                                                           }) } });
+                }
+                std::vector<Row> nets;
+                for (size_t i = 0; i < w.nets.size(); i++) {
+                    const sysapi::Net n = w.nets[i];
+                    if ((joining || failed) && !w.hasCur && n.ssid == joinSsid_) continue;   // (shown above, as the one being joined)
+                    const bool open = n.security == "open" || n.security == "owe";
+                    const std::string hint = n.saved ? "Saved" : open ? "Open" : "";
+                    // (enterprise and WEP networks: the service cannot join them (unsupported): Android's own page, where they can)
+                    const bool android = n.security == "eap" || n.security == "wep";
+                    if (android)
+                        nets.push_back(netRow(n.ssid, "Open in Android settings", n.level, true, uidKey("sys.wifi.n", int(i)), "Open",
+                                              [] { plat::sysOpen("wifi"); }));
+                    else
+                        nets.push_back(netRow(n.ssid, hint, n.level, !open, uidKey("sys.wifi.n", int(i)), "Connect", [connectTo, n] { connectTo(n, false); }));
+                }
+                nets.push_back(buttonRow("Add a hidden network", "One that does not show its name", "sys.wifi.hidden", ICON_PLUS, "Add", [this] {
+                    askName("The network's name", "", [this](std::string ssid) {
+                        while (!ssid.empty() && ssid.back() == ' ') ssid.pop_back();
+                        if (ssid.empty()) return;
+                        joinSsid_ = ssid;
+                        askName(("Password for " + ssid).c_str(), "", [ssid](const std::string& pw) {   // (none: an open network)
+                            sysapi::act("wifi_connect", "", { { "ssid", ssid }, { "security", pw.empty() ? "open" : "psk" }, { "password", pw }, { "hidden", "1" } }, "wifi");
+                        }, true);
+                    });
+                }, false, wifiBtnW));
+                wifi.push_back({ "Networks", nets });
+            }
+        }
+        // ---- Bluetooth
+        std::vector<Card> bt;
+        if (!sysapi::has("bt")) {
+            bt.push_back({ "", { buttonRow("Bluetooth", "Open in Android settings", "sys.bt.android", nullptr, "Open", [] { plat::sysOpen("bluetooth"); }) } });
+        } else {
+            const sysapi::Bt b = sysapi::bt();
+            bt.push_back({ "", { onRow("Bluetooth", b.name.empty() ? std::string() : "Other devices see this player as " + b.name, "sys.bton", b.enabled,
+                                       "bt_set_enabled", "bt") } });
+            if (b.enabled) {
+                std::vector<Row> paired, found;
+                int k = 0;
+                for (const sysapi::BtDev& d : b.devs) {
+                    const std::string addr = d.address, name = d.name;
+                    if (d.bonded) {
+                        const std::string hint = d.connected ? "Connected" + (d.battery >= 0 ? " · Battery " + std::to_string(d.battery) + "%" : std::string())
+                                                             : std::string("Not connected");
+                        Btn c1{ uidKey("sys.bt.c", k), nullptr, d.connected ? "Disconnect" : "Connect",
+                                [addr, on = d.connected] { sysapi::act(on ? "bt_disconnect" : "bt_connect", addr, {}, "bt"); } };
+                        c1.w = btCol1;
+                        Btn c2{ uidKey("sys.bt.f", k), nullptr, "Forget", [this, addr, name] {
+                                   confirm(ICON_BLUETOOTH, "Connectivity", name, "", "Forget this device?", "To use it again, pair it again.", "Forget",
+                                           [addr] { sysapi::act("bt_unpair", addr, {}, "bt"); });
+                               } };
+                        c2.w = btCol2;
+                        paired.push_back(buttonsRow(name, hint, { c1, c2 }));
+                    } else {
+                        const char* kind = d.kind == "headphones" ? "Headphones" : d.kind == "speaker" ? "Speaker" : "";
+                        found.push_back(buttonRow(name, kind, uidKey("sys.bt.p", k), nullptr, "Pair", [addr] { sysapi::act("bt_pair", addr, {}, "bt"); },
+                                                  false, btCol2));
+                    }
+                    k++;
+                }
+                // The connected headphones' own card (phase 2; the user chose A, 2026-11-16): earbuds the service controls (battery,
+                // noise control, wind) and, for any headphones, the codec. Read when the page opens (each earbuds call takes a second)
+                const sysapi::BtDev* on = nullptr;
+                for (const sysapi::BtDev& d : b.devs) if (d.connected && d.bonded) { on = &d; break; }
+                std::vector<Row> hp;
+                const sysapi::Earbuds eb = sysapi::earbuds();
+                if (on && sysapi::has("earbuds") && eb.known && eb.supported) {
+                    // Battery: a tile each for the left bud, the right one and the case, its icon, a battery filled to its level and the
+                    // level (the user, 2026-11-19, every earbuds card). The case: live while it reports (a bud in it, the lid open),
+                    // else its last level (no age: the user); left out when never seen
+                    struct Tile { const char* icon; const char* name; int pct; bool charging; };
+                    std::vector<Tile> tiles;
+                    if (eb.batteryL >= 0) tiles.push_back({ ICON_BUD_L, "Left", eb.batteryL, eb.chargingL });
+                    if (eb.batteryR >= 0) tiles.push_back({ ICON_BUD_R, "Right", eb.batteryR, eb.chargingR });
+                    if (eb.batteryCase >= 0) tiles.push_back({ ICON_BUDCASE, "Case", eb.batteryCase, eb.chargingCase });
+                    else if (eb.batteryCaseLast >= 0) tiles.push_back({ ICON_BUDCASE, "Case", eb.batteryCaseLast, false });
+                    if (!tiles.empty()) {
+                        Row bat;
+                        bat.blockH = 120;   // (no "Battery" over it: the glyphs say it; the user, 2026-11-19)
+                        bat.block = [this, tiles](float bx, float by, float bw) {
+                            const float gap = 8, tw = (bw - gap * 2) / 3, ty = by + 8, th = 104;
+                            for (size_t i = 0; i < tiles.size(); i++) {
+                                const Tile& t = tiles[i];
+                                const float n = float(tiles.size()), x0 = bx + (bw - (n * tw + (n - 1) * gap)) / 2;   // (two: centred)
+                                const float tx = x0 + float(i) * (tw + gap), cx = tx + tw / 2;
+                                g.roundRect(tx, ty, tw, th, 12, pal.text, 0.05f);
+                                g.icon(t.icon, cx, ty + 22, 26, pal.text);
+                                // the battery: an outline, its nub, the fill to its level (the accent; under 20% red; charging green
+                                // with a bolt)
+                                const float bwid = 30, bh = 14, bl = cx - bwid / 2 - 1, bt = ty + 46;
+                                const Rgb fill = t.charging ? Rgb{ 0.42f, 0.82f, 0.52f } : t.pct < 20 ? dangerInk() : pal.accent;
+                                g.roundStroke(bl, bt, bwid, bh, 3.5f, 1.3f, pal.text2, 1);
+                                g.roundRect(bl + bwid + 1.5f, bt + bh / 2 - 3, 2.5f, 6, 1, pal.text2);
+                                const float fw = std::max(2.f, (bwid - 5) * std::clamp(t.pct, 0, 100) / 100.f);
+                                g.roundRect(bl + 2.5f, bt + 2.5f, fw, bh - 5, 2, fill);
+                                if (t.charging) g.icon(ICON_BOLT, cx, bt + bh / 2, 11, pal.bg);
+                                g.textNumC(std::to_string(t.pct) + "%", { css::Sm, Weight::SemiBold }, cx, ty + 74, pal.text, 1, Align::Center);
+                                g.textC(t.name, { css::Xs }, cx, ty + 92, pal.text3, 1, Align::Center);
+                            }
+                        };
+                        hp.push_back(bat);
+                    }
+                    if (eb.kind == "galaxybuds") {
+                        // Galaxy Buds (the SongateOS session's request, 2026-11-19; the user chose B, step buttons: each tap one change, as
+                        // the Buds4 Pro drop the connection when settings come too fast): Off, Cancelling, Ambient; Cancelling's
+                        // strength, Ambient's volume; Conversation detection and how soon it goes back; noise control with one bud
+                        static const char* gxKey[3] = { "off", "anc", "ambient" };
+                        static const char* gxName[3] = { "Off", "Cancelling", "Ambient" };
+                        std::vector<std::string> opts;
+                        std::vector<int> idx;
+                        int cur = 0;
+                        for (int i = 0; i < 3; i++)
+                            if (eb.modes.empty() || std::find(eb.modes.begin(), eb.modes.end(), gxKey[i]) != eb.modes.end()) {
+                                if (eb.mode == gxKey[i]) cur = int(opts.size());
+                                opts.push_back(gxName[i]);
+                                idx.push_back(i);
+                            }
+                        hp.push_back(segRow("Noise control", "", "sys.eb.mode", opts, cur, [idx](int i) { sysapi::earbudsSet({ { "mode", gxKey[idx[size_t(i)]] } }); }));
+                        if (eb.mode == "anc") {   // 0 Low … 2 High (their own default)
+                            const int top = eb.ancLevelMax > 0 ? eb.ancLevelMax : 2;
+                            if (top == 2)
+                                hp.push_back(segRow("Cancelling strength", "", "sys.eb.gxanc", { "Low", "Medium", "High" }, std::clamp(eb.ancLevel, 0, 2),
+                                                    [](int i) { sysapi::earbudsSet({ { "anc_level", std::to_string(i) } }); }));
+                        } else if (eb.mode == "ambient" && eb.ambientLevel >= 0) {   // 0 … 4, shown 1 … 5
+                            const int top = eb.ambientLevelMax > 0 ? eb.ambientLevelMax : 4;
+                            std::vector<std::string> steps;
+                            for (int i = 0; i <= top; i++) steps.push_back(std::to_string(i + 1));
+                            hp.push_back(segRow("Ambient volume", "", "sys.eb.gxamb", steps, std::clamp(eb.ambientLevel, 0, top),
+                                                [](int i) { sysapi::earbudsSet({ { "ambient_level", std::to_string(i) } }); }));
+                        }
+                        if (!eb.conversation.empty()) {
+                            const bool conv = eb.conversation == "1";
+                            hp.push_back(Row{ "Conversation detection", "", "Switches to Ambient sound while you talk", 40, [this, conv](float rx, float cy) {
+                                                  if (toggle(uid("sys.eb.conv"), rx - 40, cy, conv)) sysapi::earbudsSet({ { "conversation", conv ? "0" : "1" } });
+                                              } });
+                            if (conv) {
+                                static const int secs[3] = { 5, 10, 15 };
+                                int t = 1;
+                                for (int i = 0; i < 3; i++) if (eb.conversationTimeout == secs[i]) t = i;
+                                hp.push_back(segRow("Back after", "", "sys.eb.gxconvt", { "5 s", "10 s", "15 s" }, t,
+                                                    [](int i) { sysapi::earbudsSet({ { "conversation_timeout", std::to_string(secs[i]) } }); }));
+                            }
+                        }
+                        if (!eb.oneBud.empty())
+                            hp.push_back(Row{ "Noise control with one earbud", "", "Cancelling and Ambient with only one earbud in", 40,
+                                              [this, one = eb.oneBud == "1"](float rx, float cy) {
+                                                  if (toggle(uid("sys.eb.gxone"), rx - 40, cy, one)) sysapi::earbudsSet({ { "one_bud", one ? "0" : "1" } });
+                                              } });
+                    } else if (eb.kind == "airpods") {
+                        // AirPods (the user approved the mock-up, 2026-11-19): their four noise modes and Conversation awareness; no
+                        // wind or cancelling options (theirs are the earbuds' own)
+                        static const char* apKey[4] = { "off", "anc", "transparency", "adaptive" };
+                        static const char* apName[4] = { "Off", "Cancelling", "Transparency", "Adaptive" };
+                        std::vector<std::string> opts;
+                        std::vector<int> idx;
+                        int cur = 0;
+                        for (int i = 0; i < 4; i++)
+                            if (eb.modes.empty() || std::find(eb.modes.begin(), eb.modes.end(), apKey[i]) != eb.modes.end()) {
+                                if (eb.mode == apKey[i]) cur = int(opts.size());
+                                opts.push_back(apName[i]);
+                                idx.push_back(i);
+                            }
+                        hp.push_back(segRow("Noise control", "", "sys.eb.mode", opts, cur, [idx](int i) { sysapi::earbudsSet({ { "mode", apKey[idx[size_t(i)]] } }); }));
+                        // Adaptive's strength (the user, 2026-11-19, as an iPhone's Customise Adaptive Audio): only in Adaptive; sent
+                        // while dragged at most every 0.3 s and on release (each change takes the earbuds up to 1.5 s)
+                        if (eb.mode == "adaptive" && eb.adaptiveLevel >= 0) {
+                            const int shown = int(std::lround(apLevelShown(eb.adaptiveLevel) * 100));
+                            hp.push_back(Row{ "Adaptive strength", std::to_string(shown) + "%", "", 180, [this, lvl = eb.adaptiveLevel](float rx, float cy) {
+                                const Id id = uid("sys.eb.adaptive");
+                                const float was = apLevelShown(lvl);
+                                float nv = was;
+                                // its ends as Noise control's own icons beside it (the R4's test, 2026-11-19: 0 lets in the most of the
+                                // surroundings, 100 cancels the most; the user chose A, icons): the ear left, the shield right
+                                const float sw = setSliderW();
+                                g.icon(ICON_EAR, rx - sw + 10, cy, 18, pal.text3);
+                                g.icon(ICON_ANC, rx - 10, cy, 18, pal.text3);
+                                slider(id, rx - sw + 32, cy, sw - 64, was, &nv);
+                                const bool held = ui.sliderDrag(id) >= 0 || ui.pressed(id);
+                                if (nv != was) apLevelDrag_ = std::clamp(nv, 0.f, 1.f);
+                                if (apLevelDrag_ < 0) return;
+                                const int want = int(std::lround(apLevelDrag_ * 100));
+                                const bool release = !held || ui.sliderReleased(id);
+                                if (want != apLevelSent_ && (release || time - apLevelSentAt_ >= 0.3)) {
+                                    sysapi::earbudsSet({ { "adaptive_level", std::to_string(want) } });
+                                    apLevelSent_ = want;
+                                    apLevelSentAt_ = time;
+                                }
+                                if (release) {   // (kept on screen until the earbuds say the same: apLevelShown)
+                                    apLevelHold_ = want;
+                                    apLevelHoldAt_ = time;
+                                    apLevelAnim_ = apLevelDrag_;
+                                    apLevelDrag_ = -1;
+                                    apLevelSent_ = -1;
+                                }
+                            } });
+                        }
+                        if (!eb.conversation.empty())
+                            hp.push_back(Row{ "Conversation awareness", "", "Lowers the music and lets voices through when you start speaking", 40,
+                                              [this, conv = eb.conversation == "1"](float rx, float cy) {
+                                                  if (toggle(uid("sys.eb.conv"), rx - 40, cy, conv)) sysapi::earbudsSet({ { "conversation", conv ? "0" : "1" } });
+                                              } });
+                    } else {
+                    static const char* modeKey[3] = { "noise_cancelling", "transparency", "normal" };
+                    static const char* modeName[3] = { "Cancelling", "Transparency", "Normal" };
+                    std::vector<std::string> opts;
+                    std::vector<int> idx;
+                    int cur = 0;
+                    for (int i = 0; i < 3; i++)
+                        if (eb.modes.empty() || std::find(eb.modes.begin(), eb.modes.end(), modeKey[i]) != eb.modes.end()) {
+                            if (eb.mode == modeKey[i]) cur = int(opts.size());
+                            opts.push_back(modeName[i]);
+                            idx.push_back(i);
+                        }
+                    hp.push_back(segRow("Noise control", "", "sys.eb.mode", opts, cur, [idx](int i) { sysapi::earbudsSet({ { "mode", modeKey[idx[size_t(i)]] } }); }));
+                    if (eb.mode == "noise_cancelling") {
+                        static const char* ancKey[3] = { "adaptive", "manual", "transport" };
+                        const int a = eb.anc == "manual" ? 1 : eb.anc == "transport" ? 2 : 0;
+                        hp.push_back(segRow("Cancelling", "", "sys.eb.anc", { "Adaptive", "Manual", "Transport" }, a,
+                                            [](int i) { sysapi::earbudsSet({ { "anc", ancKey[i] } }); }));
+                        if (a == 1)
+                            hp.push_back(segRow("Strength", "", "sys.eb.level", { "1", "2", "3", "4", "5" }, std::clamp(eb.ancLevel, 1, 5) - 1,
+                                                [](int i) { sysapi::earbudsSet({ { "anc_level", std::to_string(i + 1) } }); }));
+                        if (a == 2) {
+                            static const char* trKey[4] = { "plane", "train", "bus", "car" };
+                            int t = 0;
+                            for (int i = 0; i < 4; i++) if (eb.transport == trKey[i]) t = i;
+                            hp.push_back(segRow("Transport", "", "sys.eb.transport", { "Plane", "Train", "Bus", "Car" }, t,
+                                                [](int i) { sysapi::earbudsSet({ { "transport", trKey[i] } }); }));
+                        }
+                    } else if (eb.mode == "transparency")
+                        hp.push_back(segRow("Transparency", "", "sys.eb.trans", { "Full", "Voices" }, eb.transparency == "vocal" ? 1 : 0,
+                                            [](int i) { sysapi::earbudsSet({ { "transparency", i ? "vocal" : "full" } }); }));
+                    hp.push_back(Row{ "Wind reduction", "", "Less wind noise outdoors", 40, [this, wind = eb.wind](float rx, float cy) {
+                                         if (toggle(uid("sys.eb.wind"), rx - 40, cy, wind)) sysapi::earbudsSet({ { "wind", wind ? "0" : "1" } });
+                                     } });
+                    }
+                }
+                const sysapi::Codec cd = sysapi::codec();
+                if (on && sysapi::has("bt_codec") && cd.known && !cd.available.empty()) {
+                    std::vector<std::string> opts;
+                    int cur = 0;
+                    for (size_t i = 0; i < cd.available.size(); i++) {
+                        if (cd.available[i] == cd.codec) cur = int(i);
+                        opts.push_back(codecName(cd.available[i]));
+                    }
+                    char rate[24] = "";
+                    if (cd.rate > 0) {
+                        if (cd.rate % 1000 == 0) snprintf(rate, sizeof rate, "%d kHz", cd.rate / 1000);
+                        else snprintf(rate, sizeof rate, "%.1f kHz", cd.rate / 1000.0);
+                    }
+                    const std::string hint = cd.rate > 0 && cd.bits > 0 ? std::string(rate) + " · " + std::to_string(cd.bits) + "-bit: the best both sides support"
+                                                                        : std::string();
+                    hp.push_back(segRow("Codec", hint, "sys.bt.codec", opts, cur, [av = cd.available](int i) {
+                        sysapi::act("bt_codec_set", "", { { "codec", av[size_t(i)] } }, "bt");
+                    }));
+                }
+                if (on && !hp.empty()) {
+                    // (its name as the card's title, the maker's word first left off: "Soundcore Liberty 4 NC" → "Liberty 4 NC" when
+                    // the earbuds say what kind they are)
+                    std::string title = eb.supported && !eb.name.empty() ? eb.name : on->name;
+                    if (eb.supported && !eb.kind.empty() && eb.kind != "airpods" && title.size() > eb.kind.size() + 1 &&
+                        lowerAscii(title.substr(0, eb.kind.size())) == lowerAscii(eb.kind) && title[eb.kind.size()] == ' ')
+                        title = title.substr(eb.kind.size() + 1);
+                    bt.push_back({ title, hp });
+                }
+                sysBudsShown_ = on != nullptr;
+                if (!paired.empty()) bt.push_back({ "Paired devices", paired });
+                found.insert(found.begin(), buttonRow("Pair a new device", b.discovering ? "Looking for devices nearby…" : "Put your headphones in pairing mode first",
+                                                      "sys.bt.look", nullptr, b.discovering ? "Stop" : "Look",
+                                                      [on = b.discovering] { sysapi::act("bt_discover", on ? "stop" : "start", {}, "bt"); }, false, btCol2));
+                bt.push_back({ "New devices", found });
+            }
+        }
+        // the page's top: the pill (the user, 2026-11-16: "a pill toggle to switch between wifi and bluetooth settings")
+        Row pill;
+        pill.blockH = 44;
+        pill.block = [this](float bx, float by, float bw) {
+            int p = -1;
+            segmented(uid("sys.conntab"), bx + bw, by + 22, { "Wi-Fi", "Bluetooth" }, connTab_, &p, 0, bw, 2, 40);
+            if (p >= 0 && p != connTab_) { connTab_ = p; area("settings.pane").target = area("settings.pane").y = 0; }
+        };
+        std::vector<Card> conn = { { "", { pill } } };
+        const std::vector<Card>& half = connTab_ == 0 ? wifi : bt;
+        conn.insert(conn.end(), half.begin(), half.end());
+        sections.push_back({ "Connectivity", ICON_WIFI, conn });
+        // (no System page: the user, 2026-11-16: Android's own power menu (the power button held) restarts and powers off, and
+        // SongateOS's updates are in Settings › Updates, beside Songate's)
+        r4Pages += 1;
+    }
+#endif
+    if (!settingsWant_.empty()) {   // (a page asked for by its name: the R4's tour)
+        for (int i = 0; i < int(sections.size()); i++)
+            if (settingsWant_ == sections[size_t(i)].name) settingsCat = i;
+        settingsWant_.clear();
+    }
     settingsCat = std::clamp(settingsCat, 0, int(sections.size()) - 1);
     // the list's order: the HiBy R4's pages (kept last) shown where the user put them: Status LED right after Appearance,
     // Sound & DAC right after Equalizer
     std::vector<int> listed;
     for (int i = 0; i < int(sections.size()) - r4Pages; i++) listed.push_back(i);
     for (int k = int(sections.size()) - r4Pages; k < int(sections.size()); k++) {
-        const int after = !strcmp(sections[size_t(k)].name, "Status LED") ? int(SetAppearance) : int(SetEqualizer);
+        const char* nm = sections[size_t(k)].name;
+        // (SongateOS's pages: Connectivity first, as a phone's settings have Wi-Fi and Bluetooth; System last)
+        if (!strcmp(nm, "Connectivity")) { listed.insert(listed.begin(), k); continue; }
+        const int after = !strcmp(nm, "Status LED") ? int(SetAppearance) : int(SetEqualizer);
         const auto at = std::find(listed.begin(), listed.end(), after);
         listed.insert(at == listed.end() ? listed.end() : at + 1, k);
     }
+#ifdef GF_ANDROID
+    // (a phone's Controls: empty, touch only; not listed either. Its section stays, so the categories keep their numbers)
+    for (int k = 0; k < int(listed.size()); k++)
+        if (!strcmp(sections[size_t(listed[size_t(k)])].name, "Controls") && sections[size_t(listed[size_t(k)])].cards.empty()) {
+            if (settingsCat == listed[size_t(k)]) settingsCat = SetAppearance;
+            listed.erase(listed.begin() + k);
+            break;
+        }
+    if (r4Dev_)   // the R4's Home screen page is not listed (it is empty there)
+        for (int k = 0; k < int(listed.size()); k++)
+            if (!strcmp(sections[size_t(listed[size_t(k)])].name, "Home screen")) {
+                if (settingsCat == listed[size_t(k)]) settingsCat = SetAppearance;
+                listed.erase(listed.begin() + k);
+                break;
+            }
+#endif
+#ifdef GF_ANDROID
+    // SongateOS's areas watched while their page shows (the service's notifications, no polling); Wi-Fi scanned when its page
+    // opens, then at most every 10 s; a search for devices stopped when its page goes (App::sysTick lets them go off Settings)
+    if (r4Dev_) {
+        const bool connOpen = setupPane_ ? !strcmp(setupPane_->section, "Connectivity")
+                                         : settingsQuery.empty() && !strcmp(sections[size_t(settingsCat)].name, "Connectivity") &&
+                                               (w >= kNarrowList || settingsPhoneOpen_);
+        sysapi::watch("wifi", connOpen && connTab_ == 0);
+        sysapi::watch("bt", connOpen && connTab_ == 1);
+        if (connOpen && connTab_ == 0 && sysapi::has("wifi") && sysapi::wifi().enabled) sysapi::scanIfDue();
+        sysBtShown_ = connOpen && connTab_ == 1;
+        if (setupPane_) sysPage_ = setupPane_->section;   // (the first-boot setup's page: its areas as that page's)
+        else if (settingsQuery.empty() && (w >= kNarrowList || settingsPhoneOpen_)) sysPage_ = sections[size_t(settingsCat)].name;   // (App::sysTick)
+        // SongateOS's updates: watched while Updates shows them (the service notifies each state, once a second while downloading)
+        // (SongateOS's updater: watched always, App::sysTick)
+    }
+#endif
     // the R4's pages read again when they open, and Sound & DAC's status (what plays, the rate) each second while it is open
     if (r4::on() && settingsCat != settingsCatSeen_) r4::refresh();
     if (!strcmp(sections[size_t(settingsCat)].name, "Sound & DAC") && time - r4PageReadAt_ > 1) {
@@ -3174,21 +4262,22 @@ void App::drawSettings(float x, float y, float w, float h) {
     // ------------------------------------------------------------ narrow (a phone upright): the categories as a list of their own,
     // each a large row with one line of what is in it; a category's page takes the whole width (back returns to the list)
     const bool narrow = w < kNarrowList;
-    if (narrow && !settingsPhoneOpen_ && settingsQuery.empty()) {
+    if (narrow && !settingsPhoneOpen_ && settingsQuery.empty() && !setupPane_) {
         static const std::pair<const char*, const char*> what[] = {
             { "Appearance", "Colours, size, the sidebar, screen edges" }, { "Playback", "Order, crossfade, levelling, sleep" },
             { "Equalizer", "Ten bands, bass, treble, presets" },          { "Library", "The music folder, rescan, covers" },
             { "Storage", "Where browsers open, what is kept" },          { "Lyrics", "Where they come from, their timing" },
             { "Canvas", "Its layouts and what it shows" },               { "Visualizer", "Bars, colours, motion" },
             { "Controls", "Buttons, the pointer" },                       { "Devices", "Pairing, listening together, AirPlay" },
-            { "Last.fm", "Scrobbles and now playing" },                   { "Reset", "Settings, or everything" },
+            { "Reset", "Settings, or everything" },
             { "Updates", "New versions, betas, going back" },             { "Support", "Reports and what they hold" },
             { "About", "Songate, its credits, the tour" }, { "Home screen", "Songate as the home screen, the device's apps" },
-            { "Sound & DAC", "Gain, filter, balance, the volume" }, { "Status LED", "Colour, alerts, the back light" } };   // (Sound & DAC: the HiBy R4 only)
+            { "Sound & DAC", "Gain, filter, balance, the volume" }, { "Status LED", "Colour, alerts, the back light" },
+            { "Connectivity", "Wi-Fi, Bluetooth" } };   // (the last three: the HiBy R4 only)
         ScrollArea& la = area("settings.phone");
         const float rowH = 66, lx = x + 18, lw = w - 36;
         la.view = { x, y, w, h };
-        la.content = 24 + 16 + 50 + 44 + 16 + sections.size() * rowH + 24;
+        la.content = 24 + 16 + 50 + 44 + 16 + listed.size() * rowH + 24;
         ui.pushArea(&la);
         float cy = y + 24 - la.y;
         kicker("Songate", lx, cy + 6, pal.text3, 0.14f);
@@ -3210,8 +4299,8 @@ void App::drawSettings(float x, float y, float w, float h) {
         g.textC("Find a setting", { css::Base }, lx + 42, cy + 22, pal.text3);
         typingMark("settings", lx, cy, lw, 44, 12, lx + 42, std::string(), { css::Base }, lw - 60);
         cy += 44 + 16;
-        g.roundRect(lx - 8, cy, lw + 16, sections.size() * rowH, 16, pal.text, 0.04f);
-        for (int k = 0; k < int(sections.size()); k++, cy += rowH) {
+        g.roundRect(lx - 8, cy, lw + 16, listed.size() * rowH, 16, pal.text, 0.04f);
+        for (int k = 0; k < int(listed.size()); k++, cy += rowH) {
             const int i = listed[size_t(k)];
             const Id id = uid("set.cat", i);
             if (ui.item(id, { lx - 8, cy, lw + 16, rowH }, 12)) {
@@ -3226,10 +4315,15 @@ void App::drawSettings(float x, float y, float w, float h) {
             g.icon(sections[i].icon, lx + 22, ccy, 19, pal.text2);
             const char* line = "";
             for (const auto& [n, l] : what) if (!strcmp(n, sections[i].name)) line = l;
+            if (r4Dev_ && !strcmp(sections[i].name, "Controls")) line = "The hold switch";   // (the R4: nothing else there)
+#ifdef GF_ANDROID
+            else if (!strcmp(sections[i].name, "Controls")) line = "The keyboard";   // (a phone: touch only, the keyboard's card alone)
+#endif
             g.text(sections[i].name, { css::Md, Weight::SemiBold }, lx + 58, ccy - (*line ? 21 : 10), pal.text);
             if (*line) g.text(line, { css::Sm }, lx + 58, ccy + 2, pal.text3, 1, Align::Left, int(lw - 58 - 30));
             g.icon(ICON_CHEV, lx + lw - 8, ccy, 14, pal.text3);
-            if (k + 1 < int(sections.size())) g.rect(lx + 58, cy + rowH - 1, lw - 58, 1, pal.text, 0.07f);
+            if (!strcmp(sections[i].name, "Updates") && osUpdateMark()) g.circle(lx + lw - 30, ccy, 4, pal.accent);   // (SongateOS has one)
+            if (k + 1 < int(listed.size())) g.rect(lx + 58, cy + rowH - 1, lw - 58, 1, pal.text, 0.07f);
         }
         ui.popArea();
         settingsPaneX = 1e9f;
@@ -3239,7 +4333,7 @@ void App::drawSettings(float x, float y, float w, float h) {
     // ------------------------------------------------------------ left column (not when narrow: the list above is it)
     const float lx = x + 24, lw = narrow ? 0.f : 214.f;
     float cy = y + 24;
-    if (!narrow) {
+    if (!narrow && !setupPane_) {
     kicker("Songate", lx, cy + 6, pal.text3, 0.14f);
     cy += 16;
     g.text("Settings", { css::Xxl, Weight::ExtraBold }, lx - 1, cy, pal.text);
@@ -3259,16 +4353,16 @@ void App::drawSettings(float x, float y, float w, float h) {
     }
     // Eleven categories and more sit a little closer; past what fits (Support, a dev build's Debug: About went under the
     // player bar, the user, 2026-10-30) the list scrolls, the focused category kept in view (Ui, as every scrolled list)
-    const float step = sections.size() > 10 ? 36 : 40, catH = step - 2;
+    const float step = listed.size() > 10 ? 36 : 40, catH = step - 2;
     ScrollArea& ca = area("settings.cats");
     const float listTop = cy;
     ca.view = { lx - 8, listTop, lw + 16, y + h - listTop };
-    ca.content = sections.size() * step + 8;
+    ca.content = listed.size() * step + 8;
     ca.clamp();
     ui.pushArea(&ca);
     g.clip(lx - 8, listTop, lw + 16, y + h - listTop);
     cy -= ca.y;
-    for (int k = 0; k < int(sections.size()); k++) {
+    for (int k = 0; k < int(listed.size()); k++) {
         const int i = listed[size_t(k)];
         const Id id = uid("set.cat", i);
         const bool on = settingsQuery.empty() && settingsCat == i;
@@ -3284,6 +4378,7 @@ void App::drawSettings(float x, float y, float w, float h) {
         g.icon(sections[i].icon, lx + 12 + 9, cy + catH / 2, 18, on ? pal.accentInk : pal.text2);
         g.textC(sections[i].name, { css::Base, Weight::SemiBold }, lx + 12 + 18 + 12, cy + catH / 2, on ? pal.accentInk : hot ? pal.text : pal.text2, 1,
                 Align::Left, int(lw - 50));
+        if (!strcmp(sections[i].name, "Updates") && osUpdateMark()) g.circle(lx + lw - 16, cy + catH / 2, 4, pal.accent);   // (SongateOS has one)
         cy += step;
     }
     g.unclip();
@@ -3294,16 +4389,16 @@ void App::drawSettings(float x, float y, float w, float h) {
 #if defined(GF_WINDOWED) && !defined(GF_ANDROID)
     // (a very wide window: a row's name and its switch no further apart than kPaneMax, beside the list, as on any page this wide)
     constexpr float kPaneMax = 1160;
-    const float px = narrow ? x + 18 : lx + lw + 28, pw = std::min(kPaneMax, x + w - (narrow ? 18 : 24) - px);
+    const float px = setupPane_ ? x : narrow ? x + 18 : lx + lw + 28, pw = setupPane_ ? w : std::min(kPaneMax, x + w - (narrow ? 18 : 24) - px);
 #else
-    const float px = narrow ? x + 18 : lx + lw + 28, pw = x + w - (narrow ? 18 : 24) - px;
+    const float px = setupPane_ ? x : narrow ? x + 18 : lx + lw + 28, pw = setupPane_ ? w : x + w - (narrow ? 18 : 24) - px;
 #endif
     settingsPaneX = px - 8;
     ScrollArea& sa = area("settings.pane");
     sa.view = { px - 8, y, x + w - (px - 8), h };
     ui.pushArea(&sa);
     g.clip(px - 8, y, x + w - (px - 8), h);
-    float py = y + 22 - sa.y;
+    float py = (setupPane_ ? y + 4 : y + 22) - sa.y;
 
     // What to show: the category, or every row the search matches, grouped under its category.
     std::vector<Card> cards;
@@ -3321,18 +4416,44 @@ void App::drawSettings(float x, float y, float w, float h) {
         }
         title = "“" + settingsQuery + "”";
         icon = ICON_SEARCH;
+    } else if (setupPane_) {
+        // the first-boot setup's screen (view_setup.cpp): a page's cards by their titles, or its rows by their labels in one card
+        const SetupPane& sp = *setupPane_;
+        for (const auto& s : sections) {
+            if (strcmp(s.name, sp.section)) continue;
+            Card merged{ sp.kicker, {} };
+            for (size_t ci = 0; ci < s.cards.size(); ci++) {
+                const Card& c = s.cards[ci];
+                if (sp.skipFirst && ci == 0) continue;
+                if (!sp.labels.empty()) {
+                    for (const std::string& want : sp.labels)
+                        for (const Row& r : c.rows) if (r.label == want) merged.rows.push_back(r);
+                } else if (sp.cards.empty() || std::find(sp.cards.begin(), sp.cards.end(), c.kicker) != sp.cards.end()) {
+                    cards.push_back(c);
+                }
+            }
+            if (!sp.labels.empty()) {   // (in the order the screen names them)
+                std::vector<Row> ordered;
+                for (const std::string& want : sp.labels)
+                    for (const Row& r : merged.rows) if (r.label == want) { ordered.push_back(r); break; }
+                merged.rows = ordered;
+                if (!merged.rows.empty()) cards.push_back(merged);
+            }
+        }
     } else {
         cards = sections[settingsCat].cards;
     }
 
-    // .st-head: a 44 px tile with the icon, the title beside it
+    // .st-head: a 44 px tile with the icon, the title beside it (not on a setup screen: it has its own)
+    if (!setupPane_) {
     g.roundRect(px, py, 44, 44, 12, pal.accent, 0.16f);
     g.icon(icon, px + 22, py + 22, 22, pal.accentInk);
     g.textC(title, { 30, Weight::ExtraBold }, px + 44 + 16, py + 22, pal.text, 1, Align::Left, int(pw - 60));
     if (!settingsQuery.empty() && skb_.open && !strcmp(skb_.field, "settings") && std::fmod(time - skb_.at, 1.06) < 0.62)   // typing: the caret in the title
         g.rect(px + 44 + 16 + std::min(g.measureF(title, { 30, Weight::ExtraBold }), pw - 60) + 2, py + 22 - 15, 2, 30, pal.text);
     py += 44 + 20;
-    if (cards.empty()) {
+    }
+    if (cards.empty() && !setupPane_) {
         g.text("Nothing matches. Press the search field to try other words.", { css::Base }, px, py + 8, pal.text3, 1, Align::Left, int(pw));
         py += 40;
     }
@@ -3352,7 +4473,68 @@ void App::drawSettings(float x, float y, float w, float h) {
         if (settling >= 0 && tabHeld < 0 && tabSlide[settling] == 0) settling = -1;
         tabFloat_ = settling;
     }
+    // Folded cards (the user chose B, 2026-11-16: "Appearance for example has so many settings"): on a page with three titled
+    // cards or more, one is open at a time; a tap on a title opens that card and folds the one before (again on it: all folded).
+    // Each page keeps its open card (Store::foldOpen); a jump to a setting (Find a setting, showSetting) opens its card. Find a
+    // setting's results and the untitled cards (a page's head, its pill) are never folded.
+    int titled = 0;
+    for (const Card& c : cards) titled += c.kicker.empty() ? 0 : 1;
+    // Android only: the Switch and the PC show every card open (the user, 2026-11-18: folding is for a phone's small screen and
+    // its touch only)
+#ifdef GF_ANDROID
+    const bool folding = settingsQuery.empty() && titled >= 3 && !setupPane_ && tourStep < 0;   // (the tour: every card open, its rows lit)
+#else
+    const bool folding = false;
+    (void)titled;
+#endif
+    std::string openCard;
+    if (folding) {
+        const auto it = store.foldOpen.find(title);
+        if (it != store.foldOpen.end()) openCard = it->second;
+        // (a page seen first: its first; also a card kept open that is no longer there, renamed or merged: its first. Empty stays:
+        // all folded on purpose)
+        const bool gone = !openCard.empty() && std::none_of(cards.begin(), cards.end(), [&](const Card& c) { return c.kicker == openCard; });
+        if (it == store.foldOpen.end() || gone)
+            for (const Card& c : cards) if (!c.kicker.empty()) { openCard = c.kicker; break; }
+        if (!settingsJump.empty())   // (a jump: the card that holds the row, open)
+            for (const Card& c : cards)
+                for (const Row& r : c.rows)
+                    if (!c.kicker.empty() && r.label == settingsJump && openCard != c.kicker) {
+                        openCard = c.kicker;
+                        store.foldOpen[title] = openCard;
+                    }
+    }
     for (const Card& c : cards) {
+        if (folding && !c.kicker.empty()) {
+            const bool open = c.kicker == openCard || (!c.with.empty() && c.with == openCard);
+            const Id hid = uid(("set.fold:" + title + "/" + c.kicker).c_str());
+            // (open: its title's band is what a tap takes, and its focus ring is a round one around the chevron alone, clear of the
+            // first row and the card's edge; the user's Switch, 2026-11-18: "outline clipping", then "just outline this". Folded:
+            // the whole pill, ring and all)
+            const SDL_FRect hr = open ? SDL_FRect{ px, py, pw, 42 } : SDL_FRect{ px, py, pw, 52 };
+            if (open) ringAt_[hid] = { px + pw - pad - 8 - 16, py + 26 - 16, 32, 32 };
+            else ringAt_.erase(hid);
+            if (ui.item(hid, hr, 18)) {
+                store.foldOpen[title] = open ? std::string() : c.kicker;
+                persistSoon(1.f);
+                if (!open) foldScrollTo_ = c.kicker;   // (opened: its title brought to the page's top next frame, as the card above folds)
+            }
+            if (open && foldScrollTo_ == c.kicker) {
+                sa.target = py - y + sa.y - 12;
+                sa.clamp();
+                foldScrollTo_.clear();
+            }
+            if (!open) {
+                const bool hot = ui.pressed(hid) || (ui.focused(hid) && ui.showFocusRing());
+                g.roundRect(px, py, pw, 52, 18, pal.surface, 0.55f);
+                if (hot) g.roundRect(px, py, pw, 52, 18, pal.text, 0.05f);
+                g.roundStroke(px, py, pw, 52, 18, 1, pal.text, 0.09f);
+                kicker(c.kicker, px + pad, py + 26, pal.text3, 0.12f);
+                g.icon(ICON_CHEV, px + pw - pad - 8, py + 26, 16, pal.text3);
+                py += 52 + 16;
+                continue;
+            }
+        }
         // stacked: a narrow page (a phone upright) puts a wide control on a line of its own under its label and hint
         struct Laid { const Row* r; std::vector<std::string> hint; float h, labelW; bool stacked = false; std::vector<std::string> label; bool valueBelow = false; };
         std::vector<Laid> laid;
@@ -3390,6 +4572,7 @@ void App::drawSettings(float x, float y, float w, float h) {
         g.roundStroke(px, py, pw, ch, 18, 1, pal.text, 0.09f);
         float ry = py + (c.kicker.empty() ? 6 : 42);
         if (!c.kicker.empty()) kicker(c.kicker, px + pad, py + 26, pal.text3, 0.12f);
+        if (folding && !c.kicker.empty()) g.icon(ICON_CHEV_DOWN, px + pw - pad - 8, py + 26, 16, pal.text3);   // (open: a tap on its title folds it)
         // one row's contents at ry (the loop below: in its place, or where it slides to)
         auto drawRow = [&](const Laid& l, float ry) {
             const Row& r = *l.r;
@@ -3480,4 +4663,122 @@ std::vector<int> App::sidebarTabsShown() const {
         order.push_back(idx);
     }
     return order;
+}
+
+bool App::osUpdates() const {
+#ifdef GF_ANDROID
+    return r4Dev_ && (sysapi::avail() == sysapi::Avail::Unknown || sysapi::has("ota"));
+#else
+    return false;
+#endif
+}
+
+bool App::osUpdateMark() const {
+#ifdef GF_ANDROID
+    if (!r4Dev_ || !sysapi::has("ota")) return false;
+    const sysapi::Ota o = sysapi::ota();
+    const std::string& st = o.state;
+    return o.known && (st == "available" || st == "downloading" || st == "verifying" || st == "ready" || st == "staging");
+#else
+    return false;
+#endif
+}
+
+float App::mdBlock(const std::string& md, float x, float y, float w, bool draw) {
+    // a line's words, each bold or not: **…** marks bold; [words](link) keeps the words; `code` its text
+    struct Word { std::string s; bool bold; };
+    auto words = [](const std::string& line) {
+        std::vector<Word> out;
+        std::string cur;
+        bool bold = false;
+        auto flush = [&] { if (!cur.empty()) { out.push_back({ cur, bold }); cur.clear(); } };
+        for (size_t i = 0; i < line.size();) {
+            if (line.compare(i, 2, "**") == 0 || line.compare(i, 2, "__") == 0) { flush(); bold = !bold; i += 2; continue; }
+            if (line[i] == '`') { i++; continue; }
+            if (line[i] == '[') {
+                const size_t close = line.find("](", i);
+                const size_t end = close == std::string::npos ? close : line.find(')', close);
+                if (end != std::string::npos) {
+                    for (char c : line.substr(i + 1, close - i - 1)) { if (c == ' ') flush(); else cur += c; }
+                    i = end + 1;
+                    continue;
+                }
+            }
+            if (line[i] == ' ' || line[i] == '\t') { flush(); i++; continue; }
+            cur += line[i++];
+        }
+        flush();
+        return out;
+    };
+    const Font body{ css::Sm }, strong{ css::Sm, Weight::SemiBold };
+    const float lineH = 20;
+    float cy = y;
+    bool first = true;
+    // the words laid out from left in width, wrapped; drawn at the line's top
+    auto flow = [&](const std::vector<Word>& ws, float left, float width, const Rgb& ink, Font plainF, Font boldF) {
+        float px = left;
+        const float space = float(g.measure(" ", plainF));
+        for (const Word& wd : ws) {
+            const Font f = wd.bold ? boldF : plainF;
+            const float ww = float(g.measure(wd.s, f));
+            if (px > left && px + ww > left + width) { px = left; cy += lineH; }
+            if (draw) g.text(wd.s, f, px, cy, wd.bold ? pal.text : ink, 1, Align::Left, int(std::max(1.f, left + width - px)));
+            px += ww + space;
+        }
+        cy += lineH;
+    };
+    size_t at = 0;
+    bool gap = false;
+    while (at <= md.size()) {
+        size_t nl = md.find('\n', at);
+        if (nl == std::string::npos) nl = md.size();
+        std::string line = md.substr(at, nl - at);
+        at = nl + 1;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        size_t lead = line.find_first_not_of(" \t");
+        if (lead == std::string::npos) { gap = !first; if (nl >= md.size()) break; continue; }
+        const std::string t = line.substr(lead);
+        if (t.rfind("<!--", 0) == 0) { if (nl >= md.size()) break; continue; }   // (a comment GitHub hides)
+        if (t[0] == '#') {   // a heading: its words, larger, a little room above (not as the first thing)
+            const size_t h = t.find_first_not_of('#');
+            if (!first) cy += 8;
+            const std::string text = h == std::string::npos ? std::string() : t.substr(h);
+            const Font hf{ css::Md, Weight::Bold };
+            std::vector<Word> ws = words(text);
+            for (Word& wd : ws) wd.bold = false;
+            const float savedH = lineH;
+            (void)savedH;
+            flow(ws, x, w, pal.text, hf, hf);
+            cy += 4;
+        } else if ((t[0] == '-' || t[0] == '*' || t[0] == '+') && t.size() > 1 && t[1] == ' ') {   // a bullet, its level by its indent
+            if (gap) cy += 6;
+            const float indent = std::min(2.f, float(lead / 2)) * 16;
+            if (draw) g.circle(x + indent + 4, cy + lineH / 2, 2.5f, pal.accent);
+            flow(words(t.substr(2)), x + indent + 16, w - indent - 16, pal.text2, body, strong);
+        } else if (t.rfind("---", 0) == 0 || t.rfind("***", 0) == 0) {   // a rule
+            if (draw) g.rect(x, cy + 8, w, 1, pal.text, 0.09f);
+            cy += 16;
+        } else {   // a paragraph's line (a table's too: plain text, its bars as they are)
+            if (gap) cy += 8;
+            flow(words(t), x, w, pal.text2, body, strong);
+        }
+        first = false;
+        gap = false;
+        if (nl >= md.size()) break;
+    }
+    return cy - y;
+}
+
+float App::apLevelShown(int lvl) {
+    // the finger wins while it is on the slider; then the value let go on, until the earbuds' answer matches it (3 s at most)
+    if (apLevelDrag_ >= 0) { apLevelAnim_ = apLevelDrag_; apLevelAnimAt_ = time; return apLevelDrag_; }
+    if (apLevelHold_ >= 0 && (lvl == apLevelHold_ || time - apLevelHoldAt_ > 3)) apLevelHold_ = -1;
+    const float target = (apLevelHold_ >= 0 ? apLevelHold_ : lvl) / 100.f;
+    // a change from outside (a reconnect): the thumb eases there, ~0.2 s
+    const double dt = std::clamp(time - apLevelAnimAt_, 0.0, 0.1);
+    apLevelAnimAt_ = time;
+    if (apLevelAnim_ < 0 || !store.motion) apLevelAnim_ = target;
+    else apLevelAnim_ += (target - apLevelAnim_) * float(1 - std::exp(-dt / 0.06));
+    if (std::fabs(apLevelAnim_ - target) < 0.002f) apLevelAnim_ = target;
+    return apLevelAnim_;
 }

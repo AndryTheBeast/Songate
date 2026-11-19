@@ -13,6 +13,7 @@
 #include <strings.h>
 
 #include "app.hpp"
+#include "sysapi.hpp"
 #include "gfcfgdir.h"
 #include "icons.inc"
 #include "plicons.inc"
@@ -23,6 +24,14 @@ namespace {
 #define UPD_SVG R"SVG(<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">)SVG"
 inline constexpr char UPD_WRENCH[] = UPD_SVG R"SVG(<path d="M14.7 6.3a4 4 0 0 0 5 5L21 10a5.5 5.5 0 0 1-7.3 6.4l-6.1 6.1a2.1 2.1 0 0 1-3-3l6.1-6.1A5.5 5.5 0 0 1 17 3l-1.3 1.3a4 4 0 0 0-1 2z"/></svg>)SVG";
 inline constexpr char UPD_SHIELD[] = UPD_SVG R"SVG(<path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.2-7.5 9.5-4.3-1.3-7.5-4.9-7.5-9.5V6z"/><path d="M9 12l2.2 2.2L15.5 10"/></svg>)SVG";
+
+// SongateOS's sizes as its Updates page says them: GB from a gigabyte, else MB
+std::string osBytes(long long b) {
+    char s[32];
+    if (b >= 1000LL * 1000 * 1000) snprintf(s, sizeof s, "%.1f GB", double(b) / 1e9);
+    else snprintf(s, sizeof s, "%d MB", int(std::lround(double(b) / 1e6)));
+    return s;
+}
 
 std::string megabytes(int64_t bytes) {
     char b[32];
@@ -134,14 +143,29 @@ int App::updateOffer() const {
 #if defined(GF_PREVIEW) || (defined(GF_WINDOWED) && defined(GF_DEV))   // (Android's dev build: test-update / test-jobs in its settings folder, platform_android.cpp; the PC's dev build: the same names in its environment)
     if (getenv("GF_FAKEUPDATE")) return updLater_ ? -1 : updater.newer(true);   // (the preview's made-up release: app.cpp)
 #endif
-    if (!store.updates || !store.updateAtStart || updLater_) return -1;
+    if (!store.updates || !store.updateAtStart || updLater_ || osUpdates()) return -1;
     const int n = updater.newer(store.betas);
     if (n < 0 || updater.installed.version == updater.releases[size_t(n)].version) return -1;
     return n;
 }
 
-/** The banner pressed: its sheet, made as a release's (App::openRelease). */
+int App::bannerOffer() const {
+    const int n = updateOffer();
+    if (n >= 0) return n;
+    return !osLater_ && osUpdateMark() ? kOsOffer : -1;   // (SongateOS: out, downloading or ready)
+}
+
+/** The banner pressed: its sheet, made as a release's (App::openRelease); SongateOS's own: kOsOffer */
 void App::openUpdateOffer(int rel) {
+    if (rel == kOsOffer) {
+        if (sheet.preview) SDL_DestroyTexture(sheet.preview);
+        sheet = Sheet{};
+        sheet.page = Sheet::UpdateOffer;
+        sheet.recipe = kOsOffer;
+        sheet.returnFocus = ui.focusedId();
+        ui.focusDefault();
+        return;
+    }
     if (rel < 0 || rel >= int(updater.releases.size())) return;
     if (sheet.preview) SDL_DestroyTexture(sheet.preview);
     sheet = Sheet{};
@@ -170,6 +194,18 @@ void App::answerUpdateOffer(int rel, bool update) {
 }
 
 void App::updateOfferHeader(const char*& icon, std::string& kick, std::string& title, std::string& sub) {
+#ifdef GF_ANDROID
+    if (sheet.recipe == kOsOffer) {   // SongateOS's own: out (Download) or ready (Install), as its Updates page says
+        const sysapi::Ota o = sysapi::ota();
+        const bool ready = o.state == "ready" || o.state == "staging";
+        icon = ICON_DOWNLOAD;
+        kick = ready ? "Update ready" : "Update available";
+        title = "SongateOS " + o.latest;
+        sub = ready || o.size <= 0 ? "You have " + o.current
+                                   : std::string(o.prerelease ? "A beta \u00b7 " : "") + osBytes(o.size) + " \u00b7 you have " + o.current;
+        return;
+    }
+#endif
     const UpdRelease& r = updater.releases[size_t(sheet.recipe)];
     icon = ICON_DOWNLOAD;
     kick = std::string(r.beta ? "Beta \u00b7 " : "") + "Update available";
@@ -179,6 +215,7 @@ void App::updateOfferHeader(const char*& icon, std::string& kick, std::string& t
 
 void App::updateOfferRows(std::vector<SheetRow>& rows) {
     using Row = SheetRow;
+    if (sheet.recipe == kOsOffer) { osOfferRows(rows); return; }
     if (sheet.recipe < 0 || sheet.recipe >= int(updater.releases.size()) || updater.releases[size_t(sheet.recipe)].version != sheet.name) {
         closeSheet();   // the list was read again meanwhile
         return;
@@ -216,7 +253,72 @@ void App::updateOfferRows(std::vector<SheetRow>& rows) {
     for (const UpdItem* it : top) text(changelogIcon(it->icon), it->text);
 }
 
+/** SongateOS's update's sheet (the mock-up the user approved, 2026-11-19): Download while it is out, its progress while it comes,
+ *  Install once it is ready (the same question as its Updates page); Later; then the top of its notes */
+void App::osOfferRows(std::vector<SheetRow>& rows) {
+    using Row = SheetRow;
+#ifdef GF_ANDROID
+    if (!osUpdateMark()) { closeSheet(); return; }   // (installed, or gone, while the sheet was open)
+    const sysapi::Ota o = sysapi::ota();
+    const std::string& st = o.state;
+    if (st == "available")
+        rows.push_back({ Row::Action, ICON_DOWNLOAD, "Download", "Then Install, in Settings \u203a Updates", "", [this] {
+                             closeSheet();
+                             sysapi::act("ota_download", "", {}, "ota");
+                         } });
+    else if (st == "downloading" || st == "verifying")
+        rows.push_back({ Row::Action, ICON_DOWNLOAD, "Downloading", osBytes(o.progress) + " of " + osBytes(o.size),
+                         "", nullptr });
+    else
+        rows.push_back({ Row::Action, ICON_DOWNLOAD, "Install", "The player restarts to install it", "", [this, v = o.latest] {
+                             closeSheet();
+                             installAsked_ = v;
+                             sysapi::preflight();
+                         } });
+    rows.back().h = 62;
+    rows.push_back({ Row::Action, ICON_HOURGLASS, "Later", "Offered again the next time Songate starts", "", [this] {
+                         osLater_ = true;
+                         closeSheet();
+                     } });
+    rows.back().h = 62;
+    // What's new: the notes' first five points (their Markdown's "- " lines), or the notes as they are (one from the microSD card)
+    std::vector<std::string> top;
+    std::string plain;
+    for (size_t at = 0; at < o.notes.size();) {
+        size_t end = o.notes.find('\n', at);
+        if (end == std::string::npos) end = o.notes.size();
+        std::string l = o.notes.substr(at, end - at);
+        at = end + 1;
+        while (!l.empty() && (l.back() == '\r' || l.back() == ' ')) l.pop_back();
+        if (l.rfind("- ", 0) == 0 || l.rfind("* ", 0) == 0) {
+            l = l.substr(2);
+            std::string t;   // (**bold**, links' words and `code` as plain words)
+            for (size_t i = 0; i < l.size(); i++) {
+                if (l[i] == '*' || l[i] == '`') continue;
+                if (l[i] == '[') { const size_t c = l.find("](", i), e = c == std::string::npos ? c : l.find(')', c); if (e != std::string::npos) { t += l.substr(i + 1, c - i - 1); i = e; continue; } }
+                t += l[i];
+            }
+            if (top.size() < 5) top.push_back(t);
+        } else if (!l.empty() && l[0] != '#' && plain.empty()) plain = l;
+    }
+    if (top.empty() && !plain.empty()) top.push_back(plain);
+    if (top.empty()) return;
+    const float textW = cardW(600) - 48 - 48;
+    rows.push_back({ Row::Group, nullptr, "What's new" });
+    rows.back().h = 40;
+    for (const std::string& t : top) {
+        Row r{ Row::Text, nullptr, "", t };
+        r.h = g.wrap(t, { css::Sm }, int(textW), 12).size() * 19.f + 14;
+        rows.push_back(r);
+    }
+#else
+    (void)rows;
+    closeSheet();
+#endif
+}
+
 void App::checkUpdates(bool quiet) {
+    if (osUpdates()) return;   // (SongateOS: Songate comes with the OS, never by itself)
     if (!store.updates) { if (!quiet) allowUpdates(); return; }
     if (updater.busy()) return;
     updateQuiet = quiet;
@@ -455,6 +557,7 @@ void App::modelSheetRows(std::vector<SheetRow>& rows) {
 }
 
 void App::installRelease(int i) {
+    if (osUpdates()) return;   // (SongateOS: no APK is ever installed by Songate)
     if (!store.updates) { allowUpdates(); return; }
     if (updater.busy()) { toast("Wait for " + updater.working() + " first"); return; }
     if (i < 0 || i >= int(updater.releases.size())) return;
@@ -576,7 +679,7 @@ const FactoryPartInfo kFactoryParts[] = {
     { "Saved equalizer presets", "The presets you saved under your own names" },
     { "Play counts and statistics", "Plays, last played and dates added (smart playlists use them)" },
     { "The queue", GF_FACTORY_QUEUE },
-    { "Last.fm", "Signs out, and erases what was waiting to be sent" },
+    { "Subsonic server", "Signs out; erases its downloads and what waits to be sent" },
     { "Devices", "This device's key and the devices paired with it: they must pair again" },
     { "Caches", GF_CACHE_WORDS ": made again from your music" },
 };
@@ -596,12 +699,8 @@ void App::openFactory() {
 void App::factoryRows(std::vector<SheetRow>& rows) {
     rows.push_back({ SheetRow::Group, nullptr, "Erase what you tick" });
     rows.back().h = 34;
-    const bool server = subsonic.view().state != Subsonic::SignedOut;   // (a server's mentioned only while there is one)
     for (int k = 0; k < FacParts; k++) {
-        const bool both = k == FacLastfm && server;
-        rows.push_back({ SheetRow::Toggle, nullptr, both ? "Last.fm and the Subsonic server" : kFactoryParts[k].label,
-                         both ? "Signs out of both; erases what was waiting to be sent, and the server's downloads in Songate's folder" : kFactoryParts[k].sub, "",
-                         [this, k] { factoryPick ^= 1u << k; } });
+        rows.push_back({ SheetRow::Toggle, nullptr, kFactoryParts[k].label, kFactoryParts[k].sub, "", [this, k] { factoryPick ^= 1u << k; } });
         rows.back().h = 60;
         rows.back().on = factoryPick & (1u << k);
     }
@@ -645,7 +744,7 @@ void App::factoryErase(unsigned mask) {
     }
     confirm(ICON_X, "Factory reset", "Erase everything", "Songate as if it were newly installed", "Erase everything Songate keeps?",
             "Every setting, playlist and Liked song; your tag edits, chosen covers, lyric timings, lyrics found online and saved equalizer presets; play "
-            "counts and statistics; your Last.fm sign-in and paired devices; " GF_FACTORY_LIST " "
+            "counts and statistics; your Subsonic server sign-in and paired devices; " GF_FACTORY_LIST " "
             "Songate then closes and starts again as new. Your music files are not touched, and backups in " + backupRoot() + " stay.",
             "Erase everything", [this, go] {
                 confirm(ICON_X, "Factory reset", "Are you absolutely sure?", "There is no way back", "Erase everything now?",

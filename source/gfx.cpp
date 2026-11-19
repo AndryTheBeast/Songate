@@ -5,6 +5,7 @@
 #include "coverio.hpp"
 #include "wordmark.inc"
 #include "wordmark4.inc"
+#include "wordmark_os.inc"
 
 #include <SDL2/SDL_image.h>
 #include "platform.hpp"
@@ -135,8 +136,8 @@ void Gfx::shutdown() {
     wordBigTex_ = nullptr;
     if (starTex_) SDL_DestroyTexture(starTex_);
     starTex_ = nullptr;
-    for (SDL_Texture* t : { glowTex_, veilTex_, vignetteTex_, bandTex_, wordTex_, wordGlowTex_ }) if (t) SDL_DestroyTexture(t);
-    glowTex_ = veilTex_ = vignetteTex_ = bandTex_ = wordTex_ = wordGlowTex_ = nullptr;
+    for (SDL_Texture* t : { glowTex_, veilTex_, vignetteTex_, bandTex_, wordTex_, wordGlowTex_, wordOSTex_, wordOSGlowTex_ }) if (t) SDL_DestroyTexture(t);
+    glowTex_ = veilTex_ = vignetteTex_ = bandTex_ = wordTex_ = wordGlowTex_ = wordOSTex_ = wordOSGlowTex_ = nullptr;
     TTF_Quit();
 }
 
@@ -941,6 +942,39 @@ int Gfx::text(const std::string& raw, Font f, float x, float y, const Rgb& c, fl
     return adv;
 }
 
+int Gfx::textFill(const std::string& s, Font f, float x, float y, float fill, const Rgb& c, float litA, float dimA) {
+    if (s.empty() || (litA <= 0 && dimA <= 0) || ghost_ || blurText_ || shapesOnly_) return 0;
+    if (fill <= 0) return text(s, f, x, y, c, dimA);
+    if (fill >= 1) return text(s, f, x, y, c, litA);
+    if (newBudget_ <= 0 && !textCache_.count(std::to_string(int(f.weight) * 512 + f.size) + ":" + s)) return measure(s, f);
+    Cached* ct = textTexture(s, f);
+    if (!ct || ct->w <= 0) return 0;
+    const float tw = ct->dw, edge = std::min(6.f, tw * 0.25f), fx = x + tw * fill;
+    // the columns: its left, the edge's two sides, its right; lit before the edge, dim after it
+    const float pts[4] = { x, std::max(x, fx - edge / 2), std::min(x + tw, fx + edge / 2), x + tw };
+    const float as[4] = { litA, litA, dimA, dimA };
+    SDL_SetTextureColorMod(ct->tex, 255, 255, 255);
+    SDL_SetTextureAlphaMod(ct->tex, 255);
+    const float top = snap(y - shiftY_) + shiftY_, bottom = top + ct->dh, left = snap(x - shiftX_) + shiftX_ - x;
+    verts_.clear();
+    idx_.clear();
+    int n = 0;
+    for (int i = 0; i < 4; i++) {
+        if (i > 0 && pts[i] <= pts[i - 1] + 0.01f) continue;
+        const SDL_Color col = sdl(c, as[i] * wipeAt(pts[i]));
+        const float u = std::clamp((pts[i] - x) / tw, 0.f, 1.f);
+        verts_.push_back({ { pts[i] + left, top }, col, { u, 0 } });
+        verts_.push_back({ { pts[i] + left, bottom }, col, { u, 1 } });
+        if (n > 0) {
+            const int b = (n - 1) * 2;
+            for (int k : { b, b + 1, b + 2, b + 1, b + 3, b + 2 }) idx_.push_back(k);
+        }
+        n++;
+    }
+    if (!idx_.empty()) SDL_RenderGeometry(r_, ct->tex, verts_.data(), int(verts_.size()), idx_.data(), int(idx_.size()));
+    return ct->w;
+}
+
 int Gfx::textScroll(const std::string& s, Font f, float x, float y, float boxW, float offset, float fadeL, float fadeR, const Rgb& c, float alpha) {
     if (s.empty() || alpha <= 0 || ghost_ || blurText_ || shapesOnly_) return 0;
     if (newBudget_ <= 0 && !textCache_.count(std::to_string(int(f.weight) * 512 + f.size) + ":" + s)) return measure(s, f);
@@ -1028,6 +1062,28 @@ int Gfx::textC(const std::string& s, Font f, float x, float cy, const Rgb& c, fl
     return text(s, f, x, cy - lineHeight(f) / 2.f, c, alpha, a, maxW);
 }
 
+bool Gfx::provides(const std::string& s) {
+    TTF_Font* t = font({ 16, Weight::Regular }, faceFor(s));
+    if (!t) return false;
+    for (size_t i = 0; i < s.size();) if (!TTF_GlyphIsProvided32(t, nextCodepoint(s, i))) return false;
+    return true;
+}
+
+int Gfx::textInkC(const std::string& s, Font f, float x, float cy, const Rgb& c, float alpha, Align a) {
+    TTF_Font* t = font(f, faceFor(s));
+    if (!t) return textC(s, f, x, cy, c, alpha, a);
+    int lo = 1 << 20, hi = -(1 << 20);
+    for (size_t i = 0; i < s.size();) {
+        const Uint32 cp = nextCodepoint(s, i);
+        int minx, maxx, miny, maxy, adv;
+        if (TTF_GlyphMetrics32(t, cp, &minx, &maxx, &miny, &maxy, &adv) == 0 && maxy > miny) { lo = std::min(lo, miny); hi = std::max(hi, maxy); }
+    }
+    if (hi < lo) return textC(s, f, x, cy, c, alpha, a);
+    // the letters' middle, above the baseline; the baseline, the font's ascent below the line's top (font pixels, then app ones)
+    const float mid = (TTF_FontAscent(t) - (lo + hi) / 2.f) / scale_;
+    return text(s, f, x, cy - mid, c, alpha, a);
+}
+
 /** The font's own kerning between two letters (Inter tucks "A" and "C" together): what the pair measures less the two apart.
  *  Letters spaced out one by one lost it, and "FLAC" had a gap between A and C (the user, 2026-11-15). Measured, so cached */
 float Gfx::pairKern(const std::string& a, const std::string& b, Font f) {
@@ -1086,17 +1142,42 @@ void Gfx::sparkle(float cx, float cy, float size, const Rgb& c, float alpha) {
     SDL_RenderCopyF(r_, starTex_, nullptr, &dst);
 }
 
+int Gfx::wordmarkOSW() { return kWordOSW; }
+
 void Gfx::wordmark(float x, float cy, const Rgb& a, const Rgb& b, const Rgb& c, const Rgb& glowC, float glowA, float shine, float alpha, float big, float reveal) {
-    SDL_Texture* const letters = big > 1 ? wordBigTex_ : wordTex_;
+    drawWord(big > 1 ? wordBigTex_ : wordTex_, wordGlowTex_, kWordW, kWordH, kWordMid, x, cy, a, b, c, glowC, glowA, shine, alpha, big, reveal);
+}
+
+void Gfx::wordmarkOS(float x, float cy, const Rgb& a, const Rgb& b, const Rgb& c, const Rgb& glowC, float glowA, float shine, float alpha, float big) {
+    if (!wordOSTex_) {   // (made the first time it is drawn: only SongateOS's setup shows it)
+        auto mask = [&](const unsigned char* m, int w, int h) {
+            std::vector<Uint32> px(size_t(w) * h);
+            for (size_t i = 0; i < px.size(); i++) px[i] = (Uint32(m[i]) << 24) | 0xffffff;
+            SDL_Texture* t = SDL_CreateTexture(r_, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STATIC, w, h);
+            if (t) {
+                SDL_UpdateTexture(t, nullptr, px.data(), w * 4);
+                SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
+                SDL_SetTextureScaleMode(t, SDL_ScaleModeLinear);
+            }
+            return t;
+        };
+        wordOSTex_ = mask(kWordOS4, kWordOSW * 4, kWordOSH * 4);
+        wordOSGlowTex_ = mask(kWordOSGlow, kWordOSW + 2 * kWordGlowPad, kWordOSH + 2 * kWordGlowPad);
+    }
+    drawWord(wordOSTex_, wordOSGlowTex_, kWordOSW, kWordOSH, kWordOSMid, x, cy, a, b, c, glowC, glowA, shine, alpha, big, 2);
+}
+
+void Gfx::drawWord(SDL_Texture* letters, SDL_Texture* glowTex, int wW, int wH, float wMid, float x, float cy, const Rgb& a, const Rgb& b, const Rgb& c,
+                   const Rgb& glowC, float glowA, float shine, float alpha, float big, float reveal) {
     if (ghost_ || shapesOnly_ || alpha <= 0 || !letters) return;
-    const float wordW = kWordW * big, wordH = kWordH * big, glowPad = kWordGlowPad * big;
-    const float left = snap(x - shiftX_) + shiftX_, top = snap(cy - kWordMid * big - shiftY_) + shiftY_;
-    if (wordGlowTex_ && glowA > 0) {
+    const float wordW = wW * big, wordH = wH * big, glowPad = kWordGlowPad * big;
+    const float left = snap(x - shiftX_) + shiftX_, top = snap(cy - wMid * big - shiftY_) + shiftY_;
+    if (glowTex && glowA > 0) {
         const SDL_Color s = sdl(glowC, glowA * alpha);
-        SDL_SetTextureColorMod(wordGlowTex_, s.r, s.g, s.b);
-        SDL_SetTextureAlphaMod(wordGlowTex_, s.a);
+        SDL_SetTextureColorMod(glowTex, s.r, s.g, s.b);
+        SDL_SetTextureAlphaMod(glowTex, s.a);
         const SDL_FRect dst{ left - glowPad, top - glowPad, wordW + 2 * glowPad, wordH + 2 * glowPad };
-        SDL_RenderCopyF(r_, wordGlowTex_, nullptr, &dst);
+        SDL_RenderCopyF(r_, glowTex, nullptr, &dst);
     }
     SDL_SetTextureColorMod(letters, 255, 255, 255);
     SDL_SetTextureAlphaMod(letters, 255);

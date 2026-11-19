@@ -13,6 +13,7 @@
 #include "plicons.inc"
 #ifdef GF_ANDROID
 #include "appicons.inc"   // (the sidebar's Apps tab)
+#include "sysapi.hpp"
 #endif
 
 static const bool kBackForce = false;   // (dev: the touch back button shown without a touch, to look at it)
@@ -31,6 +32,7 @@ float ease(float t) {
 }
 
 }  // namespace
+float App::coverEase(float t) { return ease(std::clamp(t, 0.f, 1.f)); }
 
 // ------------------------------------------------------------------ screen edges (Android)
 
@@ -177,7 +179,46 @@ void App::draw() {
     hoverUpNextShown = hoverUpNext;
     hoverUpNext = false;
     plHoverShown = route.view == View::Playlists ? plHover : -2;
-    ui.setModal(sheet.page != Sheet::Closed || ((coverNotice == 1 || appCoverNotice == 1 || lyrNotice == 1) && !canvas) || sleepPromptAt > 0 || tourStep >= 0 || je.open || ap.open || skb_.open);
+    ui.setModal(sheet.page != Sheet::Closed || ((coverNotice == 1 || appCoverNotice == 1 || lyrNotice == 1) && !canvas) || sleepPromptAt > 0 || tourStep >= 0 || je.open || ap.open || skbModal() || outList_);
+#ifdef GF_ANDROID
+    if (setupStep_ >= 0) {   // SongateOS's first-boot setup: the whole screen, the usual overlays over it (view_setup.cpp)
+        g.holdCache(false);
+        drawBackground();
+        ui.region(Region::Main);
+        // the Music screen's Change: Songate's own folder picker, over the setup until a folder is used (or Back); the setup
+        // again after it (it drew only the setup before, so Change seemed to do nothing on the R4: 2010002, 2026-11-18)
+        static bool pickerShown = false;
+        if (route.view == View::PickFolder) {
+            if (!pickerShown) SDL_Log("setup: the folder picker shown, at %s", route.query.c_str());
+            pickerShown = true;
+            drawPicker(0, 34, css::W, css::H - 34);
+        } else {
+            if (pickerShown) SDL_Log("setup: the folder picker left");
+            pickerShown = false;
+            drawSetup();
+        }
+        drawSheet();
+        drawSearchKb();
+        drawToast();
+        if (veilA > 0.005f) g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, veilA);
+        drawBootFade();
+        drawFocusRing();
+        drawEdges();
+        drawFrameTimes();
+        return;
+    }
+    // A first start on the HiBy R4 (no settings, or no music folder: its own first start held): only the background until the
+    // service says whether SongateOS's setup is due, so the player never shows for a moment before the setup (the user, 2026-11-19).
+    // A player already set up (its folder there) is not held: its setup is done, and the service may come up long after Songate
+    if (r4Dev_ && (firstHeld_ || store.fresh) && !setupChecked_ && sysapi::avail() != sysapi::Avail::No &&
+        (sysapi::avail() == sysapi::Avail::Unknown || sysapi::has("setup"))) {
+        g.holdCache(false);
+        drawBackground();
+        drawBootFade();
+        drawFrameTimes();
+        return;
+    }
+#endif
     if (canvas) {
         g.holdCache(automixFocus(mixCanvasMode() == 0 ? 0 : 2).ui < 1);   // its text stays cached while an Automix join hides it (as Now playing's)
         drawCanvas();
@@ -732,12 +773,17 @@ void App::drawTitlebar() {
     g.roundStroke(sx, sy, sw, 32, 9, 1, hot ? pal.accent : pal.text, hot ? 0.55f : 0.09f);
     g.icon(ICON_SEARCH, sx + 12 + 8, cy, 16, pal.text3);
     const std::string q = route.view == View::Search ? route.query : std::string();
+#ifdef GF_ANDROID
+    const bool keyShown = false;   // (touch only: no key opens search; the user, 2026-11-18: "removing that ctrl F pill")
+#else
     const bool keyShown = sw >= 290;   // (a short field: its words whole before the key's name)
+#endif
     g.textC(q.empty() ? searchHint() : q, { css::Sm }, sx + 12 + 16 + 8, cy, q.empty() ? pal.text3 : pal.text, 1, Align::Left,
             int(keyShown ? sw - 90 : sw - 48));
-    if (skb_.open) {   // Search's keyboard is up: typing here (the caret after the words, the field lit)
+    if (skb_.open && !strcmp(skb_.field, "search")) {   // Search's keyboard is up: typing here (the caret after the words, the field lit)
         g.roundStroke(sx, sy, sw, 32, 9, 1.5f, pal.accent, 0.8f);
-        const float cxr = sx + 12 + 16 + 8 + (q.empty() ? 0.f : std::min(g.measureF(q, { css::Sm }), keyShown ? sw - 90 : sw - 48)) + 1;
+        const std::string qb = q.substr(0, std::min(skb_.cur, q.size()));   // (the caret at the cursor)
+        const float cxr = sx + 12 + 16 + 8 + (qb.empty() ? 0.f : std::min(g.measureF(qb, { css::Sm }), keyShown ? sw - 90 : sw - 48)) + 1;
         if (std::fmod(time - skb_.at, 1.06) < 0.62) g.rect(cxr, cy - 9, 1.5f, 18, pal.text);
     }
     // <kbd>: the button that opens search
@@ -938,7 +984,7 @@ bool* App::batteryShown(int item, int side) {
     return f[std::clamp(item, 0, 6)];
 }
 
-/** The battery in a state, its colour and animation as Settings › Appearance › Battery states has them. Each animation's speed
+/** The battery in a state, its colour and animation as Settings › Appearance › Battery icon has them. Each animation's speed
  *  follows the state (charging: as fast as the charger gives), then Pace. Their light is the interface's own: Automix's soft band
  *  and halo, the opening's four-pointed stars, the palette's gradient. Every one eases in and out (the user, 2026-11-05: "even
  *  cleaner and smooth"): nothing starts, stops or jumps at once. alpha: the whole of it (a state cross-fading). */
@@ -1300,8 +1346,8 @@ void App::drawSidebar() {
     // A newer version's banner takes this place while it is offered, the work's cards back when it is answered (one fades
     // out, then the other in: never both)
     {
-        const int offer = updateOffer();
-        const float want = offer >= 0 ? 1.f : 0.f;
+        const int offer = bannerOffer();   // (a release of Songate's, or SongateOS's update: kOsOffer)
+        const float want = offer != -1 ? 1.f : 0.f;
         updBanner_ = store.motion ? updBanner_ + (want - updBanner_) * (1 - std::exp(-dt / 0.12f)) : want;
         if (std::fabs(updBanner_ - want) < 0.004f) updBanner_ = want;
         const float ub = updBanner_, fadeWas = g.fade();
@@ -1324,7 +1370,7 @@ void App::drawSidebar() {
         else if (ui.focused(uid("side.job"))) ui.focus(uid("nav.settings", 0));
         }
         g.setFade(fadeWas);
-        if (ub >= 0.5f && offer >= 0) {
+        if (ub >= 0.5f && offer != -1) {
             g.setFade(fadeWas * (ub * 2 - 1));
             drawUpdateBanner(x0, bottom, w, collapsed, offer);
             g.setFade(fadeWas);
@@ -1354,7 +1400,7 @@ void App::drawSeek(float x, float y, float w, float h, Id id) {
         if (const int st = ui.sliderStep(id)) seekBy(st * 5);
         if (ui.sliderReleased(id)) {
             const float f = std::clamp((ui.lastDragX() - x) / w, 0.f, 1.f);
-            player.seek(f * dur);
+            seekShown(f * dur);
             shown = f;
         }
     }
@@ -1510,7 +1556,8 @@ void App::drawPlayerbar() {
     else names(false);
     const bool liked = currentLiked();   // (a server's track: its star)
     hint(uid("pb.like"), liked ? "Remove from Liked" : "Add to Liked");
-    if ((!extOn || srvq_.on) && iconButton(uid("pb.like"), liked ? ICON_HEART_F : ICON_HEART, heartX, cy, liked) && (now.track >= 0 || srvq_.on)) toggleCurrentLike();
+    if ((!extOn || srvq_.on || (extApp_ && extLike_)) && iconButton(uid("pb.like"), liked ? ICON_HEART_F : ICON_HEART, heartX, cy, liked) && (now.track >= 0 || srvq_.on || extApp_))
+        toggleCurrentLike();
 
     // .pb-center: controls (42 px) + 6 px + seek (30 px), centred in the bar
     // controls 42 px, gap 6 px, seek 30 px (seekY is the seek row's centre)
@@ -1738,8 +1785,13 @@ void App::drawUpdateBanner(float x, float bottom, float w, bool collapsed, int r
     const float tx = x + 28;
     const int tw = int(x + w - 34 - tx);
     g.text("Update available", { css::Xs, Weight::SemiBold }, tx, y + 8, pal.text, 1, Align::Left, tw);
-    g.text(Updater::pretty(Updater::thisVersion()) + " to " + Updater::pretty(updater.releases[size_t(rel)].version), { css::Xs }, tx, y + 24, pal.text3, 1,
-           Align::Left, tw);
+    std::string line;
+#ifdef GF_ANDROID
+    if (rel == kOsOffer) { const sysapi::Ota o = sysapi::ota(); line = "SongateOS " + o.current + " to " + o.latest; }   // (SongateOS's own)
+    else
+#endif
+    line = Updater::pretty(Updater::thisVersion()) + " to " + Updater::pretty(updater.releases[size_t(rel)].version);
+    g.text(line, { css::Xs }, tx, y + 24, pal.text3, 1, Align::Left, tw);
 }
 
 std::string App::jobCount(const Job& j) const {
@@ -1909,7 +1961,13 @@ void App::drawSleepPrompt() {
     const Font tf{ css::Lg, Weight::Bold }, sf{ css::Base };
     const float w = cardW(520), pad = 24, x = (css::W - w) / 2;
     const std::vector<std::string> lines =
-        g.wrap("The sleep timer has paused the music. " GF_CAP_THE_CONSOLE " goes to sleep by itself unless you stay awake.", sf, int(w - pad * 2 - 52), 3);
+        g.wrap(
+#ifdef GF_ANDROID
+               "The sleep timer has paused the music. The screen turns off by itself unless you stay awake.",   // (the HiBy R4's only)
+#else
+               "The sleep timer has paused the music. " GF_CAP_THE_CONSOLE " goes to sleep by itself unless you stay awake.",
+#endif
+               sf, int(w - pad * 2 - 52), 3);
     const float h = pad + 26 + 8 + lines.size() * 21.f + 20 + 34 + pad;
     const float y = (css::H - h) / 2 + (1 - a) * 10;
     g.roundRect(x, y + 10, w, h, 18, { 0, 0, 0 }, 0.3f * a);
@@ -1926,7 +1984,7 @@ void App::drawSleepPrompt() {
     const float bw = button(uid("sleep.now"), ICON_MOON, "Sleep now", tx, by, true, &sleepNow, false, false, DefaultFocus);
     button(uid("sleep.stay"), nullptr, "Stay awake", tx + bw + 8, by, false, &stay);
     if (sleepPromptAt == time) ui.focus(uid("sleep.now"));
-    if (sleepNow) { closeSleepPrompt(); plat::requestSleep(); }
+    if (sleepNow) { closeSleepPrompt(); sleepDevice(); }
     if (stay) closeSleepPrompt();
 }
 
@@ -1952,8 +2010,127 @@ void App::closeCoverNotice() {
 /** Songate's own pop-up for the volume keys (Android; Settings › Playback › Volume keys show "Songate"; the user chose it to be a
  *  choice, 2026-11-15): Top, a pill under the top line; Side, an upright capsule at the right edge beside the keys, filling from the
  *  foot; Bottom, the pill where toasts sit. In the toast's own card; the number as Volume as says (the device's steps, or %). */
+/** Each frame (the R4): SongateOS's areas let go when their page went (Settings closed), a device search stopped with its page,
+ *  the output watched while the service offers it (the pop-up's line is ready the moment a key shows it), a refusal shown */
+void App::sysTick() {
+#ifdef GF_ANDROID
+    if (!r4Dev_) return;
+    setupTick();
+    if (!homeReadySent_ && !firstFrame_ && ++homeFrames_ >= 3) {   // (init done, the library in, three frames on screen)
+        const sysapi::Avail av = sysapi::avail();
+        if (av != sysapi::Avail::Unknown) {   // (the service answered, or is not there)
+            homeReadySent_ = true;
+            if (av == sysapi::Avail::Yes && sysapi::has("setup")) {
+                sysapi::act("home_ready", "");
+                SDL_Log("SongateOS: home_ready sent, %d frames in", homeFrames_);
+            }
+        }
+    }
+    if (startCheckDue_ && sysapi::avail() != sysapi::Avail::Unknown) {   // (the service answered, or is not there)
+        startCheckDue_ = false;
+        checkUpdates(true);   // (nothing on SongateOS)
+    }
+    // SongateOS's updater read at the start and on each of its notifications, always (the dot on Settings, Updates' page); the
+    // service itself checks once Wi-Fi is up (v53), Songate starts no check of its own
+    sysapi::watch("ota", sysapi::has("ota"));
+    if (route.view != View::Settings && setupStep_ < 0) {
+        sysapi::watch("wifi", false);
+        sysapi::watch("bt", false);
+        sysBtShown_ = false;
+    }
+    // SongateOS's Install: once the service's own checks pass, the question (a refusal's reason is shown as any other)
+    if (bool ok = false; !installAsked_.empty() && sysapi::takePreflight(ok)) {
+        const std::string v = installAsked_;
+        installAsked_.clear();
+        if (ok) {
+            confirm(ICON_DOWNLOAD, "Updates", "SongateOS " + v, "", "Install SongateOS " + v + "?",
+                    "The player restarts, installs it and starts again, in a few minutes. The music stops. Keep it charged.", "Install",
+                    [] { sysapi::act("ota_install", "", {}, "ota"); });
+            sheet.askSafe = true;   // (an install is not a loss: the accent button, the download symbol)
+            sheet.askYesIcon = ICON_DOWNLOAD;
+        }
+    }
+    if (sysBtWas_ && !sysBtShown_ && sysapi::bt().discovering) sysapi::act("bt_discover", "stop", {}, "bt");
+    // phase 2's areas, each read when what shows it shows (Settings names its page each frame: sysPage_): the connected earbuds
+    // (Bluetooth's page, or the volume pop-up while they play; read again when other headphones connect), the codec, the card
+    // and USB (Storage), the player (About); the screen always (whether it ever turns off decides Songate's own dimming)
+    {
+        const std::string page = sysPage_;
+        sysPage_.clear();
+        bool btPlays = false;
+        if (sysapi::has("output")) {
+            const sysapi::Output o = sysapi::output();
+            for (const sysapi::Out& x : o.outs) if (x.id == o.active && x.kind == "bluetooth") btPlays = true;
+        }
+        const bool popUp = time < volPopUntil_;
+        const bool budsWanted = sysapi::has("earbuds") && ((sysBtShown_ && sysBudsShown_) || (popUp && btPlays));
+        std::string addr;
+        for (const sysapi::BtDev& d : sysapi::bt().devs) if (d.connected) { addr = d.address; break; }
+        if (budsWanted && addr != sysBudsAddr_) sysapi::watch("earbuds", false);   // (other headphones: read anew)
+        if (budsWanted) sysBudsAddr_ = addr;
+        sysapi::watch("earbuds", budsWanted);
+        sysapi::watch("codec", sysapi::has("bt_codec") && (sysBtShown_ || page == "Sound & DAC"));
+        sysapi::watch("display", sysapi::has("display"));
+        sysapi::watch("storage", sysapi::has("storage") && page == "Storage");
+        sysapi::watch("usb", sysapi::has("usb") && page == "Storage");
+        {
+            const bool appsShown = sysapi::has("apps") && (route.view == View::Apps || phoneApps_);   // (upright: the bar's Apps button)
+            if (appsShown && time - appsRunAt_ > 5) { appsRunAt_ = time; sysapi::watch("apps", false); }   // (watched again below: read anew)
+            sysapi::watch("apps", appsShown);
+        }
+        sysapi::watch("about", sysapi::has("about") && page == "About");
+        sysapi::watch("hold", sysapi::has("hold") && page == "Controls");   // (each flip comes through its notification)
+        // (Updates' SongateOS side: the recovery switch and root, each step through their notifications)
+        sysapi::watch("recovery", sysapi::has("recovery") && page == "Updates" && updTab_ == 1);
+        sysapi::watch("root", sysapi::has("root") && page == "Updates" && updTab_ == 1);
+        sysapi::watch("gapps", sysapi::has("gapps") && page == "Updates" && updTab_ == 1);
+        sysBudsShown_ = false;
+    }
+    sysBtWas_ = sysBtShown_;
+    sysBtShown_ = false;   // (Settings says it again while it shows Bluetooth)
+    sysapi::watch("output", sysapi::has("output"));
+    sysapi::watch("theme", sysapi::has("theme"));   // (Appearance's System colours; it changes only when someone changes it)
+    // System colours' wheel: the colour sent once the picker closes with a new one (each change restarts screens: not while dragging)
+    if (sysThemePickFrom_ >= 0 && pick.field != &sysThemePick_) {
+        if (sysThemePick_ != sysThemePickFrom_) {
+            char b[8];
+            snprintf(b, sizeof b, "#%06x", sysThemePick_ & 0xffffff);
+            store.sysThemeSongate = false;
+            persistSoon(0.3f);
+            sysapi::act("theme_set", "", { { "colour", b } }, "theme");
+        }
+        sysThemePickFrom_ = -1;
+    }
+    std::string e;
+    if (sysapi::takeError(e)) toast(e);
+#endif
+}
+
+const char* App::outIcon(const std::string& kind) {
+#ifdef GF_ANDROID
+    if (kind == "bluetooth") {   // earbuds SongateOS controls (AirPods, Soundcore…): two buds, not Bluetooth's sign (the user, 2026-11-19)
+        const sysapi::Earbuds eb = sysapi::earbuds();
+        if (sysapi::has("earbuds") && eb.known && eb.supported) return ICON_BUDS;
+    }
+#endif
+    return kind == "bluetooth" ? ICON_BLUETOOTH : kind == "usb_dac" ? ICON_PLUG : ICON_HEADPHONES;
+}
+
+std::string App::codecName(const std::string& codec) {
+    if (codec == "aptx") return "aptX";
+    if (codec == "aptx_hd") return "aptX HD";
+    std::string s = codec;
+    for (char& c : s) c = char(toupper(static_cast<unsigned char>(c)));
+    return s;
+}
+
 void App::drawVolumePop() {
 #ifdef GF_ANDROID
+    if (outList_ && outListWhere_ >= 0) volPopUntil_ = std::max(volPopUntil_, time + 0.5);   // (its list open: the pop-up stays)
+    if (noiseList_) volPopUntil_ = std::max(volPopUntil_, time + 0.5);   // (the noise modes' card open: likewise)
+#ifdef GF_DEV
+    if (mockUi("vol=hold")) volPopUntil_ = std::max(volPopUntil_, time + 0.5);   // (dev: held open, for pictures and tests)
+#endif
     if (time >= volPopUntil_) return;
     const float a = std::clamp(float(volPopUntil_ - time) / 0.25f, 0.f, 1.f) * std::clamp(float(time - volPopFrom_) / 0.12f, 0.f, 1.f);
     if (a <= 0.001f) return;
@@ -1969,17 +2146,122 @@ void App::drawVolumePop() {
         g.roundStroke(x, y, w, h, r, 1, pal.text, 0.09f * a);
     };
     const float slide = (1 - a) * 8;
-    if (store.volWhere != 1) {   // a pill: the speaker, the bar, the number
-        const float w = std::min(css::W - 24.f, 340.f), h = 44, x = (css::W - w) / 2;
+    // SongateOS's output switcher (session 21, the user's three layouts): what media plays on, under the bar (Top), over it
+    // (Bottom: the bar stays nearest the thumb) or a round of its own under the capsule (Side); a tap opens its list there
+    sysapi::Out cur;
+    bool hasOut = false;
+    if (r4Dev_ && sysapi::has("output")) {
+        const sysapi::Output o = sysapi::output();
+        for (const sysapi::Out& x : o.outs) if (x.id == o.active) { cur = x; hasOut = true; }
+    }
+    const Region regionWas = ui.region();
+    ui.region(Region::Modal);
+    auto openList = [&](float at) {
+        outList_ = !outList_;
+        noiseList_ = false;   // (one card at a time)
+        outListWhere_ = store.volWhere;
+        outListAt_ = at;
+    };
+    auto outLine = [&](float x, float cy, float w, bool sepAbove) {
+        if (sepAbove) g.rect(x + 18, cy - 20, w - 36, 1, pal.text, 0.08f * a);
+        const Id id = uid("vol.out");
+        const bool hit = ui.item(id, { x + 8, cy - 19, w - 16, 38 }, 14);
+        if (ui.pressed(id)) g.roundRect(x + 8, cy - 19, w - 16, 38, 14, pal.text, 0.07f * a);
+        g.icon(outIcon(cur.kind), x + 26, cy, 18, pal.accentInk, a);
+        const Font of{ css::Sm, Weight::SemiBold };
+        const std::string codec = codecName(cur.codec);
+        const float chw = codec.empty() ? 0.f : g.measureSpaced(codec, { css::Xs, Weight::SemiBold }, 0.06f) + 14;
+        const float room = w - 48 - 40 - (chw > 0 ? chw + 8 : 0);
+        g.textC(cur.name, of, x + 48, cy, pal.text, a, Align::Left, int(room));
+        if (chw > 0) {
+            const float nx = x + 48 + std::min(float(g.measure(cur.name, of)), room) + 8;
+            g.roundRect(nx, cy - 10, chw, 20, 6, pal.accent, 0.16f * a);
+            g.textSpaced(codec, { css::Xs, Weight::SemiBold }, nx + 7, cy, 0.06f, pal.accentInk, a);
+        }
+        g.icon(ICON_CHEV, x + w - 22, cy, 16, pal.text3, a);
+        return hit;
+    };
+    // The earbuds' noise mode, while they play (phase 2; the user, 2026-11-16: "looks good"): Top, a line of three under the output's;
+    // Bottom, the same over it; Side, a round of its own under the output's, a tap going to the next mode. Read when the pop-up shows
+    const sysapi::Earbuds eb = sysapi::earbuds();
+    const bool noise = hasOut && cur.kind == "bluetooth" && sysapi::has("earbuds") && eb.known && eb.supported;
+    // (AirPods: their four, as their card's; the user, 2026-11-19: the same as the other earbuds')
+    const bool ap = eb.kind == "airpods";
+    static const char* scIcon[3] = { ICON_ANC, ICON_EAR, ICON_HEADPHONES };
+    static const char* scKey[3] = { "noise_cancelling", "transparency", "normal" };
+    static const char* scName[3] = { "Cancelling", "Transparency", "Normal" };
+    static const char* apIcon[4] = { ICON_HEADPHONES, ICON_ANC, ICON_EAR, ICON_SPARKLE };
+    static const char* apKey[4] = { "off", "anc", "transparency", "adaptive" };
+    static const char* apName[4] = { "Off", "Cancelling", "Transparency", "Adaptive" };
+    // (Galaxy Buds: Off, Cancelling, Ambient; the user chose B for their card, 2026-11-19)
+    const bool gx = eb.kind == "galaxybuds";
+    static const char* gxIcon[3] = { ICON_HEADPHONES, ICON_ANC, ICON_EAR };
+    static const char* gxKey[3] = { "off", "anc", "ambient" };
+    static const char* gxName[3] = { "Off", "Cancelling", "Ambient" };
+    const char* const* noiseIcon = ap ? apIcon : gx ? gxIcon : scIcon;
+    const char* const* noiseKey = ap ? apKey : gx ? gxKey : scKey;
+    const char* const* noiseName = ap ? apName : gx ? gxName : scName;
+    const int nAll = ap ? 4 : 3;
+    std::vector<int> nModes;   // (the ones the earbuds offer)
+    for (int i = 0; i < nAll; i++)
+        if (eb.modes.empty() || std::find(eb.modes.begin(), eb.modes.end(), noiseKey[i]) != eb.modes.end()) nModes.push_back(i);
+    int nCur = -1;
+    for (int i = 0; i < nAll; i++) if (eb.mode == noiseKey[i]) nCur = i;
+    auto noiseLine = [&](float x, float cy, float w, bool divBelow) {
+        g.rect(x + 18, divBelow ? cy + 26 : cy - 26, w - 36, 1, pal.text, 0.08f * a);
+        if (nModes.empty()) return;
+        // each chip as wide as its icon and word, the room left shared out equally (the user's R4, 2026-11-16: "Transparency" ran
+        // to its chip's edges in equal thirds)
+        const Font lf{ css::Xs, Weight::SemiBold };
+        std::vector<float> tws;
+        float sum = 0;
+        for (int i : nModes) { tws.push_back(float(g.measure(noiseName[i], lf)) + 16 + 6); sum += tws.back(); }
+        const float spare = std::max(0.f, (w - 16 - sum) / float(nModes.size()));
+        float cx = x + 8;
+        for (size_t k = 0; k < nModes.size(); k++) {
+            const int i = nModes[k];
+            const float cw = tws[k] + spare, tw = tws[k];
+            const Id id = uid("vol.noise", i);
+            if (ui.item(id, { cx, cy - 17, cw, 34 }, 12) && i != nCur) sysapi::earbudsSet({ { "mode", noiseKey[i] } });
+            const bool on = nCur == i;
+            if (on || ui.pressed(id)) g.roundRect(cx + 2, cy - 17, cw - 4, 34, 12, on ? pal.accent : pal.text, (on ? 0.16f : 0.07f) * a);
+            g.icon(noiseIcon[i], cx + cw / 2 - tw / 2 + 8, cy, 16, on ? pal.accentInk : pal.text2, a);
+            g.textC(noiseName[i], lf, cx + cw / 2 - tw / 2 + 22, cy, on ? pal.accentInk : pal.text2, a, Align::Left);
+            cx += cw;
+        }
+    };
+    if (store.volWhere != 1) {   // a pill: the speaker, the bar, the number (and the output's line)
+        // (as wide as the screen allows, 12 at each side, up to 460: the user, 2026-11-16, "you can stretch it more")
+        const float w = std::min(css::W - 24.f, 460.f), h = (hasOut ? 44 + 40 : 44) + (noise ? 52 : 0), x = (css::W - w) / 2;
         const float y = store.volWhere == 0 ? 52 + 6 - slide
                                             : (upright ? css::H - 68 - (64 + 16 + 12) - h : css::H - css::BarH - 20 - h) + slide;
         card(x, y, w, h, 22);
-        const float cy = y + h / 2;
+        const bool foot = store.volWhere == 2;
+        const float top = foot && noise ? 52.f : 0.f;   // (Bottom: the noise line first, then the output's, the bar nearest the thumb)
+        if (hasOut) {
+            bool hit = false;
+            if (foot) {
+                if (noise) noiseLine(x, y + 26, w, true);
+                hit = outLine(x, y + top + 22, w, false);   // (optically midway between its two lines, 1 below the middle: its ink sits high; the user, 2026-11-19)
+                g.rect(x + 18, y + top + 42, w - 36, 1, pal.text, 0.08f * a);
+            } else {
+                g.rect(x + 18, y + 42, w - 36, 1, pal.text, 0.08f * a);
+                hit = outLine(x, y + 64, w, false);   // (optically midway between the line over it, y + 42, and the noise line's, y + 84)
+            }
+            if (hit) openList(foot ? y : y + h);
+            if (noise && !foot) noiseLine(x, y + 44 + 40 + 26, w, false);
+        }
+        const float cy = !hasOut ? y + 22 : foot ? y + top + 63 : y + 21;   // (midway between the card's edge and its line)
         g.icon(step == 0 ? ICON_VOL_X : ICON_VOL, x + 26, cy, 18, pal.text2, a);
-        const float bx = x + 48, bw = w - 48 - 46;
+        // The bar between the icon and the number, the same gap each side; the number's right edge as far from the card's edge as the
+        // icon's left edge; the bar takes the rest, reaching the number as it is now (the user's R4, 2026-11-17: "96%" ran into the
+        // bar, then the gaps and the margins were not equal)
+        const float gap = 48 - (26 + 9);   // (the icon: 18 wide, centred 26 in: 17 from the edge, 13 to the bar)
+        const float numX = x + w - (26 - 9) - float(g.measureNum(num, nf));
+        const float bx = x + 48, bw = numX - gap - bx;
         g.roundRect(bx, cy - 3, bw, 6, 3, pal.text, 0.12f * a);
         if (vol > 0.001f) g.roundRectH(bx, cy - 3, std::max(6.f, bw * vol), 6, 3, pal.accent2, pal.accent, a);
-        g.textNumC(num, nf, x + w - 18, cy, pal.text, a, Align::Right);
+        g.textNumC(num, nf, numX, cy, pal.text, a, Align::Left);
     } else {   // Side: beside the keys
         const float w = 52, h = 232, x = css::W - 12 - w + slide, y = (css::H - h) / 2 - 20;
         card(x, y, w, h, 26);
@@ -1991,12 +2273,150 @@ void App::drawVolumePop() {
             g.roundRectV(bx, by + bh - fh, 8, fh, 4, pal.accent, pal.accent2, a);
         }
         g.icon(step == 0 ? ICON_VOL_X : ICON_VOL, x + w / 2, y + h - 24, 18, pal.text2, a);
+        if (hasOut) {   // the output: a round of its own under the capsule, its symbol; its list opens beside it
+            const float ry = y + h + 10;
+            card(x, ry, w, w, w / 2);
+            const Id id = uid("vol.out");
+            const bool hit = ui.item(id, { x, ry, w, w }, w / 2);
+            if (ui.pressed(id)) g.roundRect(x, ry, w, w, w / 2, pal.text, 0.07f * a);
+            g.icon(outIcon(cur.kind), x + w / 2, ry + w / 2, 20, pal.accentInk, a);
+            if (hit) openList(ry + w / 2);
+            if (noise && !nModes.empty()) {   // the noise mode's round: a tap opens its card beside it, as the output's does
+                const float ny = ry + w + 10;
+                card(x, ny, w, w, w / 2);
+                const Id nid = uid("vol.noise", 9);
+                if (ui.item(nid, { x, ny, w, w }, w / 2)) {
+                    noiseList_ = !noiseList_;
+                    noiseListAt_ = ny + w / 2;
+                    outList_ = false;
+                }
+                if (ui.pressed(nid)) g.roundRect(x, ny, w, w, w / 2, pal.text, 0.07f * a);
+                g.icon(noiseIcon[nCur >= 0 ? nCur : nModes[0]], x + w / 2, ny + w / 2, 20, pal.accentInk, a);
+            }
+        }
     }
+    ui.region(regionWas);
+#endif
+}
+
+/** The output switcher's list (SongateOS's outputs, Automatic first; the one chosen ticked, a bit-perfect one with the sparkle):
+ *  under the pop-up at the top, over it at the foot, beside it at the side; from Sound & DAC over the foot. A tap picks one (the
+ *  service moves all media there) and closes it; a tap anywhere else closes it. */
+void App::drawOutputs() {
+#ifdef GF_ANDROID
+    if (!outList_) return;
+    if (!sysapi::has("output") || (outListWhere_ >= 0 && time >= volPopUntil_)) { outList_ = false; return; }
+    const sysapi::Output o = sysapi::output();
+    struct Row { std::string id, name, sub; const char* icon; bool sparkle; };
+    std::vector<Row> rows = { { "auto", "Automatic", "The output plugged in or connected last", ICON_REFRESH, false } };
+    for (const sysapi::Out& x : o.outs) {
+        const std::string sub = x.kind == "bluetooth" ? codecName(x.codec)
+                              : x.kind == "balanced_44" ? std::string("Balanced")
+                              : x.kind == "lineout_35" || x.kind == "balanced_lineout_44" ? std::string("Line out") : std::string();
+        rows.push_back({ x.id, x.name, sub, outIcon(x.kind), x.bitperfect });
+    }
+    const float rowH = 56, h = 44 + rowH * float(rows.size()) + 10;
+    const bool side = outListWhere_ == 1 && outListAt_ >= 0;
+    const float w = side ? std::min(css::W - 12 - 52 - 10 - 12.f, 360.f) : std::min(css::W - 24.f, 460.f);   // (as wide as the pop-up)
+    const float x = side ? css::W - 12 - 52 - 10 - w : (css::W - w) / 2;
+    const float y = outListWhere_ < 0 || outListAt_ < 0 ? (phonePortrait() ? css::H - 68 - (64 + 16 + 12) - h : css::H - css::BarH - 20 - h)
+                  : outListWhere_ == 0 ? outListAt_ + 10
+                  : outListWhere_ == 2 ? outListAt_ - 10 - h
+                                       : std::clamp(outListAt_ - h + 40, 52.f + 6, css::H - h - 12.f);   // (its foot level with the round)
+    const Region regionWas = ui.region();
+    ui.region(Region::Modal);
+    const bool away = ui.item(uid("vol.outaway"), { 0, 0, float(css::W), float(css::H) }, 0);
+    g.roundRect(x, y + 6, w, h, 20, { 0, 0, 0 }, 0.25f);
+    g.roundRect(x, y, w, h, 20, pal.surface2);
+    g.roundStroke(x, y, w, h, 20, 1, pal.text, 0.09f);
+    ui.item(uid("vol.outcard"), { x, y, w, h }, 20);   // (a tap on the card's own ground is not "elsewhere")
+    kicker("Plays on", x + 20, y + 22, pal.text3);
+    float ry = y + 44;
+    std::string picked;
+    for (size_t i = 0; i < rows.size(); i++) {
+        const Row& r = rows[i];
+        const bool on = r.id == o.choice;
+        const Id id = uid("vol.outrow", int(i));
+        if (ui.item(id, { x + 8, ry, w - 16, rowH - 4 }, 14)) picked = r.id;
+        const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
+        if (on || hot) g.roundRect(x + 8, ry, w - 16, rowH - 4, 14, on ? pal.accent : pal.text, on ? 0.12f : 0.07f);
+        g.icon(r.icon, x + 34, ry + rowH / 2 - 2, 20, on ? pal.accentInk : pal.text2);
+        g.text(r.name, { css::Base, Weight::SemiBold }, x + 58, ry + (r.sub.empty() ? 17 : 8), pal.text, 1, Align::Left, int(w - 58 - 56));
+        if (!r.sub.empty()) g.text(r.sub, { css::Sm }, x + 58, ry + 30, pal.text3, 1, Align::Left, int(w - 58 - 50));
+        if (r.sparkle)   // (bit-perfect: the sparkle, never a word: the user's rule)
+            g.sparkle(x + 58 + std::min(float(g.measure(r.name, { css::Base, Weight::SemiBold })), w - 58 - 56) + 12, ry + (r.sub.empty() ? 25 : 16), 13,
+                      pal.accentInk, 1);
+        if (on) g.icon(ICON_CHECK, x + w - 30, ry + rowH / 2 - 2, 18, pal.accentInk);
+        ry += rowH;
+    }
+    ui.region(regionWas);
+    if (!picked.empty()) {
+        if (picked != o.choice) sysapi::act("output_set", picked, {}, "output");
+        outList_ = false;
+    } else if (away) outList_ = false;
+#endif
+}
+
+/** The earbuds' noise modes as a card beside the Side pop-up's noise round (the user, 2026-11-16: "like the plays on one does"): the
+ *  modes they offer, the one on ticked; a tap picks one (earbuds_set) and closes it, a tap anywhere else closes it. */
+void App::drawNoiseList() {
+#ifdef GF_ANDROID
+    if (!noiseList_) return;
+    const sysapi::Earbuds eb = sysapi::earbuds();
+    if (store.volWhere != 1 || !eb.known || !eb.supported || time >= volPopUntil_) { noiseList_ = false; return; }
+    const bool ap = eb.kind == "airpods";   // (AirPods: their four)
+    static const char* scKey[3] = { "noise_cancelling", "transparency", "normal" };
+    static const char* scName[3] = { "Cancelling", "Transparency", "Normal" };
+    static const char* scIcon[3] = { ICON_ANC, ICON_EAR, ICON_HEADPHONES };
+    static const char* apKey[4] = { "off", "anc", "transparency", "adaptive" };
+    static const char* apName[4] = { "Off", "Cancelling", "Transparency", "Adaptive" };
+    static const char* apIcon[4] = { ICON_HEADPHONES, ICON_ANC, ICON_EAR, ICON_SPARKLE };
+    const bool gx = eb.kind == "galaxybuds";   // (Galaxy Buds: their three)
+    static const char* gxKey[3] = { "off", "anc", "ambient" };
+    static const char* gxName[3] = { "Off", "Cancelling", "Ambient" };
+    static const char* gxIcon[3] = { ICON_HEADPHONES, ICON_ANC, ICON_EAR };
+    const char* const* key = ap ? apKey : gx ? gxKey : scKey;
+    const char* const* name = ap ? apName : gx ? gxName : scName;
+    const char* const* icon = ap ? apIcon : gx ? gxIcon : scIcon;
+    std::vector<int> modes;
+    for (int i = 0; i < (ap ? 4 : 3); i++)
+        if (eb.modes.empty() || std::find(eb.modes.begin(), eb.modes.end(), key[i]) != eb.modes.end()) modes.push_back(i);
+    const float rowH = 56, h = 44 + rowH * float(modes.size()) + 10;
+    const float w = std::min(css::W - 12 - 52 - 10 - 12.f, 360.f), x = css::W - 12 - 52 - 10 - w;
+    const float y = std::clamp(noiseListAt_ - h + 40, 52.f + 6, css::H - h - 12.f);   // (its foot level with the round, as the output's)
+    const Region regionWas = ui.region();
+    ui.region(Region::Modal);
+    const bool away = ui.item(uid("vol.noiseaway"), { 0, 0, float(css::W), float(css::H) }, 0);
+    g.roundRect(x, y + 6, w, h, 20, { 0, 0, 0 }, 0.25f);
+    g.roundRect(x, y, w, h, 20, pal.surface2);
+    g.roundStroke(x, y, w, h, 20, 1, pal.text, 0.09f);
+    ui.item(uid("vol.noisecard"), { x, y, w, h }, 20);   // (a tap on the card's own ground is not "elsewhere")
+    kicker("Noise control", x + 20, y + 22, pal.text3);
+    float ry = y + 44;
+    int picked = -1;
+    for (int i : modes) {
+        const bool on = eb.mode == key[i];
+        const Id id = uid("vol.noiserow", i);
+        if (ui.item(id, { x + 8, ry, w - 16, rowH - 4 }, 14)) picked = i;
+        const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
+        if (on || hot) g.roundRect(x + 8, ry, w - 16, rowH - 4, 14, on ? pal.accent : pal.text, on ? 0.12f : 0.07f);
+        g.icon(icon[i], x + 34, ry + rowH / 2 - 2, 20, on ? pal.accentInk : pal.text2);
+        g.text(name[i], { css::Base, Weight::SemiBold }, x + 58, ry + 17, pal.text, 1, Align::Left, int(w - 58 - 56));
+        if (on) g.icon(ICON_CHECK, x + w - 30, ry + rowH / 2 - 2, 18, pal.accentInk);
+        ry += rowH;
+    }
+    ui.region(regionWas);
+    if (picked >= 0) {
+        if (eb.mode != key[picked]) sysapi::earbudsSet({ { "mode", key[picked] } });
+        noiseList_ = false;
+    } else if (away) noiseList_ = false;
 #endif
 }
 
 void App::drawToast() {
     drawVolumePop();
+    drawOutputs();   // (the output switcher's list, over the pop-up or from Sound & DAC)
+    drawNoiseList();
     if (toastT <= 0) return;
     const float a = std::min(1.f, toastT / 0.25f) * std::min(1.f, (3.2f - toastT) / 0.2f + 0.01f);
     const Font f{ css::Sm, Weight::SemiBold };
@@ -2039,8 +2459,11 @@ void App::drawFocusRing() {
     // the player bar's seek: its touch area reaches up to the play button; the ring hugs the waveform instead, clear of it (the user,
     // 2026-11-06: "the outline of the waveform and scrub line is clipping the pause/play button")
     if (id == uid("pb.seek")) { r.y += 6; r.h -= 12; }
+    // an item whose ring is drawn round only part of it (an open Settings card's title: round its chevron; a keyboard key: round the
+    // key drawn, not its touch area out to its neighbours and the card's edge)
+    float rad = ui.radiusOf(id) + 3;
+    if (const auto it = ringAt_.find(id); it != ringAt_.end()) { r = it->second; if (r.w == r.h) rad = r.w / 2 + 3; }   // (square: a round ring)
     // :focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px }
-    const float rad = ui.radiusOf(id) + 3;
     // Behind what is around its list, as the item itself is (the user, 2026-11-04: "every single focus ring is overlaping the
     // UI"): cut at the list's edge where the item goes under it; where the item is all in view, the ring's 6 px outside it stay
     const SDL_FRect c = ui.clipOf(id);

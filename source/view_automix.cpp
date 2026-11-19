@@ -363,19 +363,22 @@ void App::drawAutomixPicker() {
         else button(uid("ap.done"), ICON_CHECK, "Done", X + W - pad - 34 - 12 - dw, Y + pad + 3, count > 0, &done);
         if (done) {
             if (!count) { toast("Pick a few songs first"); return; }
-            std::string name = "Automix";
-            if (!keyboard("Name the Automix playlist", name, name)) return;
-            while (!name.empty() && name.back() == ' ') name.pop_back();
-            if (name.empty()) name = "Automix";
-            name = store.freePlaylistName(name);
-            FolderPlaylist p{ name, "", {} };
-            for (size_t i = 0; i < ap.sel.size(); i++) if (ap.sel[i]) p.tracks.push_back(lib.tracks[i].path);
-            p.automix = true;
-            store.playlists.push_back(p);
-            const int ref = int(store.playlists.size()) - 1;
-            closeAutomixPicker();
-            orderAutomixList(ref, true);
-            navigate(View::List, ref);
+            // the songs ticked now (by path: the library may change while the name is typed)
+            std::vector<std::string> paths;
+            for (size_t i = 0; i < ap.sel.size() && i < lib.tracks.size(); i++) if (ap.sel[i]) paths.push_back(lib.tracks[i].path);
+            askName("Name the Automix playlist", "Automix", [this, paths](std::string name) {
+                while (!name.empty() && name.back() == ' ') name.pop_back();
+                if (name.empty()) name = "Automix";
+                name = store.freePlaylistName(name);
+                FolderPlaylist p{ name, "", {} };
+                p.tracks = paths;
+                p.automix = true;
+                store.playlists.push_back(p);
+                const int ref = int(store.playlists.size()) - 1;
+                closeAutomixPicker();
+                orderAutomixList(ref, true);
+                navigate(View::List, ref);
+            });
             return;
         }
     }

@@ -329,6 +329,7 @@ void App::connectTick() {
 #ifdef GF_AIRPLAY
     airplayTick();
 #endif
+    otherTick();   // (another app's music: otherapps.cpp)
 #ifdef GF_DEV
     // while a sync runs: the longest real frame, and update's slowest step, in the log
     {
@@ -629,20 +630,25 @@ void App::connectTick() {
 }
 
 void App::connectEnterCode(const std::string& peerId) {
+    const char* title = "The 6-digit code shown on the other device";
+    auto use = [this, peerId](const std::string& t) {
+        std::string digits;
+        for (char c : t) if (c >= '0' && c <= '9') digits += c;
+        if (digits.size() != 6) { toast("The code has 6 digits"); return; }
+        connect.enterCode(peerId, digits);
+    };
+    if (askKb(KbKind::Code, title, "", use)) return;   // Songate's card: the number pad upright
     std::string t;
-    if (!keyboard("The 6-digit code shown on the other device", "", t)) return;
-    std::string digits;
-    for (char c : t) if (c >= '0' && c <= '9') digits += c;
-    if (digits.size() != 6) { toast("The code has 6 digits"); return; }
-    connect.enterCode(peerId, digits);
+    if (keyboard(title, "", t)) use(t);
 }
 
 void App::connectAddress() {
-    std::string t;
-    if (!keyboard("The other device's address, such as 192.168.1.70", store.connectAim, t)) return;
-    while (!t.empty() && t.back() == ' ') t.pop_back();
-    store.connectAim = t;
-    connect.aim(t);
-    persistSoon(0.3f);
-    toast(t.empty() ? "Address cleared" : "Saying hello to " + t + " too");
+    // Songate's card on its symbols page: the digits and the dot of an address
+    askName("The other device's address, such as 192.168.1.70", store.connectAim, [this](std::string t) {
+        while (!t.empty() && t.back() == ' ') t.pop_back();
+        store.connectAim = t;
+        connect.aim(t);
+        persistSoon(0.3f);
+        toast(t.empty() ? "Address cleared" : "Saying hello to " + t + " too");
+    }, false, true);
 }

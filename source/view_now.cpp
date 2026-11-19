@@ -116,7 +116,7 @@ void App::drawNow(float x, float y, float w, float h) {
     float cy = y + padT;
 
     // .np-kicker
-    eqGlyph(ix, cy + 8, pal.accentInk, isPlaying() || (extOn && !srvq_.on));   // (AirPlay plays: the bars move with it)
+    eqGlyph(ix, cy + 8, pal.accentInk, shownPlaying());   // (AirPlay plays: the bars move with it)
     const std::string state = srvq_.on ? (isPlaying() ? "Playing from your server" : "Paused") : extOn ? "Playing over AirPlay" : !has ? "Nothing playing" : isPlaying() ? "Playing" : "Paused";
     kicker(state, ix + 13 + 10, cy + 8, pal.accentInk, 0.14f);
     cy += 17 + 4;
@@ -281,7 +281,7 @@ void App::drawNow(float x, float y, float w, float h) {
     const float vizTop = cy;   // (the Lyrics tab's swipe light stops above it)
     if (vizH > 0) {
         cy += 14;
-        drawSpectrum(ix, cy, iw, vizH);
+        if (!otherSpecAsk(ix, cy, iw, vizH)) drawSpectrum(ix, cy, iw, vizH);   // (another app's song: asked once where the bars go)
         cy += vizH;
     }
     // .np-tabs
@@ -529,7 +529,7 @@ void App::drawNowCover(float ax, float ay, float art) {
     const bool has = now.track >= 0 || extOn;
     const float s = art * (1 + coverBeat), sx = ax + (art - s) / 2, sy = ay + (art - s) * 0.6f;
     g.roundRect(sx, sy, s, s, 16, pal.surface);
-    const float k = now.fade;
+    const float k = coverEase(now.fade);   // (the backdrop's and the colours' curve: all three together)
     if (pageWipe_.on) {
         // a Simple join: the outgoing cover gives way to the next one as the page's edge crosses it (the user, 2026-10-29)
         wipedImage(sx, sx + s, sy, sy + s, false, !now.cover, [&](bool old) {   // (the magic: its frost's, over it)
@@ -725,6 +725,33 @@ void App::drawUpNext(float x, float y, float w, float h) {
     ui.popArea();
 }
 
+bool App::lyricRowWords(const LyricLine& l, const std::string& row, size_t& first, Font f, float x, float y, const Rgb& c, float a, double pos,
+                        double nextT) {
+    if (l.words.empty()) return false;
+    // the row's words found in it in order (the row is a piece of the line's text: its words, a space between, glued ones together)
+    struct At { size_t w, off; };
+    std::vector<At> at;
+    size_t cur = 0, wi = first;
+    while (cur < row.size() && wi < l.words.size()) {
+        if (row[cur] == ' ') { cur++; continue; }
+        const std::string& t = l.words[wi].text;
+        if (row.compare(cur, t.size(), t) != 0) return false;
+        at.push_back({ wi, cur });
+        cur += t.size();
+        wi++;
+    }
+    if (at.empty()) return false;
+    first = wi;
+    const float dimA = a * 0.38f;
+    for (const At& p : at) {
+        const LyricWord& w = l.words[p.w];
+        const double end = p.w + 1 < l.words.size() ? l.words[p.w + 1].t : std::min(nextT, w.t + 1.5);   // (the last: to the next line, at most 1.5 s)
+        const float fill = pos <= w.t ? 0.f : pos >= end ? 1.f : float((pos - w.t) / std::max(0.08, end - w.t));
+        g.textFill(w.text, f, x + float(g.measure(row.substr(0, p.off), f)), y, fill, c, a, dimA);
+    }
+    return true;
+}
+
 void App::drawLyricsOf(float x, float y, float w, float h, const std::vector<LyricLine>& lyrics, bool synced, const std::string& source,
                        double at, ScrollArea& sa, bool live) {
     sa.view = { x, y, w, h };
@@ -732,7 +759,10 @@ void App::drawLyricsOf(float x, float y, float w, float h, const std::vector<Lyr
     if (lyrics.empty()) {
         // .lyr-msg; the server's song: no file to put anywhere
         g.text("No lyrics", { css::Lg, Weight::SemiBold }, x, y + 28, pal.text2);
-        const std::string line = live && srvq_.on ? "The server has none for this song." : "Put an .lrc file with the song's name next to it, or a LYRICS tag.";
+        const std::string line = live && srvq_.on ? "The server has none for this song."
+                               : live && extApp_ ? (store.lyricsOnline ? "None found online for this song."   // (another app's song: no file)
+                                                                       : "Settings › Lyrics › Online finds them for other apps' songs.")
+                                                 : "Put an .lrc file with the song's name next to it, or a LYRICS tag.";
         float ty = y + 56;   // (wrapped where it does not fit: a phone upright)
         for (const auto& l : g.wrap(line, { css::Base }, int(w), 3)) {
             g.text(l, { css::Base }, x, ty, pal.text3, 1, Align::Left, int(w));
@@ -784,7 +814,9 @@ void App::drawLyricsOf(float x, float y, float w, float h, const std::vector<Lyr
     if (!live) sa.y = sa.target;   // (the outgoing song's: no hand on it, it stays on its line)
     if (live) ui.pushArea(&sa);
     g.clip(x, top, w, vh);
+    size_t wordAt = 0;   // (the current line's words: where its next row's begin)
     for (size_t r = 0; r < rows.size(); r++) {
+        if (r == 0 || rows[r].first != rows[r - 1].first) wordAt = 0;
         const float ry = top + rowY[r] - sa.y;
         if (ry + lh < top - 40 || ry > top + vh + 40) continue;
         const int li = rows[r].first;
@@ -805,7 +837,9 @@ void App::drawLyricsOf(float x, float y, float w, float h, const std::vector<Lyr
             c = pal.text2;
         }
         if (synced && lyrics[li].text.empty()) lyricDots(x, ry + lh / 2, 7, li == cur ? pal.text : c, a, li == cur);   // a break
-        else g.text(rows[r].second, f, x, ry, c, a, Align::Left, int(w - 12));
+        else if (!(synced && li == cur &&
+                   lyricRowWords(lyrics[li], rows[r].second, wordAt, f, x, ry, c, a, at + 0.15, li + 1 < int(lyrics.size()) ? lyrics[li + 1].t : 1e9)))
+            g.text(rows[r].second, f, x, ry, c, a, Align::Left, int(w - 12));
     }
     g.unclip();
     if (live) ui.popArea();

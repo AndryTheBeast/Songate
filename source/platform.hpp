@@ -41,6 +41,7 @@ bool legacyData();
 // ---- input: the Joy-Con's buttons are the app's own vocabulary
 enum Button : uint64_t {
     BtnA = 1u << 0, BtnB = 1u << 1, BtnX = 1u << 2, BtnY = 1u << 3,
+    BtnLStick = 1u << 4, BtnRStick = 1u << 5,   // L3 and R3, the sticks pressed in
     BtnL = 1u << 6, BtnR = 1u << 7, BtnZL = 1u << 8, BtnZR = 1u << 9,
     BtnPlus = 1u << 10, BtnMinus = 1u << 11,
     BtnLeft = 1u << 12, BtnUp = 1u << 13, BtnRight = 1u << 14, BtnDown = 1u << 15,
@@ -50,6 +51,8 @@ void padInit();
 void padRead();   // once a frame
 uint64_t padDown();   // pressed this frame
 uint64_t padHeld();
+/** A short, light buzz of the controllers (a key of the keyboard card: the Joy-Con, a PC's pad); none where there is nothing to buzz */
+void padRumble(int level);   // 1 light, 2 medium, 3 strong
 Stick stick(int which);   // 0 left, 1 right
 
 // ---- typing
@@ -58,6 +61,8 @@ enum class TextResult { Done, Cancelled, Unavailable };
 TextResult askText(const char* header, const char* guide, const char* initial, char* out, size_t size);
 /** Set around an askText for a password (Subsonic's): the system's password keyboard, or the app's card shows dots. */
 inline std::atomic<bool>& textSecret() { static std::atomic<bool> on{ false }; return on; }
+/** The PC: typing straight into Search's pill (the user, 2026-11-16): the keyboard's keys are words then, not buttons */
+inline std::atomic<bool>& textTyping() { static std::atomic<bool> on{ false }; return on; }
 #ifdef GF_WINDOWED
 /** No system keyboard to hand over to: askText goes to the app's own card (view_textcard.cpp). */
 using TextFn = TextResult (*)(const char* header, const char* guide, const char* initial, char* out, size_t size);
@@ -94,12 +99,44 @@ void holdLandscape(bool on);
 /** Settings › Appearance › Screen rotation: 0 Auto (with the device), 1 Portrait, 2 Landscape; held whatever the device's own
  *  auto-rotate says. */
 void screenRotation(int kind);
+/** A key of Songate's keyboard card pressed: a soft click (click; not with the ringer silent or on vibrate) and a light tick
+ *  (vibrate), as Settings › Controls › Keyboard has them. Never called on the HiBy R4: it has neither (the user, 2026-11-18). */
+void keyTap(bool click, int vibrate, int kind, bool overMusic);   // vibrate: 0 none, 1 light, 2 medium, 3 strong; kind: keyclick.hpp's
+/** The key sounds handed to Android once (keyclick.hpp's, 16-bit mono at `rate`), ready in its sound pool before a key */
+void keySounds(const std::vector<std::vector<int16_t>>& sounds, int rate);
+/** Other apps' music (Settings › Playback › Other apps; OtherApps.java): Notification access given; Android's page for it; followed
+ *  or not; one more each time what plays changed; what plays ("key=value" lines: pkg, label, title, artist, album, duration ms,
+ *  pos ms, playing, actions, art); its picture (JPEG) and its app's icon (size by size ARGB); its buttons (1 play, 2 pause,
+ *  3 next, 4 previous, 5 seek to arg ms) */
+bool otherAllowed();
+void otherAccess();
+bool otherWatch(bool on);   // false: not reached (the activity not there yet): asked again
+unsigned otherGen();
+std::string otherState();
+std::vector<uint8_t> otherArt();
+bool otherIcon(int size, std::vector<uint32_t>& argb);
+void otherControl(int cmd, double arg);
+/** Search's other music apps: those that answer Android's play-from-search (component, name), and the words handed to one (its
+ *  own search screen) */
+struct PlaySearchApp { std::string component, name; };
+std::vector<PlaySearchApp> playSearchApps();
+void playSearch(const std::string& component, const std::string& query);
+/** The spectrum for other apps' music: Android's audio recording permission (allowed; asked in Android's dialog; its answer since
+ *  the last read: 0 none, 1 allowed, 2 refused), and the latest slice of Android's whole output (8-bit, 128 silence; false: none,
+ *  the device refuses it or it is not allowed). otherVizStop lets it go. */
+bool recordAllowed();
+void askRecord();
+int recordAnswer();
+bool otherViz(std::vector<uint8_t>& wave, int& rateHz);
+void otherVizStop();
 /** Songate as the device's home screen (Settings: "Use Songate as the home screen"). homeHeld: whether Android has it so now.
  *  homeSet: on, Android asks in its own dialog; off, Android goes back to its other home app. apps: what a home screen lists,
  *  each a name and what openApp takes; appIcon: size by size pixels, ARGB. */
 bool homeHeld();
 void homeSet(bool on);
 std::vector<std::pair<std::string, std::string>> apps();
+/** Of apps(): the ones that came with the device (Android's system apps, updated ones too), by what openApp takes */
+std::vector<std::string> systemApps();
 bool appIcon(const std::string& app, int size, std::vector<uint32_t>& argb);
 void openApp(const std::string& app);
 /** Android's own page for an app, or (uninstall) its own question whether to remove it. */
@@ -260,10 +297,21 @@ void bitPerfectEnd();
 bool bitPerfectLost();
 /** Android's listener has said the claim holds (the badge sparkles only then: the SongateOS session's advice, 2026-11-15). */
 bool bitPerfectConfirmed();
+/** Media plays to the output bit-perfect was claimed on (false: nothing claimed, or music moved elsewhere: Bluetooth connected
+ *  with the wired output's claim still set, which Android does not report). Asks Android: once a second at most */
+bool bitPerfectRouted();
 std::string hibyGet();
 std::string hibySet(const std::string& key, const std::string& value);
 bool hibyEqSet(const std::string& eq);
 bool hibyLedLive(int rgb, int bright, bool breath);
+/** SongateOS's system settings (SysApi.java; sysapi.cpp): a call (extras as "key=value" lines), its answer as JSON; a watch on
+ *  …/system/<area> (its changes counted in sysChanged); Android's own page (wifi, bluetooth, settings) */
+std::string sysCall(const std::string& method, const std::string& arg, const std::string& extras);
+void sysWatch(const char* area, bool on);
+void sysOpen(const char* which);
+/** Bumped by a change notification for that area (the service's notifyChange), read by sysapi's worker */
+unsigned sysChanged(const char* area);
+void sysBump(const std::string& area);   // (also the dev builds' simulated service, sysapi.cpp)
 #endif
 /** Files and bytes below a folder, the system's own fast way. False: use stat(). */
 bool measureFiles(const std::string& path, int& files, uint64_t& bytes, int cap);

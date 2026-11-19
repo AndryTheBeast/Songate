@@ -81,6 +81,8 @@ inline constexpr char PLI_PLANE[] = PLI_SVG R"SVG(<path d="M10.5 13.5 3 11.2l1.4
 inline constexpr char PLI_MOOD[] = PLI_SVG R"SVG(<path d="M1.5 2.5h9V9a4.5 4.5 0 0 1-9 0z"/><path d="M13.5 10.5h9V17a4.5 4.5 0 0 1-9 0z"/><path d="M4 8.6a2 2 0 0 0 4 0M16 18.6a2 2 0 0 1 4 0"/>)SVG" PLI_DOT(4, 5.4) PLI_DOT(8, 5.4) PLI_DOT(16, 13.4) PLI_DOT(20, 13.4) R"SVG(</svg>)SVG";
 inline constexpr char PLI_UP[] = PLI_SVG R"SVG(<path d="M12 19V5M6 11l6-6 6 6"/></svg>)SVG";
 inline constexpr char PLI_DOWN[] = PLI_SVG R"SVG(<path d="M12 5v14M6 13l6 6 6-6"/></svg>)SVG";
+// A real microphone for the sheet's "mic" (the user, 2026-11-19: ICON_MIC is a person, the Artists icon, the same as the "person" app tile)
+inline constexpr char PLI_MIC[] = PLI_SVG R"SVG(<rect x="9" y="2.5" width="6" height="11.5" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5v4M8.5 21.5h7"/></svg>)SVG";
 
 #undef PLI_DOT
 #undef PLI_SVG
@@ -89,7 +91,7 @@ inline constexpr char PLI_DOWN[] = PLI_SVG R"SVG(<path d="M12 5v14M6 13l6 6 6-6"
 struct PlaylistIcon { const char* key; const char* svg; };
 inline const PlaylistIcon kPlaylistIcons[] = {
     { "list", ICON_LIST },          { "folder", ICON_FOLDER },      { "notes", PLI_NOTES },         { "music", ICON_MUSIC },
-    { "disc", ICON_DISC },          { "headphones", PLI_HEADPHONES }, { "mic", ICON_MIC },        { "guitar", PLI_GUITAR },
+    { "disc", ICON_DISC },          { "headphones", PLI_HEADPHONES }, { "mic", PLI_MIC },         { "guitar", PLI_GUITAR },
     { "piano", PLI_PIANO },         { "drum", PLI_DRUM },           { "radio", PLI_RADIO },         { "speaker", PLI_SPEAKER },
     { "cassette", PLI_CASSETTE },   { "wave", ICON_WAVE },          { "eq", ICON_EQ },              { "sliders", ICON_SLIDERS },
     { "heart", ICON_HEART },        { "star", PLI_STAR },           { "sparkle", ICON_SPARKLE },    { "bolt", ICON_BOLT },

@@ -619,7 +619,6 @@ bool Engine::adopt(s32 pos, std::unique_ptr<Decoder> d, const std::string& p, co
     lvl_ = lvlTarget_ = levelFor(p);   // levelled from the first sample, also across a gapless join
     heardFrames_ = 0;
     counted_ = false;
-    scrobbled_ = false;
     base_ = start > 0.5 ? start : 0;
     outFrames_ = 0;
     resumeAt_ = 0;
@@ -1020,11 +1019,6 @@ int Engine::produce(s16* out, int frames) {
             if (!counted_ && double(heardFrames_) >= need * GFBG_RATE) {
                 counted_ = true;
                 if (plays_.size() < 256) plays_.push_back(playing_);
-            }
-            const double half = std::min(240.0, dur * 0.5);   // Lastfm::threshold
-            if (!scrobbled_ && dur > 30 && double(heardFrames_) >= half * GFBG_RATE) {
-                scrobbled_ = true;
-                if (scrobbles_.size() < 256) scrobbles_.push_back({ playing_, u32(heardFrames_ / GFBG_RATE) });
             }
         }
         if (got >= want) break;
@@ -1630,11 +1624,9 @@ void Engine::loadFiles() {
 /** "time<TAB>path" lines for Gatefold (Stats, stats.cpp), which renames the file away to read it. */
 void Engine::writePlays() {
     mutexLock(&m_);
-    if (plays_.empty() && scrobbles_.empty()) { mutexUnlock(&m_); return; }
+    if (plays_.empty()) { mutexUnlock(&m_); return; }
     std::vector<std::string> plays = std::move(plays_);
     plays_.clear();
-    std::vector<Heard> heard = std::move(scrobbles_);
-    scrobbles_.clear();
     mutexUnlock(&m_);
     u64 t = 0;
     if (R_FAILED(timeGetCurrentTime(TimeType_UserSystemClock, &t))) t = 0;   // 0: Gatefold dates it when it reads it
@@ -1648,13 +1640,6 @@ void Engine::writePlays() {
     if (!plays.empty())
         if (FILE* f = open(cfgPath("bg-plays.txt"))) {
             for (const auto& p : plays) fprintf(f, "%llu\t%s\n", (unsigned long long)t, p.c_str());
-            fclose(f);
-        }
-    // "began<TAB>path" (0: no clock); a megabyte is far more than Songate keeps, should it never open again
-    if (!heard.empty())
-        if (FILE* f = open(cfgPath("bg-scrobbles.txt"))) {
-            if (ftell(f) < 1024 * 1024)
-                for (const auto& h : heard) fprintf(f, "%llu\t%s\n", t > h.secs ? (unsigned long long)(t - h.secs) : 0ULL, h.path.c_str());
             fclose(f);
         }
 }
