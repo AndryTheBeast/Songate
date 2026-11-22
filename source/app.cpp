@@ -1038,32 +1038,54 @@ void App::restoreSession() {
 
 void App::run() {
     lastTick_ = SDL_GetPerformanceCounter();
-#if defined(GF_ANDROID) && defined(GF_DEV)
+#if defined(GF_DEV) && (defined(GF_ANDROID) || defined(__SWITCH__))
+    // the last run's log kept as log-previous.txt (the Switch too from 2026-11-22: the night's log was gone once Songate opened
+    // again). Removed first: on the Switch's card a rename does not replace a file that is there
+    std::remove(store.path("log-previous.txt").c_str());
     std::rename(store.path("log.txt").c_str(), store.path("log-previous.txt").c_str());
+#endif
+    // The dev build's frame watchdog (Android, and the Switch from 2026-11-21: the user's freeze inside Songate with the background
+    // player playing, the visualizer stuck): a frame not finished for 2, 10 or 30 s is written to stall.txt with where the frame was
+    // (stage_) and the call to the background player it waits on, if any (BgClient::waiting); then when frames come again
+#if defined(GF_DEV) && (defined(GF_ANDROID) || defined(__SWITCH__))
     auto nowMs = [] { return int64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); };
     frameDoneMs_ = nowMs();
     watchdog_ = std::thread([this, nowMs] {
-        int told = 0;   // seconds of this stall already written: 3, 10, 30
+        int told = 0;   // seconds of this stall already written: 2, 10, 30
+        auto stamp = [] {
+            const time_t t = std::time(nullptr);
+            char b[16];
+            strftime(b, sizeof b, "%H:%M:%S", localtime(&t));
+            return std::string(b);
+        };
         while (!watchdogQuit_) {
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
             const int64_t since = nowMs() - frameDoneMs_.load();
-            if (since < 3000) { told = 0; continue; }
+            if (since < 2000) {
+                if (told)
+                    if (FILE* f = fopen(store.path("stall.txt").c_str(), "a")) {
+                        fprintf(f, "%s  frames again\n", stamp().c_str());
+                        fclose(f);
+                    }
+                told = 0;
+                continue;
+            }
             const int secs = int(since / 1000);
-            if ((told < 3 && secs >= 3) || (told < 10 && secs >= 10) || (told < 30 && secs >= 30)) {
-                told = secs >= 30 ? 30 : secs >= 10 ? 10 : 3;
+            if ((told < 2 && secs >= 2) || (told < 10 && secs >= 10) || (told < 30 && secs >= 30)) {
+                told = secs >= 30 ? 30 : secs >= 10 ? 10 : 2;
                 if (FILE* f = fopen(store.path("stall.txt").c_str(), "a")) {
-                    const time_t t = std::time(nullptr);
-                    char b[16];
-                    strftime(b, sizeof b, "%H:%M:%S", localtime(&t));
-                    fprintf(f, "%s  a frame not finished for %d s, at: %s\n", b, secs, stage_.load());
+                    const char* bg = BgClient::waiting();
+                    fprintf(f, "%s  a frame not finished for %d s, at: %s%s%s\n", stamp().c_str(), secs, stage_.load(),
+                            bg ? ", waiting on the background player: " : "", bg ? bg : "");
                     fclose(f);
                 }
             }
         }
     });
 #endif
-    while (running && plat::mainLoop()) frame();
-#if defined(GF_ANDROID) && defined(GF_DEV)
+    // (the system's own wait, between frames: the HOME menu or sleep holds the app there; the watchdog's stall.txt names it so)
+    while (running && (stage_ = "between frames (the HOME menu or sleep holds it here)", plat::mainLoop())) frame();
+#if defined(GF_DEV) && (defined(GF_ANDROID) || defined(__SWITCH__))
     watchdogQuit_ = true;
     if (watchdog_.joinable()) watchdog_.join();
 #endif
@@ -1750,6 +1772,7 @@ void App::input() {
 #if defined(GF_WINDOWED) && defined(GF_DEV) && !defined(GF_ANDROID)
     if (devPad_) ui.setPadMode(true);   // (a test's pad press: the focus ring shows, as after a real pad's)
     down |= devPad_;
+    const uint64_t devHeld = devPad_;   // (and held for this frame: the D-pad moves the focus on what is held)
     devPad_ = 0;
 #endif
     if (down) openingSkip_ = true;
@@ -1770,6 +1793,9 @@ void App::input() {
 #endif
 #endif
     uint64_t held = plat::padHeld();
+#if defined(GF_WINDOWED) && defined(GF_DEV) && !defined(GF_ANDROID)
+    held |= devHeld;
+#endif
     // Any input brings the Canvas controls back.
 #ifdef GF_WINDOWED
     const bool woken = touched || mouseMoved || wheel != 0;   // the mouse counts too: the Canvas's controls and a dimmed screen come back
@@ -3185,12 +3211,24 @@ void App::r4Tick() {
     // start the music where it is, every time, paused by hand or not. The first read (Songate's start, a boot with them in) only
     // notes them. Straight to the player, not through Android's presses: a quick swap of jacks is not held by the 1 s guard that
     // keeps out the plug's own stray button press (SongateService.press)
+    // A jack plugged in, not a route that moved to it: the service lists a wired output only while a jack is in (one at most), so
+    // what counts is that entry appearing, or the other jack's in its place (a quick swap). The output that is active is not looked
+    // at: Bluetooth earphones switched off move the route to a wired one that was in all along, and that started the music right
+    // after they had paused it (SongateOS 2.1.0-rc.1, 2026-11-21)
     if (sysapi::has("output")) {
         const sysapi::Output o = sysapi::output();
         if (o.known) {
-            const int in = o.connected && (o.active == "wired" || o.active == "wired44") ? 1 : 0;
-            if (in && plugWas_ == 0 && store.playOnPlug && !extApp_ && !extOn && !isPlaying() && (player.loaded() || q.pos >= 0 || srvq_.on)) {
-                SDL_Log("Play when plugged in: headphones in (%s), the music starts", o.active.c_str());
+            int in = 0;   // 0: no jack, 1: the 3.5 mm, 2: the 4.4 mm
+            std::string what;
+            if (o.connected)
+                for (const sysapi::Out& x : o.outs) {
+                    const bool b44 = x.kind.rfind("balanced", 0) == 0 || x.id == "wired44";
+                    const bool b35 = !b44 && (x.kind.find("_35") != std::string::npos || x.id == "wired");
+                    if (b44 || b35) { in = b44 ? 2 : 1; what = x.id; }
+                }
+            if (in && plugWas_ >= 0 && in != plugWas_ && store.playOnPlug && !extApp_ && !extOn && !isPlaying() &&
+                (player.loaded() || q.pos >= 0 || srvq_.on)) {
+                SDL_Log("Play when plugged in: headphones in (%s), the music starts", what.c_str());
                 togglePlay();
             }
             plugWas_ = in;

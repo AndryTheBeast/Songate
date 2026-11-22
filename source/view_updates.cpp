@@ -266,9 +266,21 @@ void App::osOfferRows(std::vector<SheetRow>& rows) {
                              closeSheet();
                              sysapi::act("ota_download", "", {}, "ota");
                          } });
-    else if (st == "downloading" || st == "verifying")
+    else if (st == "downloading")
         rows.push_back({ Row::Action, ICON_DOWNLOAD, "Downloading", osBytes(o.progress) + " of " + osBytes(o.size),
                          "", nullptr });
+    else if (st == "staging" || (st == "ready" && osInstallAt_ >= 0 && time - osInstallAt_ < 180))   // (Install answered: the file checked again)
+        rows.push_back({ Row::Action, ICON_DOWNLOAD, "Preparing the install…", "The player restarts by itself when it is ready", "", nullptr });
+    else if (st == "verifying")   // (it said "Downloading 0 MB of …" while the download was checked; 2026-11-21)
+        rows.push_back({ Row::Action, ICON_DOWNLOAD, "Checking the download", osBytes(o.size), "", nullptr });
+    else if (!o.recovery.empty() && o.recovery.rfind("ok:", 0) != 0)
+        // the recovery never checked (a fresh install) or changed: the service refuses to install until it has written its record.
+        // In Install's place: restart into it, which writes the record and comes back by itself (the user's words A, 2026-11-21)
+        rows.push_back({ Row::Action, ICON_REFRESH, "Check the recovery", "The player restarts into the recovery and back, about half a minute",
+                         "", [this] {
+                             closeSheet();
+                             sysapi::act("power", "recovery_check", {}, "ota");
+                         } });
     else
         rows.push_back({ Row::Action, ICON_DOWNLOAD, "Install", "The player restarts to install it", "", [this, v = o.latest] {
                              closeSheet();
@@ -281,36 +293,38 @@ void App::osOfferRows(std::vector<SheetRow>& rows) {
                          closeSheet();
                      } });
     rows.back().h = 62;
-    // What's new: the notes' first five points (their Markdown's "- " lines), or the notes as they are (one from the microSD card)
-    std::vector<std::string> top;
-    std::string plain;
-    for (size_t at = 0; at < o.notes.size();) {
-        size_t end = o.notes.find('\n', at);
-        if (end == std::string::npos) end = o.notes.size();
-        std::string l = o.notes.substr(at, end - at);
-        at = end + 1;
-        while (!l.empty() && (l.back() == '\r' || l.back() == ' ')) l.pop_back();
-        if (l.rfind("- ", 0) == 0 || l.rfind("* ", 0) == 0) {
-            l = l.substr(2);
-            std::string t;   // (**bold**, links' words and `code` as plain words)
-            for (size_t i = 0; i < l.size(); i++) {
-                if (l[i] == '*' || l[i] == '`') continue;
-                if (l[i] == '[') { const size_t c = l.find("](", i), e = c == std::string::npos ? c : l.find(')', c); if (e != std::string::npos) { t += l.substr(i + 1, c - i - 1); i = e; continue; } }
-                t += l[i];
-            }
-            if (top.size() < 5) top.push_back(t);
-        } else if (!l.empty() && l[0] != '#' && plain.empty()) plain = l;
-    }
-    if (top.empty() && !plain.empty()) top.push_back(plain);
-    if (top.empty()) return;
+    // What's new: the notes read as Songate reads its own (updNotesLog: emoji as Songate's icons; Inter has none and they came out
+    // as boxes, 2026-11-21): the first line of each part, then their second lines, five at most, as Songate's own update's sheet does;
+    // notes in no such shape (one from the microSD card): their first line of words
     const float textW = cardW(600) - 48 - 48;
-    rows.push_back({ Row::Group, nullptr, "What's new" });
-    rows.back().h = 40;
-    for (const std::string& t : top) {
-        Row r{ Row::Text, nullptr, "", t };
+    auto text = [&](const char* icon, const std::string& t) {
+        Row r{ Row::Text, icon, "", t };
         r.h = g.wrap(t, { css::Sm }, int(textW), 12).size() * 19.f + 14;
         rows.push_back(r);
+    };
+    const std::vector<UpdLog> log = updNotesLog(o.notes);
+    std::vector<const UpdItem*> top;
+    for (size_t depth = 0; top.size() < 5; depth++) {
+        bool any = false;
+        for (const UpdLog& sec : log)
+            if (depth < sec.items.size() && top.size() < 5) { top.push_back(&sec.items[depth]); any = true; }
+        if (!any) break;
     }
+    std::string plain;
+    if (top.empty())
+        for (size_t at = 0; at < o.notes.size() && plain.empty();) {
+            size_t end = o.notes.find('\n', at);
+            if (end == std::string::npos) end = o.notes.size();
+            std::string l = o.notes.substr(at, end - at);
+            at = end + 1;
+            while (!l.empty() && (l.back() == '\r' || l.back() == ' ')) l.pop_back();
+            if (!l.empty() && l[0] != '#' && l[0] != '>' && l[0] != '|') plain = l;
+        }
+    if (top.empty() && plain.empty()) return;
+    rows.push_back({ Row::Group, nullptr, "What's new" });
+    rows.back().h = 40;
+    if (top.empty()) text(nullptr, plain);
+    for (const UpdItem* it : top) text(changelogIcon(it->icon), it->text);
 #else
     (void)rows;
     closeSheet();

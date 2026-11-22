@@ -96,6 +96,15 @@ static SDL_SpinLock aaudio_streamLock;   /* the output stream swapped on the aud
 /* Songate: the output's frames since its stream opened: handed over by the mixer, and dropped (not taken in time); under
    aaudio_streamLock. SDL_SongateAAudioDelay sets them against where Android says the stream is heard (Bluetooth's delay included) */
 static Sint64 aaudio_mixed = 0, aaudio_dropped = 0;
+/* Songate: how many times a disconnected output was opened again here (aaudio_ReopenOutput), on Android's normal path: a stream
+   the app opened bit-perfect is not one any more after it (SongateOS beta.11, 2026-11-20: Play when plugged in played through the
+   mixer). SDL_SongateAAudioReopens tells the app; any thread. */
+static SDL_atomic_t aaudio_reopens;
+extern DECLSPEC int SDLCALL SDL_SongateAAudioReopens(void);
+DECLSPEC int SDLCALL SDL_SongateAAudioReopens(void)
+{
+    return SDL_AtomicGet(&aaudio_reopens);
+}
 
 /* Songate: how far, in seconds, what is heard now is behind the newest frame the mixer made. 1 and *seconds when Android gives
    a timestamp (playing), else 0. Any thread. */
@@ -307,6 +316,7 @@ static SDL_bool aaudio_ReopenOutput(_THIS)
     private->stream = stream;
     aaudio_mixed = aaudio_dropped = 0;   /* (Songate: a new stream counts from 0) */
     SDL_AtomicUnlock(&aaudio_streamLock);
+    SDL_AtomicIncRef(&aaudio_reopens);
     SDL_Log("AAudio: output reopened after a disconnect (%d Hz)", (int)ctx.AAudioStream_getSampleRate(stream));
     return SDL_TRUE;
 }

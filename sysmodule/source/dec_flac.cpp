@@ -19,32 +19,24 @@ class FlacDecoder : public Decoder {
 public:
     ~FlacDecoder() override {
         if (f_) drflac_close(f_);
-        if (fp_) fclose(fp_);
         free(tmp_);
     }
+    void readAhead() override { r_.startReadAhead(); }
 
     bool open(const char* path) {
         // A FLAC behind an ID3v2 tag (some rippers write one): dr_flac passes over the tag and then seeks to the seek table and
         // the first frame as if there were none, so the file did not open (bgtest, 2026-11-12). It is given the file from
         // where the FLAC begins instead, through a reader of its own; every other FLAC opens as before.
+        // (every FLAC through a Reader since 2.1.0, so the read-ahead covers it: the user's console, 2026-11-21)
         base_ = id3Length(path);
-        if (base_ > 0) {
-            fp_ = fopen(path, "rb");
-            if (!fp_ || fseek(fp_, base_, SEEK_SET) != 0) return false;
-            f_ = drflac_open_with_metadata(&FlacDecoder::ioRead, &FlacDecoder::ioSeek, &FlacDecoder::ioTell, &FlacDecoder::meta, this, nullptr);
-        } else {
-            f_ = drflac_open_file_with_metadata(path, &FlacDecoder::meta, this, nullptr);
-        }
+        if (!r_.open(path) || !r_.seek(uint64_t(base_))) return false;
+        f_ = drflac_open_with_metadata(&FlacDecoder::ioRead, &FlacDecoder::ioSeek, &FlacDecoder::ioTell, &FlacDecoder::meta, this, nullptr);
         if (!f_ || f_->channels == 0 || f_->sampleRate == 0) return false;
         codec = 3;
         rate = int(f_->sampleRate);
         channels = f_->channels;
         duration = double(f_->totalPCMFrameCount) / rate;
-        if (FILE* fp = fopen(path, "rb")) {
-            fseek(fp, 0, SEEK_END);
-            if (duration > 0) bitrate = int(double(ftell(fp)) * 8 / duration / 1000);
-            fclose(fp);
-        }
+        if (duration > 0) bitrate = int(double(r_.size()) * 8 / duration / 1000);
         if (channels != 2) tmp_ = static_cast<int16_t*>(malloc(size_t(Chunk) * channels * 2));
         return channels == 2 || tmp_;
     }
@@ -69,8 +61,8 @@ private:
     drflac* f_ = nullptr;
     int16_t* tmp_ = nullptr;
     int pictureType_ = -1;
-    FILE* fp_ = nullptr;   // the file itself, only for a FLAC behind an ID3 tag
-    long base_ = 0;        // where the FLAC begins in it (the tags' length)
+    Reader r_;             // the file
+    long base_ = 0;        // where the FLAC begins in it (an ID3 tag's length in front, as some rippers write; usually 0)
 
     /** The length of the ID3v2 tags at the front of the file (0: none, the usual). */
     static long id3Length(const char* path) {
@@ -85,17 +77,16 @@ private:
         fclose(f);
         return at;
     }
-    static size_t ioRead(void* self, void* out, size_t n) { return fread(out, 1, n, static_cast<FlacDecoder*>(self)->fp_); }
+    static size_t ioRead(void* self, void* out, size_t n) { return static_cast<FlacDecoder*>(self)->r_.read(out, n); }
     static drflac_bool32 ioSeek(void* self, int offset, drflac_seek_origin origin) {
         auto* d = static_cast<FlacDecoder*>(self);
-        if (origin == DRFLAC_SEEK_SET) return fseek(d->fp_, d->base_ + offset, SEEK_SET) == 0;
-        return fseek(d->fp_, offset, origin == DRFLAC_SEEK_CUR ? SEEK_CUR : SEEK_END) == 0;
+        const int64_t from = origin == DRFLAC_SEEK_SET ? d->base_ : origin == DRFLAC_SEEK_CUR ? int64_t(d->r_.tell()) : int64_t(d->r_.size());
+        const int64_t to = from + offset;
+        return to >= d->base_ && d->r_.seek(uint64_t(to)) ? DRFLAC_TRUE : DRFLAC_FALSE;
     }
     static drflac_bool32 ioTell(void* self, drflac_int64* at) {
         auto* d = static_cast<FlacDecoder*>(self);
-        const long p = ftell(d->fp_);
-        if (p < 0) return DRFLAC_FALSE;
-        *at = drflac_int64(p - d->base_);
+        *at = drflac_int64(d->r_.tell()) - d->base_;
         return DRFLAC_TRUE;
     }
 

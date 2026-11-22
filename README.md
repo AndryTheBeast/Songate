@@ -5,13 +5,13 @@
     <img src="docs/wordmark-dark.png" width="520" alt="Songate">
   </picture>
 </p>
-<p align="center"><b>A native music player for the Nintendo Switch, Windows and Android.</b><br>
+<p align="center"><b>A native music player for the Nintendo Switch, Windows and Android, and the home screen of <a href="https://github.com/AndryTheBeast/SongateOS-HiBy_R4">SongateOS</a> on the HiBy R4.</b><br>
 Your own music folder or your own server, synced lyrics, colours from every cover and DJ-style Automix. Listen together on a Switch, a PC and a phone, hand the music over, and play from an iPhone with AirPlay. On the Switch, music that keeps playing on the HOME menu and in games.<br>
-By <a href="https://github.com/AndryTheBeast"><b>AndryTheBeast</b></a> · version 2.0.0 · based on <a href="https://github.com/DEVIROYrus/gatefold-foobar2000"><b>Gatefold</b></a> by <a href="https://github.com/DEVIROYrus"><b>DEVIROYrus</b></a><br>
+By <a href="https://github.com/AndryTheBeast"><b>AndryTheBeast</b></a> · version 2.1.0 · based on <a href="https://github.com/DEVIROYrus/gatefold-foobar2000"><b>Gatefold</b></a> by <a href="https://github.com/DEVIROYrus"><b>DEVIROYrus</b></a><br>
 <a href="../../releases"><b>⬇️ Download</b></a> · <a href="https://github.com/AndryTheBeast/songate-automix"><b>🎚️ The Automix models</b></a></p>
 
-<!-- The film: on GitHub, replace the next line by dragging docs/songate-2.0.mp4 here (the inline player; under 10 MB) -->
-https://github.com/user-attachments/assets/faec7937-37a7-48cf-a305-a4cd3f21a65d
+<!-- The film: on GitHub, replace the next line by dragging docs/songate-2.1.mp4 here (the inline player; under 10 MB) -->
+[▶️ Songate 2.1, the film](docs/songate-2.1.mp4)
 
 
 
@@ -24,7 +24,7 @@ https://github.com/user-attachments/assets/faec7937-37a7-48cf-a305-a4cd3f21a65d
 >
 > **On Windows, tests were only made on Windows 11.**
 >
-> **On Android, Android 10 or newer is needed.** **Tests were only made on a Xiaomi 11 Lite 5G with Android 15.**
+> **On Android, Android 10 or newer is needed.** **Tests were only made on a Xiaomi 11 Lite 5G with Android 15, and on the HiBy R4 with SongateOS.**
 >
 > **Only MP3, M4A and FLAC are supported.** Other formats are untested (see [Formats](#-formats)).
 
@@ -45,6 +45,9 @@ Songate is a native rewrite, not a port, that began as a recreation of [Gatefold
 - 🎧 **On the Switch: music in your games.** A background player keeps it going on the HOME menu and in games; an Ultrahand overlay controls it.
 - 🧭 **A guided tour.** Basic, Advanced or Complete, on Songate's own screens with your music.
 - ⬆️ **Updates from inside the app.** Only if you turn them on.
+- 🎧 **The HiBy R4 with SongateOS.** A custom system for the R4 with Songate as its home screen: bit-perfect sound on both jacks, its settings inside Songate.
+- ⌨️ **Songate's own keyboard.** For names, tags, values and Search, on the Switch, Windows and Android.
+- 🏠 **On Android, your home screen.** Songate as the home screen, with an Apps page.
 
 ## 💾 Installation
 
@@ -91,6 +94,10 @@ You need **Android 10 or newer**. **Tests were only made on a Xiaomi 11 Lite 5G 
 Download `SongateAND-<version>.apk` from [Releases](../../releases) and open it. Android asks once to allow your browser or file app to install apps. Later versions install from Settings › Updates.
 
 📁 At the first start Songate asks for access to your music, and offers the `Music` folder of your SD card or your storage (Settings → Library → Music folder changes it).
+
+### 🎧 On the HiBy R4
+
+[SongateOS](https://github.com/AndryTheBeast/SongateOS-HiBy_R4) is a custom system for the HiBy R4 with Songate as its home screen. Songate comes with it, and SongateOS's updates bring new versions.
 
 ## 🎼 Formats
 
@@ -243,6 +250,7 @@ On the Switch, the PC and Android. Server music cannot go into Automix, smart or
 - 🎤 **Synced lyrics** from an `.lrc` file beside the song or its tags, on Now playing and in the Canvas. Tap a line to jump to it; Earlier and Later fix lyrics that run early or late, and an `.lrc` file's `[offset:]` is honoured.
 - 🌐 **Lyrics found online.** Off until you allow it in Settings → Lyrics: for a song with none, Songate asks LRCLIB with the song's title, artist, album and length, and nothing else. Play them at once or see them on a card first; **Keep** saves them beside the song or in Songate's folder, **Not these** tries the next match.
 - 🔍 **Search by lyrics.** Search's Lyrics tab lists each song that sings your words; a synced line plays from that moment.
+- 📋 **Settings → Lyrics** in cards: General, Timing and Online. Word-by-word lyrics fill smoothly.
 - 🏷️ **Tags written into files.** Edit a song's tags or change its cover, for one song or the whole album, and choose each time: keep the change in Songate, or write it into the MP3, M4A or FLAC file too. **Restore the file's original tags** puts back what the file held.
 
 </details>
@@ -270,13 +278,13 @@ Songates on the same network, a Switch, a PC or an Android phone, find each othe
 
 ### 🎛️ Sound
 
-- 🎚️ **Equalizer.** Simple mode gives you a preset plus bass and treble; Advanced adds ten bands and a preamp. Save your own sounds under a name. The player bar's button turns it on and off, and a long press opens its settings. It works in the background player too.
+- 🎚️ **Equalizer.** Simple mode gives you a preset plus bass and treble; Advanced adds ten bands and a preamp. Save your own sounds under a name. Each band shows its value; tap a band to type one. The player bar's button turns it on and off, and a long press opens its settings. It works in the background player too.
 - 🌊 **Crossfade.** 2 to 12 seconds, and optionally not between tracks of one album, so live albums stay seamless. A track changed by hand fades in 0.3 s.
 - 📏 **Volume levelling.** Every track's loudness is measured on the console as ITU-R BS.1770 / EBU R128 measure it (ported from Gatefold 1.4's own meter), with its true peak. Off (the default), Track, Album, or Auto (album, but track while shuffling), to a target of −18, −14 or −11 LUFS. Quiet tracks are raised only as far as their peaks allow. It runs in the background while Songate is open, the track playing and the next ones first, then the whole library, once. The background player levels with the same measurements.
 
 ### 🌙 Sleep timer
 
-- ⏲️ 15, 30, 45, 60 or 90 minutes, or the end of the track: from the moon in the player bar, the Canvas or Settings → Playback, and as Sleep Timer in the overlay.
+- ⏲️ 15, 30, 45, 60 or 90 minutes, the end of the track, or **Custom**, your own minutes: from the moon in the player bar, the Canvas or Settings → Playback, and as Sleep Timer in the overlay.
 - 🌫️ The music fades out over its last ten seconds and pauses where you were. The background player keeps the time, so it works with Songate closed too.
 - 😴 With Songate open, a card then counts down and puts the console to sleep, unless you stay awake (or turn it off in Settings).
 - 🔆 **Keep the console awake:** while Songate is open the screen does not dim and the console does not sleep by itself, with an optional dimming of the screen after a few minutes without input.
@@ -289,6 +297,8 @@ Songates on the same network, a Switch, a PC or an Android phone, find each othe
 - 🌈 Themes: **From the cover** (on a dark or a light background), **Dark**, **Light**, or **Custom** (your background and two accents, with a colour picker).
 - ✨ **The opening:** a short animation and a chime as Songate starts, never over music the background player is already playing. Either can be turned off.
 - 🎛️ Saturation, colour transition time, and the cover's palette.
+- 🌫️ **Background blur:** Classic, or Smooth in three strengths (Settings → Appearance → Background).
+- 🪟 **Sidebar opacity** for the sidebar opened over the page (Windows and Android).
 - 🧱 A collapsible sidebar: reorder its tabs, hide any but Now playing, and add dividing lines.
 - 🔋 **The battery:** a colour and an animation for each state (low, charging, charged), and beside it what you choose, in your order: percentage, time, charger watts, temperature, voltage, power. Home and the Canvas each have their own. Press it for a card with everything the device can read, health and charge cycles among them.
 - 📈 Visualizer settings: sensitivity, smoothing, number of bars (for Now playing and the Canvas separately), peak caps and the cover's bass pulse.
@@ -327,6 +337,23 @@ Open it with Ultrahand's combo (L + D-pad down + R3, a click of the right stick,
 | <img src="docs/screenshots/overlay-equalizer.webp" width="200" alt="Overlay: equalizer"> | <img src="docs/screenshots/overlay-browse.webp" width="200" alt="Overlay: browse"> | <img src="docs/screenshots/overlay-playlists.webp" width="200" alt="Overlay: playlists"> | <img src="docs/screenshots/overlay-presets.webp" width="200" alt="Overlay: presets"> |
 
 <sub>The overlay on a real console, over the HOME menu.</sub>
+
+</details>
+
+<details>
+<summary><b>🎧 Songate on the HiBy R4 (SongateOS)</b></summary>
+
+[SongateOS](https://github.com/AndryTheBeast/SongateOS-HiBy_R4) is a custom system for the HiBy R4 with Songate as its home screen. Everything here is on the R4 alone.
+
+- 🌊 **Bit-perfect output** on the 3.5 mm and the 4.4 mm: each song at its own rate and depth, untouched (Settings → Sound & DAC). The format on Now playing sparkles while it holds.
+- 📈 **Each song at its own sample rate**, up to 384 kHz: the jacks follow the song.
+- 🔊 **The R4's DAC volume is Songate's own:** the slider and the R4's keys move the same one.
+- 🎧 **Play when plugged in:** headphones into either jack start the music where it is (Settings → Playback, off at first). Unplugging pauses cleanly: the plug's stray button presses no longer start the music again or skip a song.
+- 💡 **The status light follows the song's colour**, with the screen off too (Settings → Status LED).
+- 🎛️ **Sound & DAC:** gain, digital filter, balance, line out and the headphone remote.
+- ⚙️ **The system's settings inside Songate:** Wi-Fi and Bluetooth with your earbuds' controls, the display, storage and USB, SongateOS's updates and About.
+- 🗂️ **The Apps page:** your apps in your order, their size, icons and names, hidden apps and the apps running.
+- ✨ **A first-start setup** and a tour of the player, **System colours** (Android's, Songate's or your own) and **the hold switch** (Settings → Controls).
 
 </details>
 
@@ -370,6 +397,11 @@ The same app on Android, from the same code. **Android 10 or newer.** **Tests we
 - 🎧 **Music that keeps playing** out of sight, with the notification's and the lock screen's controls; a call pauses it. Settings → Playback → Keep playing when swiped away.
 - 🔗 **Your server, Devices, Listen together, Handoff and AirPlay** work as on the console and the PC.
 - ⬆️ **Updates:** Settings › Updates downloads a new version and hands it to Android's own installer.
+- 🏠 **Your home screen:** Settings → Home screen makes Songate the home screen, with an Apps page for your other apps: their order, size, icons and hidden apps.
+- 🔄 **Screen rotation:** Auto, Portrait or Landscape (Settings → Appearance → Layout). Each way up keeps its own Size.
+- 📋 **Settings' cards fold**, one open at a time.
+- 🎤 **Upright, the line being sung under the cover** (Settings → Lyrics → Under the cover), and the seek bar's way back to the visualizer: Quick, Smooth or Wave (Settings → Visualizer).
+- 📻 **Other apps' music** with Songate's visualizer and sleep timer (Settings → Playback), and Songate's volume is the phone's music volume.
 
 **Not on Android:** the background player, the overlay, game actions and the pocket lock. They belong to the console.
 
@@ -379,6 +411,7 @@ The same app on Android, from the same code. **Android 10 or newer.** **Tests we
 <summary><b>⚙️ Settings, updates and support</b></summary>
 
 - 🔎 **Find a setting** searches every option by name.
+- ⌨️ **Songate's own keyboard** for every name, tag, value and Search: quick typing, a cursor, Shift and caps lock. On the Switch with your controller's buttons; on Windows after a game pad or a touch (with a mouse and keyboard you type straight into Search).
 - 🗃️ **Storage:** where each browser opens, where backups go, and what Songate keeps on the card, each with its size and a Clear button.
 - 🛟 **Backups and resets.** Back up the settings whenever you like, and Songate backs up by itself before every update. Reset puts every setting back as it came, and Factory reset erases what you choose, or everything.
 - ⬆️ **Updates** stay off until you turn them on. Then Songate can check GitHub for new versions, show what changed, install one, or go back to an earlier one, with all three parts always from the same release. With **Check when Songate starts** on, a new version shows as a banner above Settings. **Beta versions** are a separate switch: they can have bugs, so please report what you find.
@@ -478,6 +511,8 @@ The preview is a dev build; `DEV=0` before `bash tools/preview/build.sh` builds 
 - **AirPlay:** audio only, and like every AirPlay speaker it plays about a second behind the iPhone.
 - **Scripts:** CJK text uses the console's own fonts; scripts outside them will not render.
 - **MP3 durations:** VBR MP3s without a Xing header get an estimated duration.
+- **Bit-perfect output** is on the HiBy R4 with SongateOS only.
+- **Last.fm** was removed in 2.1.0: Last.fm's API changes now require a paid subscription to use it.
 
 </details>
 
@@ -486,7 +521,7 @@ The preview is a dev build; `DEV=0` before `bash tools/preview/build.sh` builds 
 
 ### About
 
-Songate began as a recreation of [Gatefold](https://github.com/DEVIROYrus/gatefold-foobar2000), DEVIROYrus's modern interface for foobar2000 on Windows, and was called Gatefold NX until 2.0.0. It is not a port: it is a native rewrite in C++ (devkitPro, libnx, SDL2). Layout values come from Gatefold's CSS, and CSS pixels map 1:1 onto the Switch's 1280×720 screen. Its palette algorithm, icons and typeface are Gatefold's own. Automix, Mood playlists, Devices, Listen together, AirPlay, the background player, the overlay and the updater are Songate's.
+Songate began as a recreation of [Gatefold](https://github.com/DEVIROYrus/gatefold-foobar2000), DEVIROYrus's modern interface for foobar2000 on Windows, and was called Gatefold NX until 2.0.0. It is not a port: it is a native rewrite in C++ (devkitPro, libnx, SDL2). Layout values come from Gatefold's CSS, and CSS pixels map 1:1 onto the Switch's 1280×720 screen. Its palette algorithm, icons and typeface are Gatefold's own. Automix, Mood playlists, Devices, Listen together, AirPlay, the background player, the overlay, the updater and SongateOS's pages are Songate's.
 
 ### 📜 Licence
 

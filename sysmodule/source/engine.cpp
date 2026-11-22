@@ -31,6 +31,58 @@ constexpr size_t BufBytes = (BufFrames * 4 + 0xFFF) & ~size_t(0xFFF);
 u64 nowMs() { return armTicksToNs(armGetSystemTick()) / 1000000; }
 
 std::string cfgPath(const char* f) { return Dir() + "/" + f; }
+}  // namespace
+
+#ifdef GF_DEV
+#include <cstdarg>
+#include <ctime>
+/** The dev build's log (bg-log.txt, beside the settings): only what is slow, so a freeze can be found after it (the user's,
+ *  2026-11-21: Songate and its visualizer froze while the background player played). Kept to about 64 KB. Any thread: the
+ *  line is only kept in memory here (8 KB at most), and the watch thread writes it to the card (bgLogFlush). Written here, a
+ *  stalled card held the sound's thread, with the engine's lock, as long as the stall (the user's console, 2026-11-22). */
+static Mutex g_logLock;   // (zeroed: a free Mutex)
+static std::string g_logPending;
+
+void bgLog(const char* fmt, ...) {
+    char line[400];
+    const time_t t = time(nullptr);
+    const size_t n = strftime(line, 16, "%H:%M:%S  ", localtime(&t));
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(line + n, sizeof line - n - 1, fmt, ap);
+    va_end(ap);
+    mutexLock(&g_logLock);
+    if (g_logPending.size() < 8 * 1024) {
+        g_logPending += line;
+        g_logPending += '\n';
+    }
+    mutexUnlock(&g_logLock);
+}
+
+void bgLogFlush() {
+    std::string out;
+    mutexLock(&g_logLock);
+    out.swap(g_logPending);
+    mutexUnlock(&g_logLock);
+    if (out.empty()) return;
+    const std::string p = cfgPath("bg-log.txt");
+    struct stat st;
+    if (stat(p.c_str(), &st) == 0 && st.st_size > 64 * 1024) {
+        const std::string old = cfgPath("bg-log-previous.txt");
+        remove(old.c_str());
+        rename(p.c_str(), old.c_str());
+    }
+    if (FILE* f = fopen(p.c_str(), "a")) {
+        fwrite(out.data(), 1, out.size(), f);
+        fclose(f);
+    }
+}
+#else
+void bgLog(const char*, ...) {}
+void bgLogFlush() {}
+#endif
+
+namespace {
 
 bool exists(const std::string& p) {
     struct stat st;
@@ -94,12 +146,29 @@ void Engine::start() {
     mutexInit(&m_);
     fader_.init(GFBG_RATE, 0);   // Automix's mixer: the echo's delay line only for a join that echoes (startJoin)
     loadFiles();
-    static Thread audio, watch;
+    {   // (the dev build's log: a line at each start, so a restart, or a stop between two starts, shows)
+        const struct mallinfo mi = mallinfo();
+        bgLog("started: %u songs queued, %u KB of the heap free", unsigned(order_.size()),
+              unsigned((gfHeapSize - std::min(gfHeapSize, size_t(mi.uordblks))) / 1024));
+    }
+    static Thread audio, watch, ahead;
     // The audio thread sits just under the IPC thread's priority, on the same core.
     threadCreate(&audio, audioMain, this, nullptr, 0x8000, 0x2B, -2);
     threadCreate(&watch, watchMain, this, nullptr, 0x8000, 0x2E, -2);   // (Automix decodes the next track's start on it)
+    // The read-ahead: the songs' files read from the card ahead of the sound, between the two (decoder.cpp, readAheadPass)
+    readAheadLog = bgLog;
+    threadCreate(&ahead, readAheadMain, this, nullptr, 0x4000, 0x2C, -2);
     threadStart(&audio);
     threadStart(&watch);
+    threadStart(&ahead);
+}
+
+/** Keeps every open song's ring filled from the card, the card's quickest reads asked for (a game loading at the same time
+ *  waits its turn); with every ring full, it rests 15 ms. */
+void Engine::readAheadMain(void*) {
+    fsSetPriority(FsPriority_Realtime);
+    for (;;)
+        if (!readAheadPass()) svcSleepThread(15'000'000);
 }
 
 // ============================================================ IPC
@@ -352,6 +421,8 @@ void Engine::setSleep(float seconds) {
     if (sleepFading_) cmds_.push_back({ Cmd::Resume, 0, false, 0, 0 });
     sleepFading_ = false;
     sleepAt_ = seconds > 0 ? nowMs() + u64(double(seconds) * 1000) : 0;
+    if (seconds > 0) bgLog("sleep timer: the music pauses in %.0f min", double(seconds) / 60.0);
+    else bgLog("sleep timer: off");
 }
 
 /** Every watch tick: the fade starts SleepFade seconds before the end, then the pause; then the timer is off. */
@@ -359,6 +430,7 @@ void Engine::watchSleep(u64 now) {
     Lock l(&m_);
     if (!sleepAt_) return;
     if (now >= sleepAt_) {
+        bgLog("sleep timer: its time is up, the music pauses");
         sleepAt_ = 0;
         sleepFading_ = false;
         sleepGen_++;
@@ -598,9 +670,14 @@ bool Engine::load(s32 pos, double start) {
     if (pos < 0 || pos >= s32(order_.size())) return false;
     const std::string p = path(order_[size_t(pos)]);
     mutexUnlock(&m_);
+    const u64 t0 = nowMs();
     std::unique_ptr<Decoder> d = openDecoder(p.c_str());
     if (d && start > 0.5) d->seek(start);
+    const u64 t1 = nowMs();
     const std::string cover = d && !d->tags.coverKind ? folderCover(p) : std::string();
+    if (nowMs() - t0 > 100)
+        bgLog("slow open: %llu ms opening, %llu ms looking for a folder cover, %s", (unsigned long long)(t1 - t0),
+              (unsigned long long)(nowMs() - t1), p.c_str());
     mutexLock(&m_);
     return adopt(pos, std::move(d), p, cover, start);
 }
@@ -611,6 +688,7 @@ bool Engine::adopt(s32 pos, std::unique_ptr<Decoder> d, const std::string& p, co
     if (mj_.gen && mj_.gen != trackGen_) mj_ = MixJoin{};   // a join planned for the track before: its decoder goes
     if (!d) return false;
     dec_ = std::move(d);
+    bgLog("song: %s%s; %u KB of the heap free", p.c_str(), outDec_ ? " (joined)" : "", unsigned((gfHeapSize - std::min(gfHeapSize, size_t(mallinfo().uordblks))) / 1024));
     rs_.reset(dec_->rate, GFBG_RATE);
     tailFlushed_ = false;
     xfChecked_ = false;
@@ -734,8 +812,13 @@ bool Engine::crossfadeInto(s32 pos, double fade, bool albumRule) {
     const std::string p = path(order_[size_t(pos)]);
     const std::string album = dec_->tags.album;
     mutexUnlock(&m_);
+    const u64 t0 = nowMs();
     std::unique_ptr<Decoder> d = openDecoder(p.c_str());
+    const u64 t1 = nowMs();
     const std::string cover = d && !d->tags.coverKind ? folderCover(p) : std::string();
+    if (nowMs() - t0 > 100)
+        bgLog("slow crossfade start: %llu ms opening, %llu ms looking for a folder cover, %s", (unsigned long long)(t1 - t0),
+              (unsigned long long)(nowMs() - t1), p.c_str());
     mutexLock(&m_);
     if (!d || !dec_) return false;
     if (albumRule && (cfg_.xfadeFlags & GfbgXfade_NotInAlbum) && !album.empty() && !strcasecmp(album.c_str(), d->tags.album.c_str()))
@@ -901,9 +984,14 @@ void Engine::watchAutomix() {
             const struct mallinfo mi = mallinfo();
             if (gfHeapSize < size_t(mi.uordblks) + 320 * 1024) return;   // two decoders at once only with room to spare
         }
+        const u64 t0 = nowMs();
         prepDec_ = openDecoder(next.c_str());
         if (!prepDec_) return;   // unplayable: the queue's own rules skip it when it comes
+        const u64 t1 = nowMs();
         prepCover_ = !prepDec_->tags.coverKind ? folderCover(next) : std::string();
+        if (nowMs() - t0 > 100)
+            bgLog("slow Automix prep (watch thread): %llu ms opening, %llu ms looking for a folder cover, %s", (unsigned long long)(t1 - t0),
+                  (unsigned long long)(nowMs() - t1), next.c_str());
         prepPath_ = next;
         prepGen_ = gen;
         prepDone_ = 0;
@@ -1022,7 +1110,9 @@ int Engine::produce(s16* out, int frames) {
             }
         }
         if (got >= want) break;
+        const u64 r0 = nowMs();
         const int r = dec_->read(decBuf_, 1024);
+        if (nowMs() - r0 > 100) bgLog("slow read: %llu ms for 1024 frames of %s", (unsigned long long)(nowMs() - r0), playing_.c_str());
         if (r > 0) { rs_.push(decBuf_, r); continue; }
         if (!tailFlushed_) {
             // The resampler holds back half its filter: push silence so the last notes come out.
@@ -1044,7 +1134,9 @@ int Engine::produce(s16* out, int frames) {
             const int g = outRs_.pull(outMix_ + m * 2, n - m);
             m += g;
             if (m >= n) break;
+            const u64 r0 = nowMs();
             const int r = outDec_->read(decBuf_, 1024);
+            if (nowMs() - r0 > 100) bgLog("slow read: %llu ms for 1024 frames of the song fading out", (unsigned long long)(nowMs() - r0));
             if (r > 0) { outRs_.push(decBuf_, r); continue; }
             if (outTail_) break;
             static const s16 zeros[(Resampler::Half + 1) * 2] = {};
@@ -1113,6 +1205,7 @@ void Engine::feedRing(const float* stereo, int frames) {
 
 void Engine::audioMain(void* self) {
     auto* e = static_cast<Engine*>(self);
+    fsSetPriority(FsPriority_Realtime);   // (its own reads, when the read-ahead has nothing yet: a song started, a seek)
     AudioOutBuffer bufs[BufCount] = {};
     bool busy[BufCount] = {};
     for (auto& b : bufs) {
@@ -1120,6 +1213,7 @@ void Engine::audioMain(void* self) {
         b.buffer_size = BufBytes;
     }
     bool open = false;
+    u64 lastOut = 0;   // when a buffer last went to the Switch while playing (the dev build's "sound gap")
     auto release = [&](AudioOutBuffer* rel) {
         for (int i = 0; i < BufCount; i++)
             if (rel == &bufs[i] && busy[i]) {
@@ -1157,28 +1251,45 @@ void Engine::audioMain(void* self) {
             reset();
         }
 
+        const u64 c0 = nowMs();
         mutexLock(&e->m_);
+        const u64 c1 = nowMs();
         e->runCommands();
+        if (nowMs() - c0 > 150) bgLog("slow audio loop: %llu ms waiting for the lock, %llu ms running commands", (unsigned long long)(c1 - c0),
+                                      (unsigned long long)(nowMs() - c1));
         const bool playing = e->status_ == GfbgStatus_Playing && e->dec_;
         const bool flush = e->flush_;
         e->flush_ = false;
         mutexUnlock(&e->m_);
+        const u64 a0 = nowMs();
         if (flush) {
             bool flushed = false;
             audoutFlushAudioOutBuffers(&flushed);
         }
         reclaim();
+        if (nowMs() - a0 > 150) bgLog("slow audio out: %llu ms taking finished buffers back from the Switch", (unsigned long long)(nowMs() - a0));
+        if (!playing) lastOut = 0;
 
         int free = -1;
         for (int i = 0; i < BufCount; i++) if (!busy[i]) { free = i; break; }
         if (playing && free >= 0) {
             AudioOutBuffer& b = bufs[free];
+            const u64 p0 = nowMs();
             const int n = e->produce(static_cast<s16*>(b.buffer), BufFrames);   // takes the lock itself, around the decode
+            if (nowMs() - p0 > 150) bgLog("slow buffer: %llu ms to make 32 ms of sound", (unsigned long long)(nowMs() - p0));
             if (n > 0) {
                 b.data_size = u64(n) * 4;
                 b.data_offset = 0;
                 armDCacheFlush(b.buffer, b.data_size);
-                if (R_SUCCEEDED(audoutAppendAudioOutBuffer(&b))) {
+                const u64 q0 = nowMs();
+                const bool queued = R_SUCCEEDED(audoutAppendAudioOutBuffer(&b));
+                // (the dev build: a stutter with no slow buffer above is the Switch's sound output holding up, not this player)
+                if (nowMs() - q0 > 150) bgLog("slow audio out: %llu ms handing a buffer to the Switch", (unsigned long long)(nowMs() - q0));
+                if (queued && lastOut && nowMs() - lastOut > 250)
+                    bgLog("sound gap: %llu ms between buffers handed to the Switch (%d of %d still playing)", (unsigned long long)(nowMs() - lastOut),
+                          int(std::count(busy, busy + BufCount, true)), BufCount);
+                if (queued) lastOut = nowMs();
+                if (queued) {
                     busy[free] = true;
                     Lock l(&e->m_);
                     e->inFlight_ += u64(n);
@@ -1195,7 +1306,9 @@ void Engine::audioMain(void* self) {
         if (any) {
             AudioOutBuffer* rel = nullptr;
             u32 cnt = 0;
+            const u64 w0 = nowMs();
             if (R_SUCCEEDED(audoutWaitPlayFinish(&rel, &cnt, 20'000'000)) && cnt && rel) release(rel);
+            if (nowMs() - w0 > 150) bgLog("slow audio out: %llu ms waiting for the Switch to finish a buffer (asked for 20)", (unsigned long long)(nowMs() - w0));
         } else {
             svcSleepThread(10'000'000);
         }
@@ -1441,6 +1554,7 @@ void Engine::savePlaces() {
  */
 void Engine::watchMain(void* self) {
     auto* e = static_cast<Engine*>(self);
+    fsSetPriority(FsPriority_Low);   // (its reads, Automix's preparation and the files it watches, after the sound's)
     u64 lastPid = 0, seenAt = 0;
     s32 lastEnd = -1;
     u32 shown = GfbgApp_None;     // the state pause-for-apps last acted on
@@ -1449,6 +1563,7 @@ void Engine::watchMain(void* self) {
     int pdmFocus = -1;            // the newest application applet event: 1 in front, 0 not, −1 unknown
     for (;;) {
         svcSleepThread(250'000'000);
+        bgLogFlush();   // (the dev build's log lines, to the card from here: never from the sound's thread)
         const u64 now = nowMs();
         u64 pid = 0;
         const bool app = R_SUCCEEDED(pmdmntGetApplicationProcessId(&pid)) && pid != 0;
@@ -1490,6 +1605,7 @@ void Engine::watchMain(void* self) {
         // Give a fresh application a moment to turn out to be Gatefold.
         if (want == GfbgApp_Foreground && shown == GfbgApp_None && now - seenAt < 3500) want = shown;
         if (want != shown) {
+            bgLog("apps: %s", want == GfbgApp_Foreground ? "a game in front" : want == GfbgApp_Suspended ? "a game on the HOME menu" : "no game");
             // A launch is the first time a game is in front (a new pid); after that it is a return. A game sent
             // to HOME within the grace period never had its launch acted on, so its first time in front still is one.
             const bool fresh = want == GfbgApp_Foreground && pid != launchedPid;
@@ -1513,6 +1629,33 @@ void Engine::watchMain(void* self) {
         if (eqDue) e->eqSaveAt_ = 0;
         mutexUnlock(&e->m_);
         if (eqDue) e->saveConfig();
+#ifdef GF_DEV
+        // (the dev build) the player's state as it changes, and a line every 10 minutes: if it stops, the last line says when
+        // and in what state (the user's console, 2026-11-22: it stopped overnight and the log could not say why)
+        {
+            static u32 lastStatus = 99;
+            static u64 beatAt = 0;
+            mutexLock(&e->m_);
+            const u32 st = e->status_;
+            const bool autoPaused = e->autoPaused_;
+            const std::string song = e->playing_.substr(e->playing_.rfind('/') + 1);
+            const double at = e->base_ + double(e->outFrames_) / GFBG_RATE;
+            const u64 sleepIn = e->sleepAt_ > now ? (e->sleepAt_ - now) / 1000 : 0;
+            mutexUnlock(&e->m_);
+            const char* what = st == GfbgStatus_Playing ? "playing" : st == GfbgStatus_Paused ? (autoPaused ? "paused for a game" : "paused") : "stopped";
+            const struct mallinfo mi = mallinfo();
+            const unsigned freeKB = unsigned((gfHeapSize - std::min(gfHeapSize, size_t(mi.uordblks))) / 1024);
+            if (st != lastStatus) {
+                bgLog("now %s: %s at %.0f s", what, song.empty() ? "(nothing)" : song.c_str(), at);
+                lastStatus = st;
+            }
+            if (now - beatAt >= 600000) {
+                beatAt = now;
+                bgLog("still running: %s, %s at %.0f s, %u KB of the heap free%s", what, song.empty() ? "(nothing)" : song.c_str(), at, freeKB,
+                      sleepIn ? (", sleep timer " + std::to_string(sleepIn / 60) + " min").c_str() : "");
+            }
+        }
+#endif
     }
 }
 

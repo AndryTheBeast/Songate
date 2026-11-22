@@ -302,7 +302,10 @@ void App::drawCanvas() {
             else automixChip(mixLabel, css::W - 8 * vw() - cw, restY + floatY + restArt / 2, K, automixCoverEase(), false, true);
         }
     }
-    g.roundStroke(ax, fy, art, art, rad, 1, { 1, 1, 1 }, 0.06f);
+    {   // (in a join, on the frost's edge: a pixel out, App::automixGrow)
+        const float gr = mixing ? automixGrow() : 0.f;
+        g.roundStroke(ax - gr, fy - gr, art + 2 * gr, art + 2 * gr, rad + gr, 1, { 1, 1, 1 }, 0.06f);
+    }
 
     // ---- .cv-meta (+ lyrics): each layout's own, faded by its weight and drifting in by a few pixels
     const std::string kick = srvq_.on ? (isPlaying() ? "PLAYING FROM YOUR SERVER" : "PAUSED") : extOn ? "PLAYING OVER AIRPLAY" : !has ? "NOTHING PLAYING" : isPlaying() ? "PLAYING" : "PAUSED";
@@ -550,7 +553,11 @@ void App::drawCanvas() {
     // The sleep timer's moon: a pill with the time left while it runs.
     const double sleepLeftNow = sleepLeft();
     const Font sleepF{ 13, Weight::SemiBold };
-    const float sleepW = sleepLeftNow > 0 ? 42 + g.measure("88:88", sleepF) + 4 : 42;
+    // (as wide as the time drawn, its fixed-width digits (Gfx::measureNum): an hour or more is h:mm:ss, which ran into the next
+    // button in an "88:88" pill; and as much room after the time as before the moon (the user's console, 2026-11-22))
+    constexpr float SleepPadR = 13;   // after the time: the moon's own room before it, measured on the drawn pixels
+    const std::string sleepTxt = sleepLeftNow > 0 ? fmtTime(std::ceil(sleepLeftNow)) : std::string();
+    const float sleepW = sleepLeftNow > 0 ? 38 + float(g.measureNum(sleepTxt, sleepF)) + SleepPadR : 42;
     // The lyrics' timing, while synced lyrics show (the Cover and Lyrics layouts, with the lyrics switch on)
     const bool syncShown = canvasLayoutShown() != 2 && store.canvasLyrics && lyricTimingShown();
     const Font syncF{ 13, Weight::SemiBold };
@@ -608,7 +615,7 @@ void App::drawCanvas() {
         const bool hot = ui.pressed(sid) || (ui.focused(sid) && ui.showFocusRing());
         g.roundRect(x, cy - 21, sleepW, 42, 21, pal.text, (hot ? 0.16f : 0.08f) * ctlA);
         g.icon(ICON_MOON, x + 21, cy, 18, sleepLeftNow > 0 ? pal.accentInk : pal.text, ctlA);
-        if (sleepLeftNow > 0) g.textNum(fmtTime(std::ceil(sleepLeftNow)), sleepF, x + 38, cy - g.lineHeight(sleepF) / 2.f, pal.accentInk, ctlA);
+        if (sleepLeftNow > 0) g.textNum(sleepTxt, sleepF, x + 38, cy - g.lineHeight(sleepF) / 2.f, pal.accentInk, ctlA);
     }
     x += sleepW + 8;
     if (syncShown) {

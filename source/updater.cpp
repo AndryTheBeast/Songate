@@ -27,7 +27,7 @@
 #include "platform.hpp"
 
 #ifndef GF_VERSION
-#define GF_VERSION "2.1.0 BETA 1"
+#define GF_VERSION "2.1.0"
 #endif
 
 namespace {
@@ -498,6 +498,18 @@ const char* emojiIcon(uint32_t cp) {
     case 0x1F4DA: case 0x1F4D6: return "book";
     case 0x270F: case 0x1F3F7: return "tag";
     case 0x1F5D1: case 0x274C: return "x";
+    // (SongateOS's notes, read the same way on its Updates page: 2026-11-21)
+    case 0x1F510: return "shield";                                         // 🔐
+    case 0x1F50C: return "bolt";                                           // 🔌
+    case 0x1F508: case 0x1F507: case 0x1F515: return "volume";            // 🔈 🔇 🔕
+    case 0x1F4C9: return "history";                                        // 📉
+    case 0x1F4DD: return "tag";                                            // 📝
+    case 0x1F3BC: return "music";                                          // 🎼
+    case 0x25B6: case 0x23ED: return "play";                               // ▶️ ⏭️
+    case 0x1F9F9: return "fix";                                            // 🧹
+    case 0x1F4E6: return "download";                                       // 📦
+    case 0x26A0: case 0x1F4A1: case 0x1F446: case 0x1F4DE: case 0x1F4F6: case 0x1F9C8: return "info";   // ⚠️ 💡 👆 📞 📶 🧈
+    case 0x1F195: return "sparkle";                                        // 🆕
     default: return nullptr;
     }
 }
@@ -700,6 +712,8 @@ std::string sdPath(const std::string& rel, const std::string& self) { return rel
 long long bootStamp() { return plat::bootStamp(); }
 
 }  // namespace
+
+std::vector<UpdLog> updNotesLog(const std::string& body) { return logFromNotes(body); }
 
 // ================================================================== Updater
 

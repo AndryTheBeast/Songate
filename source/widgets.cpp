@@ -287,6 +287,11 @@ void App::drawMagic(float edge, float y0, float y1, float s) {
     }
 }
 
+float App::automixGrow() const {
+    // how far the frost (and the cover's thin border with it) reaches past the cover in a join: a pixel, by the frost's ease
+    return mixUntil > time ? automixCoverEase() : 0.f;
+}
+
 float App::automixCoverEase() const {
     // in and out over 0.9 s, cubic in and out: the glide's timing (automixFocus), as the Canvas's morph
     auto inOut = [](float p) { return p < 0.5f ? 4 * p * p * p : 1 - std::pow(-2 * p + 2, 3.f) / 2; };
@@ -306,8 +311,16 @@ void App::drawAutomixCover(float x, float y, float s, float hx, float hy, float 
         const float u = std::clamp(float((mixUntil - time) / L), 0.f, 1.f);
         ef = std::min(e, u * u * (3 - 2 * u));
     }
-    // the frost: the cover's blur (both, while the covers crossfade), else a tint
-    const float k = now.fade;
+    // the frost: the cover's blur (both, while the covers crossfade), else a tint. A pixel larger than the cover each side:
+    // drawn on the same rounded shape, the two soft rims let the sharp cover's own colours through the frost's (a ragged light
+    // line down its edge, where nothing of the lap was yet: the user's console, 2026-11-22)
+    // (by e: a pixel with the frost whole, none as it goes; the cover's thin border goes out with it, automixGrow, and the lap
+    // keeps to its outer edge: a pixel inside it, they read as drawn short of the cover, the user said)
+    const float k = now.fade, grow = automixGrow();
+    x -= grow;
+    y -= grow;
+    s += 2 * grow;
+    Rad += grow;
     // the old frost and the new one as e·(1 − k) and e·k of the whole, the new drawn over the old: whole while the covers
     // change (both at half had thinned it), and nothing of the old left as the frost clears at the join's end (drawn at e
     // under e·k, a quarter of the old cover's colours showed through there: the user, 2026-10-28)
@@ -337,7 +350,8 @@ void App::drawAutomixCover(float x, float y, float s, float hx, float hy, float 
     // the join's progress: a lap round the whole cover
     if (mixUntil > mixFrom) {
         const float p = float(std::clamp((time - mixFrom) / (mixUntil - mixFrom), 0.0, 1.0));
-        lapPath(x + 1, y + 1, s - 2, s - 2, Rad - 1, p, lapPts_);
+        const float in = lapW / 2;   // (its outer edge on the frost's: x, y, s are the frost's here)
+        lapPath(x + in, y + in, s - 2 * in, s - 2 * in, std::max(1.f, Rad - in), p, lapPts_);
         if (lapPts_.size() >= 2) g.polyline(lapPts_, lapW, pal.accentInk, e);   // (its colour blends with the palette)
     }
 }

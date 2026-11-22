@@ -2045,7 +2045,7 @@ void App::sysTick() {
         if (ok) {
             confirm(ICON_DOWNLOAD, "Updates", "SongateOS " + v, "", "Install SongateOS " + v + "?",
                     "The player restarts, installs it and starts again, in a few minutes. The music stops. Keep it charged.", "Install",
-                    [] { sysapi::act("ota_install", "", {}, "ota"); });
+                    [this] { osInstallAt_ = time; sysapi::act("ota_install", "", {}, "ota"); });
             sheet.askSafe = true;   // (an install is not a loss: the accent button, the download symbol)
             sheet.askYesIcon = ICON_DOWNLOAD;
         }

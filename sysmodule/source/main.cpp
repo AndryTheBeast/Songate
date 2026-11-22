@@ -11,12 +11,16 @@
 #include "engine.hpp"
 #include "gfbg.h"
 
-#define HEAP_SIZE 0x180000   // 1.5 MB: decoders, tables, queue paths and audout buffers
+// 2 MB: decoders, tables, queue paths and audout buffers, and each song's read-ahead (256 KB): with 1.5 MB a join's two songs and
+// its echo left no room for the incoming song's, and the card's stalls were heard mid-join (the user's console, 2026-11-22)
+#define HEAP_SIZE 0x200000
 
 extern "C" {
 
 u32 __nx_applet_type = AppletType_None;
-u32 __nx_fs_num_sessions = 1;
+// three: the sound's thread, the read-ahead's and the watch thread's reads each on their own (one session took them in turn, so a
+// read held up by the card held up every other thread's too)
+u32 __nx_fs_num_sessions = 3;
 size_t gfHeapSize = HEAP_SIZE;
 
 void __libnx_initheap(void) {
@@ -76,6 +80,7 @@ constexpr Result QueueTooBig = GFBG_QUEUE_TOO_BIG;
 struct Session { Handle h; u32 kind; };
 
 /** One request: false when the session is to be closed (the client asked, or sent garbage). */
+u32 lastCmd = 0;
 bool handle(Session& s) {
     void* base = armGetTls();
     const HipcParsedRequest r = hipcParseRequest(base);
@@ -94,6 +99,7 @@ bool handle(Session& s) {
     u8 arg[160];   // the largest is GfbgEq (116 bytes, protocol 5); TLS holds 0x100 in all
     memcpy(arg, in + 1, sizeof arg);
     const u32 cmd = in->command_id;
+    lastCmd = cmd;   // (the dev build's log names a slow one)
     auto sendBuf = [&](size_t& n) -> u8* {
         if (r.meta.num_send_buffers < 1) return nullptr;
         n = hipcGetBufferSize(&r.data.send_buffers[0]);
@@ -255,7 +261,15 @@ int main(int, char**) {
         const int i = idx - 1;
         s32 got = -1;
         if (R_FAILED(svcReplyAndReceive(&got, &sessions[i].h, 1, INVALID_HANDLE, UINT64_MAX))) { drop(i); continue; }
+#ifdef GF_DEV
+        const u64 h0 = armTicksToNs(armGetSystemTick());
+        const bool kept = handle(sessions[i]);
+        const u64 hMs = (armTicksToNs(armGetSystemTick()) - h0) / 1000000;
+        if (hMs > 200) bgLog("slow request: command %u took %llu ms", unsigned(lastCmd), (unsigned long long)hMs);
+        if (!kept) { drop(i); continue; }
+#else
         if (!handle(sessions[i])) { drop(i); continue; }
+#endif
         // Reply only (no handles to receive on): the kernel reports a timeout, which is success here.
         const Result rc = svcReplyAndReceive(&got, nullptr, 0, sessions[i].h, 0);
         if (R_FAILED(rc) && R_VALUE(rc) != KERNELRESULT(TimedOut)) drop(i);

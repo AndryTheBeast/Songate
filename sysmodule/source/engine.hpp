@@ -20,6 +20,10 @@
 #include "gfeq.hpp"
 #include "resampler.hpp"
 
+/** The dev build's log (bg-log.txt): only what is slow. A release build writes nothing. */
+void bgLog(const char* fmt, ...);
+void bgLogFlush();   // (the watch thread: the lines kept so far, to bg-log.txt)
+
 class Engine {
 public:
     void start();
@@ -193,6 +197,7 @@ private:
     // audio thread (m_ held unless noted)
     static void audioMain(void* self);
     static void watchMain(void* self);
+    static void readAheadMain(void* self);
     void runCommands();
     bool load(s32 pos, double start);
     /** The bookkeeping of a track loaded (load, crossfadeInto); false, with pos_ moved on, when d is null. */

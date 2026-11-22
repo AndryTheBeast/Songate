@@ -32,6 +32,9 @@
 
 struct UpdItem { std::string icon, text; };                                    // a changelog line (icon: its emoji as an icon name)
 struct UpdLog { std::string icon, title; std::vector<UpdItem> items; };       // a changelog section
+/** A release's notes read as Songate reads its own: the "## " sections and their "- " lines, emoji as icon names, the install
+ *  sections left out (SongateOS's notes use it too, on Settings › Updates and its update sheet) */
+std::vector<UpdLog> updNotesLog(const std::string& body);
 struct UpdFile { std::string path; int64_t size = 0; std::string sha256; };     // path from the SD card's root
 
 // Where bugs are reported (Settings › Updates: the betas' warning); the repository was GatefoldNX until 2026-10-30

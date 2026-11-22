@@ -69,6 +69,7 @@ public:
 
 private:
     Reader r_;
+    void readAhead() override { r_.startReadAhead(); }
     uint64_t data_ = 0, end_ = 0;
     int bits_ = 0, frameBytes_ = 0;
     bool float_ = false;

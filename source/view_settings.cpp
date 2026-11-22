@@ -22,7 +22,7 @@
 #include "appicons.inc"
 
 #ifndef GF_VERSION
-#define GF_VERSION "2.1.0 BETA 1"
+#define GF_VERSION "2.1.0"
 #endif
 
 namespace {
@@ -2931,7 +2931,18 @@ void App::drawSettings(float x, float y, float w, float h) {
                     std::string hint = bytes(o.size) + (o.prerelease ? " · a beta" : "") + " · you have " + o.current;
                     os.push_back({ "", { buttonRow("SongateOS " + o.latest + " is out", hint, "set.ota.dl", ICON_DOWNLOAD, "Download",
                                                    [] { sysapi::act("ota_download", "", {}, "ota"); }) } });
-                } else if (st == "downloading" || st == "verifying") {
+                } else if (st == "staging" || (st == "ready" && osInstallAt_ >= 0 && time - osInstallAt_ < 180)) {
+                    // Install answered: the service checks the file again (about 45 s for 1 GB) before the player restarts, and nothing
+                    // showed meanwhile ("nothing happened"; the user's words, 2026-11-21)
+                    os.push_back({ "", { infoRow("Preparing the install…", "The player restarts by itself when it is ready") } });
+                } else if (st == "verifying") {
+                    // the download checked (about 75 s for 1 GB: it said "Downloading 0 MB of …" before; the user's words, 2026-11-21)
+                    Row chk = infoRow("Checking the download", bytes(o.size));
+                    Row bar;
+                    bar.blockH = 18;
+                    bar.block = [this](float bx, float by, float bw) { g.roundRectH(bx, by + 6, bw, 6, 3, pal.accent2, pal.accent); };
+                    os.push_back({ "", { chk, bar } });
+                } else if (st == "downloading") {
                     const std::string hint = bytes(o.progress) + " of " + bytes(o.size);
                     Row dl = buttonRow("Downloading SongateOS " + o.latest, hint, "set.ota.pause", nullptr, "Pause", [] { sysapi::act("ota_cancel", "", {}, "ota"); });
                     Row bar;
@@ -2942,7 +2953,12 @@ void App::drawSettings(float x, float y, float w, float h) {
                         if (f > 0.005f) g.roundRectH(bx, by + 6, std::max(6.f, bw * f), 6, 3, pal.accent2, pal.accent);
                     };
                     os.push_back({ "", { dl, bar } });
-                } else if (st == "ready" || st == "staging") {
+                } else if (st == "ready" && !o.recovery.empty() && o.recovery.rfind("ok:", 0) != 0) {
+                    // the recovery not checked (a fresh install) or changed: the service refuses to install until it is, so this in
+                    // Install's place (the Recovery card below says it too, but it can be folded away). The user's words A, 2026-11-21
+                    os.push_back({ "", { buttonRow("Check the recovery", "The player restarts into the recovery and back, about half a minute",
+                                                   "set.ota.rec1", nullptr, "Check it", [] { sysapi::act("power", "recovery_check", {}, "ota"); }) } });
+                } else if (st == "ready") {
                     // Install: the service's checks first (battery, recovery, the file: App::sysTick asks the question once they pass)
                     os.push_back({ "", { buttonRow("SongateOS " + o.latest + " is ready", "The player restarts to install it", "set.ota.install", nullptr, "Install",
                                                    [this, v = o.latest] { installAsked_ = v; sysapi::preflight(); }) } });
@@ -2966,15 +2982,48 @@ void App::drawSettings(float x, float y, float w, float h) {
                                                         ICON_SDCARD, "Guide", [] { plat::openUrl(kSongateOSGuide); }));
                 }
                 if (o.known && !o.recovery.empty() && o.recovery.rfind("ok:", 0) != 0)
-                    os.push_back({ "Recovery", { buttonRow("Not ready for updates", "The recovery changed since it was last checked", "set.ota.rec", nullptr,
-                                                           "Check it", [] { sysapi::act("power", "recovery_check", {}, "ota"); }) } });
+                    // (never checked after a fresh install, or changed: the service refuses to install until the recovery has written its
+                    // record; this restarts into it, which writes it and comes back by itself. The user's words A, 2026-11-21)
+                    os.push_back({ "Recovery", { buttonRow("Check the recovery", "The player restarts into the recovery and back, about half a minute",
+                                                           "set.ota.rec", nullptr, "Check it",
+                                                           [] { sysapi::act("power", "recovery_check", {}, "ota"); }) } });
                 if (!o.notes.empty() && !setupPane_) {
-                    // the release's notes (GitHub's Markdown: App::mdBlock), as tall as they are (wrapped to the card's text width:
-                    // the page's, less its margins); none when the service has none
+                    // the release's notes read as Songate reads its own (updNotesLog: "## " parts, "- " lines, emoji as Songate's icons,
+                    // install parts left out; Inter has no emoji and GitHub's boxes and tables came out as raw text, 2026-11-21), as tall
+                    // as they are (wrapped to the card's text width: the page's, less its margins); a body in no such shape as it is
                     const float tw = (w < kNarrowList ? w : w - 300) - 2 * 48;   // (upright the page's width; sideways beside the categories)
+                    const std::vector<UpdLog> log = updNotesLog(o.notes);
                     Row notes;
-                    notes.blockH = 8 + mdBlock(o.notes, 0, 0, tw, false);
-                    notes.block = [this, text = o.notes](float bx, float by, float bw) { mdBlock(text, bx, by + 4, bw, true); };
+                    if (log.empty()) {
+                        notes.blockH = 8 + mdBlock(o.notes, 0, 0, tw, false);
+                        notes.block = [this, text = o.notes](float bx, float by, float bw) { mdBlock(text, bx, by + 4, bw, true); };
+                    } else {
+                        auto lay = [this, log](float bx, float by, float bw, bool draw) {
+                            const Font tf{ css::Base, Weight::SemiBold }, lf{ css::Sm };
+                            float y = by;
+                            for (const UpdLog& sec : log) {
+                                if (sec.items.empty()) continue;   // (a part in paragraphs alone: "Coming from a beta", its steps)
+                                if (draw) {
+                                    if (const char* ic = changelogIcon(sec.icon)) g.icon(ic, bx + 9, y + 12, 18, pal.accent);
+                                    g.text(sec.title, tf, bx + 28, y + 2, pal.text);
+                                }
+                                y += 32;
+                                for (const UpdItem& it : sec.items) {
+                                    const auto lines = g.wrap(it.text, lf, int(bw - 28), 12);
+                                    if (draw) {
+                                        if (const char* ic = changelogIcon(it.icon)) g.icon(ic, bx + 9, y + 10, 15, pal.text3);
+                                        float ly = y;
+                                        for (const auto& l : lines) { g.text(l, lf, bx + 28, ly, pal.text2); ly += 19; }
+                                    }
+                                    y += lines.size() * 19.f + 8;
+                                }
+                                y += 10;
+                            }
+                            return y - by;
+                        };
+                        notes.blockH = 8 + lay(0, 0, tw, false);
+                        notes.block = [lay](float bx, float by, float bw) { lay(bx, by + 4, bw, true); };
+                    }
                     os.push_back({ "What's new", { notes } });
                 }
                 (void)found;
@@ -3032,8 +3081,21 @@ void App::drawSettings(float x, float y, float w, float h) {
                             std::vector<Row> rows;
                             const std::string title = name(r.installed) + (r.version.empty() ? std::string() : " " + r.version);
                             const std::string mine = r.installed == "twrp" ? r.twrpVersion : r.installed == "orangefox" ? r.foxVersion : std::string();
+                            // the recovery not checked since it was put in (a fresh install: no record) or changed: SongateOS refuses to
+                            // install until it is, and this card used to say "No recovery · Not ready" (OrangeFox was in). In that row's
+                            // place: restart into it, which writes the record and comes back by itself (the user's words A, 2026-11-21;
+                            // the card that said it apart was taken out below by this one, being called "Recovery" too)
+                            const sysapi::Ota oo = sysapi::ota();
+                            const bool unchecked = oo.known && !oo.recovery.empty() && oo.recovery.rfind("ok:", 0) != 0;
                             if (busy) rows.push_back(infoRow(title, hint));
-                            else if (!mine.empty() && newer(mine, r.version))
+                            else if (unchecked)
+                                rows.push_back(buttonRow("Check the recovery", "The player restarts into the recovery and back, about half a minute",
+                                                         "sys.rec.restart", nullptr, "Check it",
+                                                         [] { sysapi::act("power", "recovery_check", {}, "ota"); }));
+                            // (not after a failed update: Check then, its error the hint. The list it offered from can be out of date
+                            // (a package taken down: "HTTP 404"), and only a check brings it up to date; with Update there, there was no
+                            // way out on the player (SongateOS's report, 2026-11-22))
+                            else if (!mine.empty() && newer(mine, r.version) && r.state != "error")
                                 rows.push_back(buttonRow(title, hint + " · " + mine + " is out", "sys.rec.update", ICON_DOWNLOAD, "Update",
                                                          [kind = r.installed] { sysapi::act("recovery_switch", kind, {}, "recovery"); }));
                             else
@@ -3747,7 +3809,11 @@ void App::drawSettings(float x, float y, float w, float h) {
                 pb->cards[0].rows.insert(pb->cards[0].rows.begin() + 2,
                                          toggleRow("Play when plugged in", "Plugging headphones into either jack starts the music where it is",
                                                    "set.playonplug", store.playOnPlug));
-            const bool allowed = plat::otherAllowed();
+            if (time - otherAllowedAt_ > 1 || time < otherAllowedAt_) {   // (Android's answer crosses into the system: once a second)
+                otherAllowed_ = plat::otherAllowed();
+                otherAllowedAt_ = time;
+            }
+            const bool allowed = otherAllowed_;
             Row note;   // (the rule, under the switch)
             note.blockH = 40;
             note.block = [this](float bx, float by, float bw) {
@@ -4576,6 +4642,12 @@ void App::drawSettings(float x, float y, float w, float h) {
         // one row's contents at ry (the loop below: in its place, or where it slides to)
         auto drawRow = [&](const Laid& l, float ry) {
             const Row& r = *l.r;
+            // A row wholly out of the pane's view (a margin's worth): drawn as a ghost (Gfx::setGhost), so its controls still register
+            // (the D-pad scrolls by moving the focus onto them) and its words are made ready, but nothing is drawn. Every row was
+            // drawn every frame: Appearance took 11.8 ms of the console's frame and missed half of them (the user's clip, 2026-11-20)
+            const bool wasGhost = g.ghost(), away = ry + l.h < y - 40 || ry > y + h + 40;
+            if (away) g.setGhost(true);
+            struct GhostBack { Gfx& g; bool was; ~GhostBack() { g.setGhost(was); } } ghostBack{ g, wasGhost };
             if (r.lifted) {   // held to be moved: lifted, the accent around it (the queue's Move)
                 g.roundRect(px + 8, ry + 4, pw - 16, l.h - 8, 12, pal.accent, 0.14f);
                 g.roundStroke(px + 8, ry + 4, pw - 16, l.h - 8, 12, 2, pal.accent, 0.95f);

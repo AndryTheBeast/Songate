@@ -95,6 +95,7 @@ struct SimState {
     std::set<std::string> bonded{ "00:11:22:33:44:55", "66:77:88:99:AA:BB" }, conn{ "00:11:22:33:44:55" };
     std::string ota = "up_to_date";
     int64_t otaProgress = 0, otaChecked = 0;
+    bool otaLive = false;   // (mock-ota.txt state=live: the simulated updater's own steps, with the file's versions and notes)
     Uint32 otaAt = 0;
     bool otaAuto = true, otaBeta = false;
     std::string themeColour = "#fb695a";
@@ -302,7 +303,7 @@ std::string simCall(const std::string& m, const std::string& arg, const Extras& 
         std::string v = "{\"id\":\"internal\",\"label\":\"Internal storage\",\"kind\":\"internal\",\"state\":\"mounted\",\"total\":23729694720,"
                         "\"free\":21045339750}";
         if (S.cardIn)
-            v += ",{\"id\":\"public:179,65\",\"label\":\"TheBeast\",\"kind\":\"sd\",\"state\":" + q(S.cardState) + ",\"fs\":\"exfat\"" +
+            v += ",{\"id\":\"public:179,65\",\"label\":\"MUSIC\",\"kind\":\"sd\",\"state\":" + q(S.cardState) + ",\"fs\":\"exfat\"" +
                  (S.cardState == "mounted" ? std::string(",\"total\":134217728000,\"free\":44667659878") : std::string()) + "}";
         return "{\"ok\":true,\"volumes\":[" + v + "]}";
     }
@@ -412,6 +413,44 @@ std::string simCall(const std::string& m, const std::string& arg, const Extras& 
     if (m == "ota_status") {
         bool card = true;   // (mock-nocard.txt: no microSD card)
         if (FILE* nc = fopen((std::string(plat::configDir()) + "/mock-nocard.txt").c_str(), "rb")) { fclose(nc); card = false; }
+        // (mock-ota.txt, a test's: "state=verifying", "recovery=none", "latest=2.1.0", "progress=0" lines over the simulated updater, and
+        // mock-ota-notes.md: a release's notes as they are, e.g. SongateOS's own CHANGELOG part, as the service sends them)
+        if (FILE* mo = fopen((std::string(plat::configDir()) + "/mock-ota.txt").c_str(), "rb")) {
+            std::map<std::string, std::string> v;
+            char line[256];
+            while (fgets(line, sizeof line, mo)) {
+                std::string l = line;
+                while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+                const size_t e = l.find('=');
+                if (e != std::string::npos) v[l.substr(0, e)] = l.substr(e + 1);
+            }
+            fclose(mo);
+            std::string notes;
+            if (FILE* nf = fopen((std::string(plat::configDir()) + "/mock-ota-notes.md").c_str(), "rb")) {
+                char b[4096];
+                size_t n;
+                while ((n = fread(b, 1, sizeof b, nf)) > 0) notes.append(b, n);
+                fclose(nf);
+            }
+            std::string esc;
+            for (char c : notes) {
+                if (c == '"' || c == '\\') { esc += '\\'; esc += c; }
+                else if (c == '\n') esc += "\\n";
+                else if (c != '\r') esc += c;
+            }
+            auto get = [&v](const char* k, const char* d) { const auto it = v.find(k); return it == v.end() ? std::string(d) : it->second; };
+            if (get("state", "") == "live") {   // (a film's: check, download, its check, ready, as the service steps through them)
+                S.otaLive = true;
+                const bool none = S.ota == "up_to_date" || S.ota == "idle";
+                return "{\"ok\":true,\"state\":" + q(S.ota) + ",\"error\":\"\",\"current\":" + q(get("current", "2.1.0-rc.1")) + ",\"latest\":" +
+                       q(none ? "" : get("latest", "2.1.0")) + ",\"notes\":\"" + (none ? std::string() : esc) + "\",\"size\":1288490188,\"progress\":" +
+                       std::to_string(S.otaProgress) + ",\"last_check\":" + std::to_string(S.otaChecked) + ",\"prerelease\":false,\"auto\":true,\"beta\":false," +
+                       "\"recovery\":" + q(get("recovery", "ok:OrangeFox:hook1")) + ",\"card\":true}";
+            }
+            return "{\"ok\":true,\"state\":" + q(get("state", "ready")) + ",\"error\":\"\",\"current\":\"2.1.0\",\"latest\":" + q(get("latest", "2.1.0")) +
+                   ",\"notes\":\"" + esc + "\",\"size\":1288490188,\"progress\":" + get("progress", "0") + ",\"last_check\":0,\"prerelease\":false," +
+                   "\"auto\":true,\"beta\":false,\"recovery\":" + q(get("recovery", "ok:OrangeFox:hook1")) + ",\"card\":true}";
+        }
         return "{\"ok\":true,\"state\":" + q(S.ota) + ",\"error\":\"\",\"current\":\"0.3.0\",\"latest\":" + q(S.ota == "up_to_date" || S.ota == "idle" ? "" : "0.3.1") +
                ",\"notes\":\"## Songate 2.1.0\\n- **Setup** for a new player, in a minute\\n- Key sounds: Soft, Tick, Pop and Clack\\n\\n## Fixes\\n"
                "- HiBy settings are saved again\\n- The status LED after a restart ([#12](https://example.invalid/12))\"" +
@@ -445,10 +484,14 @@ void simTick() {   // a connection's progress, a download's, as the service woul
     if (S.ota == "downloading") {
         const Uint32 d = SDL_GetTicks() - S.otaAt;
         S.otaProgress = std::min<int64_t>(1288490188, int64_t(1288490188.0 * d / 6000.0));
-        if (d >= 6000) S.ota = "ready";
+        if (d >= 6000) {
+            if (S.otaLive) { S.ota = "verifying"; S.otaAt = SDL_GetTicks(); }   // (then checked, as the service does)
+            else S.ota = "ready";
+        }
         static Uint32 last = 0;
-        if (SDL_GetTicks() - last >= 1000 || S.ota == "ready") { last = SDL_GetTicks(); plat::sysBump("ota"); }   // (once a second, as the service)
+        if (SDL_GetTicks() - last >= 1000 || S.ota != "downloading") { last = SDL_GetTicks(); plat::sysBump("ota"); }   // (once a second, as the service)
     }
+    if (S.ota == "verifying" && S.otaLive && SDL_GetTicks() - S.otaAt >= 3500) { S.ota = "ready"; plat::sysBump("ota"); }
     if (!S.linkAt || SDL_GetTicks() < S.linkAt) return;
     S.linkAt = 0;
     S.link = S.linkTo;

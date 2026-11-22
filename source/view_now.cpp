@@ -563,7 +563,10 @@ void App::drawNowCover(float ax, float ay, float art) {
             automixChip(mixLabel, ax + art / 2 - cw / 2, std::max(ay - 26, 18 * K), K, automixCoverEase(), false, true);
         }
     }
-    g.roundStroke(sx, sy, s, s, 16, 1, pal.text, 0.08f);
+    {   // (in a join, on the frost's edge: a pixel out, App::automixGrow)
+        const float gr = has && time < mixUntil ? automixGrow() : 0.f;
+        g.roundStroke(sx - gr, sy - gr, s + 2 * gr, s + 2 * gr, 16 + gr, 1, pal.text, 0.08f);
+    }
 }
 
 float App::mixWipe() const {

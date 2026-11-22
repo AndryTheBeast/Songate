@@ -82,6 +82,8 @@ void Player::ensureOpen() {
 
 bool Player::bitPerfect() const { return bpFormat_ != 0 && !plat::bitPerfectLost() && plat::bitPerfectConfirmed(); }
 
+extern "C" int SDL_SongateAAudioReopens(void);
+
 bool Player::reopenAt(int rate, int format) {
     Mix_HookMusicFinished(nullptr);
     Mix_SetPostMix(nullptr, nullptr);
@@ -134,6 +136,7 @@ bool Player::reopenAt(int rate, int format) {
     outLoop_.init(rate_);
     Mix_SetPostMix(&Player::postMix, this);
     Mix_HookMusicFinished(&Player::musicFinished);
+    sdlReopens_ = SDL_SongateAAudioReopens();
     SDL_Log("SongateAudio: opened %d Hz, %s%d-bit, %d channels, %d frames (asked %d Hz)%s", rate_, SDL_AUDIO_ISFLOAT(fmt) ? "float " : "",
             bpFormat_ == 24 ? 24 : int(SDL_AUDIO_BITSIZE(fmt)), ch, samples, rate, bpFormat_ ? ", bit-perfect" : "");
     return true;
@@ -203,7 +206,12 @@ bool Player::load(const std::string& path, bool paused, double fade, const autom
             if (bpWanted_ && bits > 0 && src == want) format = plat::bitPerfectBegin(src, bits);
             else if (bpFormat_) plat::bitPerfectEnd();
         }
-        if (src > 0 && free && (want != rate_ || format != bpFormat_ || plat::bitPerfectLost())) {
+        // (a bit-perfect claim on a stream SDL opened again itself after a disconnect, a jack going in: that stream is on Android's
+        // normal path whatever bpFormat_ says, so it is opened again here, claimed; SongateOS beta.11, 2026-11-20: Play when plugged in
+        // started the song through the mixer and the claim never reached it)
+        const bool sdlStream = format && SDL_SongateAAudioReopens() != sdlReopens_;
+        if (src > 0 && free && (want != rate_ || format != bpFormat_ || plat::bitPerfectLost() || sdlStream)) {
+            if (sdlStream) SDL_Log("SongateAudio: the stream was opened again after a disconnect: opened here, claimed");
             stop();   // (the song before ends here, as it would below)
             if (reopenAt(want, format)) {
                 d = std::make_unique<FfDecoder>();   // again, at the rate now open

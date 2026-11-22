@@ -64,6 +64,8 @@ public:
 
     /** True when the sysmodule runs and speaks our protocol. */
     bool connect();
+    /** The call to the background player under way, by name (nullptr: none): any thread may ask (the dev build's frame watchdog) */
+    static const char* waiting();
     /** Whether the background player may be playing now, connected or not: a look in a session of its own, closed at once.
      *  Running but not readable (another protocol) counts as playing. The opening's bells: never over music. */
     static bool mayBePlaying();

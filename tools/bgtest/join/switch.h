@@ -33,6 +33,8 @@ typedef void (*ThreadFunc)(void*);
 inline Result threadCreate(Thread*, ThreadFunc, void*, void*, size_t, int, int) { return 0; }
 inline Result threadStart(Thread*) { return 0; }
 inline void svcSleepThread(s64) {}
+typedef enum { FsPriority_Normal = 0, FsPriority_Realtime = 1, FsPriority_Low = 2, FsPriority_Background = 3 } FsPriority;
+inline void fsSetPriority(FsPriority) {}
 
 extern u64 g_ticks;   // bgjoin.cpp: the test's clock, 19.2 MHz as the console's
 inline u64 armGetSystemTick() { return g_ticks; }

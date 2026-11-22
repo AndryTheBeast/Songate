@@ -912,6 +912,7 @@ private:
     // colour while the picker is open, and what it was (sent to the service once the picker closes with another)
     bool sysThemeOwn_ = false;
     int sysThemePick_ = 0, sysThemePickFrom_ = -1;
+    double osInstallAt_ = -1;      // SongateOS's install sent (its question answered): "Preparing the install…" until it restarts
     std::string installAsked_;     // SongateOS's Install pressed: the version, until the service's checks answer (sysTick)
     std::string joinSsid_;
     bool sysBtShown_ = false, sysBtWas_ = false;
@@ -1319,6 +1320,7 @@ private:
     /** Now playing's cover frosted over during a join (its beat-scaled box), the hint inside, centred on (hx, hy) and sized
      *  by `rest`: the cover at rest, so the hint holds still while the cover breathes. */
     void drawAutomixCover(float x, float y, float s, float hx, float hy, float rest, float rad = 16, bool hint = true, float lapW = 2.5f);
+    float automixGrow() const;        // how far a join's frost reaches past the cover (0..1 px): the cover's thin border goes with it
     float automixCoverEase() const;   // the frost's strength now (0.9 s in and out, as the glide): for a hint drawn beside it
     /** A part `p` (0..1) of a rounded box's outline, from the middle of its top edge, clockwise (Automix's progress lap). */
     void lapPath(float x, float y, float w, float h, float r, float p, std::vector<SDL_FPoint>& pts);
@@ -1755,6 +1757,9 @@ public:
     int appsHidden();
     void appsShowAll();
     double homeHeldAt_ = -100;
+    // Settings › Playback's Other apps' music: Android's Notification access, asked once a second while it shows (it was every frame)
+    bool otherAllowed_ = false;
+    double otherAllowedAt_ = -100;
 #endif
     float phoneQueueP_ = 0, phoneLyricsP_ = 0, phoneSeekP_ = 1;
     // upright, Settings › Lyrics › Under the cover: how far the lyrics have taken the row's place, the line now and before, when it came

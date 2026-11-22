@@ -310,6 +310,7 @@ private:
     bool int32_ = false;   // a 32-bit integer device (bit-perfect: 24 and 32-bit songs)
     std::atomic<bool> bpWanted_{ false };
     int bpFormat_ = 0;      // the open device's bit-perfect format (0: the normal path)
+    int sdlReopens_ = 0;    // SDL's own reopens after a disconnect when reopenAt last opened (Android): moved on, the stream is SDL's
     const std::vector<float>* once_ = nullptr;
     size_t onceAt_ = 0;
     std::atomic<bool> oncePlaying_{ false }, onceStop_{ false };   // (the audio thread ends it, so `sound` is never freed under it)

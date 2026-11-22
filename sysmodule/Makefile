@@ -54,6 +54,11 @@ CFLAGS	:=	-g -Wall -O2 -ffunction-sections \
 			$(ARCH) $(DEFINES)
 
 CFLAGS	+=	$(INCLUDE) -D__SWITCH__ -DGF_HELIX_GENERIC -DUSE_DEFAULT_STDLIB -Wno-unused-function
+# DEV=1: the dev build's log (bg-log.txt: slow requests, slow sound, slow opens). Off unless asked for: a release is "make -C sysmodule"
+DEV	?=	0
+ifeq ($(DEV),1)
+CFLAGS	+=	-DGF_DEV
+endif
 
 CXXFLAGS	:= $(CFLAGS) -std=gnu++20 -fno-rtti -fno-exceptions
 

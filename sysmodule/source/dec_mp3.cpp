@@ -88,6 +88,7 @@ protected:
 
 private:
     Reader r_;
+    void readAhead() override { r_.startReadAhead(); }
     mp3dec_t dec_;
     uint64_t dataStart_ = 0, dataEnd_ = 0, firstFrame_ = 0, audioBytes_ = 0;
     bool hasToc_ = false;

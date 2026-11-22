@@ -8,7 +8,7 @@ SRC="$HERE/../../source"
 FFMPEG="${FFMPEG:?an FFmpeg win64 shared build folder}"
 mkdir -p "$OUT"
 FLAGS=(-std=c++20 -O2 -DGF_PREVIEW -D_CRT_SECURE_NO_WARNINGS -DNOMINMAX -DGF_FFMPEG -I"$SRC" -I"$FFMPEG/include")
-clang++ "${FLAGS[@]}" "$HERE/mixtest.cpp" "$SRC/mixan.cpp" "$SRC/automix.cpp" "$SRC/loudness.cpp" "$SRC/ffdecoder.cpp" \
+clang++ "${FLAGS[@]}" "$HERE/mixtest.cpp" "$SRC/mixan.cpp" "$SRC/automix.cpp" "$SRC/loudness.cpp" "$SRC/ffdecoder.cpp" "$SRC/cardhold.cpp" \
   -L"$FFMPEG/lib" -lavformat -lavcodec -lswresample -lavutil -Xlinker /subsystem:console -o "$OUT/mixtest.exe"
 cp "$FFMPEG/bin/"*.dll "$OUT/"
 echo "built $OUT/mixtest.exe"

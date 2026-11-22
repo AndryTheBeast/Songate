@@ -209,7 +209,7 @@ try:
     time.sleep(1.5)
     # ---- Storage and USB
     page("Storage")
-    s = wait(lambda s: has(s, "TheBeast"), 6)
+    s = wait(lambda s: has(s, "MUSIC"), 6)
     step("Storage: On this player (internal, the card and their room)", s is not None and has(s, "Internal storage") and has_in(s, "free of"))
     tap_item("sys.vol#1")
     s = wait(lambda s: has_in(s, "Ejected"), 10)

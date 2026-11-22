@@ -38,3 +38,5 @@ void BgClient::setEq(const GfbgEq&) {}
 bool BgClient::pcm(float*, int) { return false; }
 bool BgClient::config(BgConfig&) { return false; }
 void BgClient::setConfig(const BgConfig&) {}
+
+const char* BgClient::waiting() { return nullptr; }
