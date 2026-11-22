@@ -104,6 +104,8 @@ public:
     /** Any other item a finger held still on for half a second: its id for that one frame, focused (the app opens what
      *  + would; the tap then never comes). 0 otherwise. */
     Id touchHeld() const { return touchHold_; }
+    /** Where the last touch went down (a tap's place: the keyboard card's field puts its cursor there) */
+    float touchDownX() const { return downX_; }
     /** Every frame, whether A is held: a Hold item pressed with A activates when it is let go. */
     void padHeld(bool a);
     /** For a focused slider: −1/+1 from ←/→ this frame. */

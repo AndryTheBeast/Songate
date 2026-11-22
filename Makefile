@@ -44,10 +44,10 @@ DATA		:=	data
 INCLUDES	:=	source sysmodule/include
 APP_TITLE	:=	Songate
 APP_AUTHOR	:=	AndryTheBeast
-APP_VERSION	:=	2.1.0
+APP_VERSION	:=	2.1.1
 # APP_BUILD: Android's build number within APP_VERSION (1-99), one higher for each build that goes into a SongateOS image
 # (versionCode = major*1000000 + minor*10000 + patch*100 + build; the user, 2026-11-18)
-APP_BUILD	:=	44
+APP_BUILD	:=	1
 ROMFS	:=	romfs
 
 #---------------------------------------------------------------------------------

@@ -392,6 +392,29 @@ void App::drawSearchKb() {
         else shown = skb_.text;
         const Font ff{ css::Md };
         const float tx = fx + 14, maxW = fw - 28 - (skb_.kind == KbKind::Number || skb_.kind == KbKind::Minutes ? 30 : 0);
+        // the field takes its own taps: nothing was there to, and a tap on it went through to what lay under the card (a number was
+        // typed: an Android user naming an Automix playlist, 2026-11-22). A tap puts the cursor where it lands, when the whole name
+        // shows (a longer one, a password, sentences, a number: the cursor stays, as L and R move it)
+        // (down to where the keys' own reach begins: the 12 px between the field and the top row were no one's, and a finger meant
+        // for the field's lower half landed on the digits, which type at the touch: the keys' Key flag)
+        if (ui.item(uid("skb.field"), { fx, fy - 6, fw, ky + fieldH - gap / 2 - (fy - 6) }, 12, NoDefault | NoSideEntry | NoUpDownEntry)) {
+            skb_.fresh = false;
+            skb_.at = time;
+            const std::string& t = skb_.text;
+            if (skb_.kind == KbKind::Text && !skb_.secret && g.measureF(t, ff) <= maxW) {
+                const float px = ui.touchDownX() - tx;
+                size_t best = t.size();
+                float bd = 1e9f;
+                for (size_t i = 0;;) {
+                    const float d = std::fabs(g.measureF(t.substr(0, i), ff) - px);
+                    if (d < bd) { bd = d; best = i; }
+                    if (i >= t.size()) break;
+                    i++;
+                    while (i < t.size() && (static_cast<unsigned char>(t[i]) & 0xC0) == 0x80) i++;
+                }
+                skb_.cur = best;
+            }
+        }
         const bool blink = !skb_.fresh && std::fmod(time - skb_.at, 1.06) < 0.62;
         if (longText) {   // wrapped, the last three lines in sight, the caret after the last word
             std::vector<std::string> lines = shown.empty() ? std::vector<std::string>{ std::string() } : g.wrap(shown, ff, int(maxW), 1000);
@@ -500,7 +523,10 @@ void App::drawSearchKb() {
         float hx0 = x - gap / 2, hx1 = x + w + gap / 2, hy0 = y - gap / 2;
         if (x - (cx + side) < kw) hx0 = cx;
         if ((cx + cw - side) - (x + w) < kw) hx1 = cx + cw;
-        if (y == keysTop) hy0 = y0;
+        // (to the card's top only without a field: a name's or a number's field lies there, and the top row, the digits, covered it:
+        // a tap on the field to move the cursor typed a digit. An Android user naming an Automix playlist, 2026-11-22; the card is
+        // the same on the Switch's touchscreen and a PC's)
+        if (y == keysTop && !named) hy0 = y0;
         const bool hit = ui.item(id, { hx0, hy0, hx1 - hx0, y + kh + gap / 2 - hy0 }, 12, Key);
         if (hit) keyFeedback();
         ringAt_[id] = { x, y, w, kh };   // (its ring round the key drawn, clear of the card's edge)

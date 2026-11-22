@@ -22,7 +22,7 @@
 #include "appicons.inc"
 
 #ifndef GF_VERSION
-#define GF_VERSION "2.1.0"
+#define GF_VERSION "2.1.1"
 #endif
 
 namespace {
@@ -2185,6 +2185,16 @@ void App::drawSettings(float x, float y, float w, float h) {
                     if (ids[size_t(i)] != cur) sysapi::act("output_set", ids[size_t(i)], {}, "output");
                 });
             }
+        }
+        // Charge from USB audio (SongateOS 2.1.1's usb_nocharge, 0 by default; the user chose Output and words A, 2026-11-22): off,
+        // a USB DAC or speaker that powers the player (a Charge 6) no longer charges it; only when the service has the setting
+        if (!r4::get("usb_nocharge").empty()) {
+            const bool charge = r4::get("usb_nocharge") != "1", held = r4::get("st_usb_nocharge") == "1";
+            cards.back().rows.push_back(Row{ "Charge from USB audio", "",
+                                             held ? "Not charging from this device" : "A USB DAC or speaker can charge the player. Off, it never draws power from one",
+                                             40, [this, charge](float rx, float cy) {
+                                                 if (toggle(uid("r4.usbcharge"), rx - 40, cy, charge)) r4::set("usb_nocharge", charge ? "1" : "0");
+                                             } });
         }
         // Bit-perfect output (the user's ROM prompt and choices, 2026-11-15): each song to the DAC untouched when the output offers
         // its rate and depth (a USB DAC today, SongateOS's own outputs later), while nothing changes the sound
@@ -4559,8 +4569,11 @@ void App::drawSettings(float x, float y, float w, float h) {
         if (it != store.foldOpen.end()) openCard = it->second;
         // (a page seen first: its first; also a card kept open that is no longer there, renamed or merged: its first. Empty stays:
         // all folded on purpose)
-        const bool gone = !openCard.empty() && std::none_of(cards.begin(), cards.end(), [&](const Card& c) { return c.kicker == openCard; });
-        if (it == store.foldOpen.end() || gone)
+        // A card kept open that is missing for a moment (the R4's Updates page while SongateOS checks: its Root card came and went)
+        // opens no other in its place: the first one opened there, the cards moved under the finger and a tap meant for Install
+        // Magisk could land on Google apps' Remove (SongateOS's tester, 2026-11-22). It comes back open when it is there again;
+        // gone for good (renamed, merged), the page shows them all folded until one is opened
+        if (it == store.foldOpen.end())
             for (const Card& c : cards) if (!c.kicker.empty()) { openCard = c.kicker; break; }
         if (!settingsJump.empty())   // (a jump: the card that holds the row, open)
             for (const Card& c : cards)
