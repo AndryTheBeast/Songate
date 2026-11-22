@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Songate for PC, release: a build without dev extras, the licences beside it, the installer. Checks the program for the reports token.
-#   C:\devkitPro\msys2\usr\bin\bash.exe -lc "/c/Users/andre/Desktop/GateFold-NX/tools/windows/package.sh"
+#   C:\devkitPro\msys2\usr\bin\bash.exe -lc "/c/Users/andre/Desktop/Songate/tools/windows/package.sh"
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"

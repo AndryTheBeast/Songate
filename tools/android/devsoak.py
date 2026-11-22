@@ -10,7 +10,7 @@ import re
 import sys
 import time
 
-sys.path.insert(0, r'C:\Users\andre\Desktop\GateFold-NX\tools\android')
+sys.path.insert(0, r'C:\Users\andre\Desktop\Songate\tools\android')
 from devlib import adb, screen, tap_item, PKG   # noqa: E402
 
 ACT = PKG + '/.SongateActivity'

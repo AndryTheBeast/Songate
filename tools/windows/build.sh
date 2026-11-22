@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Songate for PC: configures and builds with clang, then gathers what the program needs beside it in build/windows/.
-#   C:\devkitPro\msys2\usr\bin\bash.exe -lc "/c/Users/andre/Desktop/GateFold-NX/tools/windows/build.sh"
+#   C:\devkitPro\msys2\usr\bin\bash.exe -lc "/c/Users/andre/Desktop/Songate/tools/windows/build.sh"
 # DEV=0: a release build (no console window, no dev extras).
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Songate for PC: builds the libraries into tools/windows/deps/prefix (clang-cl, the static CRT, no GPL).
 # Run from devkitPro's MSYS2 bash, which has make and the shell FFmpeg's configure needs:
-#   C:\devkitPro\msys2\usr\bin\bash.exe -lc "/c/Users/andre/Desktop/GateFold-NX/tools/windows/build-deps.sh"
+#   C:\devkitPro\msys2\usr\bin\bash.exe -lc "/c/Users/andre/Desktop/Songate/tools/windows/build-deps.sh"
 # Sources come from tools/windows/deps/dl; one name as an argument rebuilds only that library.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

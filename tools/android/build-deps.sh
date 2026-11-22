@@ -2,7 +2,7 @@
 # Songate for Android: builds the libraries into tools/android/deps/prefix/<abi> with the NDK (the same versions as the PC's,
 # sources from tools/windows/deps/dl and tools/android/deps/dl). LGPL ones (FFmpeg, mpg123) are shared, so they stay replaceable.
 # Run from devkitPro's MSYS2 bash, which has make and the shell FFmpeg's configure needs:
-#   C:\devkitPro\msys2\usr\bin\bash.exe -lc "/c/Users/andre/Desktop/GateFold-NX/tools/android/build-deps.sh"
+#   C:\devkitPro\msys2\usr\bin\bash.exe -lc "/c/Users/andre/Desktop/Songate/tools/android/build-deps.sh"
 # ABIS="x86_64" for the emulator only; names as arguments rebuild only those libraries.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

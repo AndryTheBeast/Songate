@@ -26,7 +26,7 @@ home = cfg / 'Songate'
 home.mkdir(parents=True)
 os.environ['SONGATE_PCCFG'] = str(cfg)
 os.environ['GF_LIVE_MUSIC'] = 'D:/Music'
-sys.path.insert(0, r'C:\Users\andre\Desktop\GateFold-NX\tools\preview')
+sys.path.insert(0, r'C:\Users\andre\Desktop\Songate\tools\preview')
 import pcdrive   # noqa: E402
 
 (home / 'settings.txt').write_text('musicRoot=D:/Music\nopening=0\nwindow=60 60 1280 720 0\nmotion=1\nbackground=0\n' + ('libSource=0\n' if server else ''))
