@@ -1133,12 +1133,33 @@ void App::drawSettings(float x, float y, float w, float h) {
             if (battery.infoOk && !(battery.info.missing >> 3 & 1))   // (no temperature read here: no unit to choose)
                 top.push_back(segRow("Temperature in", "", "set.batunit", { "°C", "°F" }, store.batteryFahrenheit ? 1 : 0,
                                      [this](int i) { store.batteryFahrenheit = i == 1; persistSoon(0.3f); }));
+            // How the charging speed is judged (the user chose the words, 2026-11-24): the charger's watts or the battery's. Only where
+            // both are read: the Switch (the PC and Android know no charger's watts; the HiBy R4 is always by the battery)
+            if (battery.infoOk && battery.info.gauge && battery.info.chargerKnown && !r4Dev_)
+                top.push_back(segRow("Charging speed",
+                                     "Charger: what it agreed to give, slow under 15 W, fast from 30 W. Battery: the power going in, slow "
+                                     "under 5 W, fast from 10 W",
+                                     "set.chargeby", { "Charger", "Battery" }, store.chargeByBattery ? 1 : 0, [this](int i) {
+                                         store.chargeByBattery = i == 1;
+                                         battery.byBattery = store.chargeByBattery;   // (at once: the battery's state follows now)
+                                         persistSoon(0.3f);
+                                     }));
             cards.push_back({ "Battery info", top });   // (the user, 2026-11-16: was "Battery")
 
             // each state: the battery as it will look (live), its colour, its animation
             static const char* stName[Store::BatteryStates] = { "On battery", "Low", "Charging slowly", "Charging", "Charging fast", "Charged" };
-            static const char* stHint[Store::BatteryStates] = { "Unplugged", "At or under Low at", "A charger with little power",
-                                                                "A full-power charger", "Fast charging: the bolt beats too", "Full, still plugged in" };
+            // (the three charging states say the watts they stand for: the battery's (the R4; the Switch set to Battery), the charger's
+            // (the Switch), or, where neither is read (the PC, a phone), the charger's kind)
+            static const char* hintKind[Store::BatteryStates] = { "Unplugged", "At or under Low at", "A charger with little power",
+                                                                  "A full-power charger", "Fast charging: the bolt beats too", "Full, still plugged in" };
+            static const char* hintCharger[Store::BatteryStates] = { "Unplugged", "At or under Low at", "A charger under 15 W",
+                                                                     "A charger of 15 to 30 W", "A charger of 30 W or more: the bolt beats too",
+                                                                     "Full, still plugged in" };
+            static const char* hintBattery[Store::BatteryStates] = { "Unplugged", "At or under Low at", "Under 5 W going in",
+                                                                     "5 to 10 W going in", "10 W or more going in: the bolt beats too",
+                                                                     "Full, still plugged in" };
+            const bool chargerRead = battery.infoOk && battery.info.chargerKnown && battery.info.gauge;
+            const char* const* stHint = r4Dev_ || (chargerRead && store.chargeByBattery) ? hintBattery : chargerRead ? hintCharger : hintKind;
             static const std::vector<int> stLooks[Store::BatteryStates] = { { 0, 1, 2, 3, 7, 6 }, { 0, 1, 2, 5, 3 },{ 0, 1, 4, 7, 6, 3 },
                                                                             { 0, 1, 4, 7, 6, 3 }, { 0, 1, 4, 7, 6, 3 }, { 0, 3, 6, 7, 2 } };
             static const char* lookName[Store::BatteryLooks] = { "Off", "Sweep", "Pulse", "Glow", "Fill up", "Blink", "Sparkle", "Shimmer" };
@@ -1177,7 +1198,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                 // which the page allows for below and the bar here: it grew both ways from its one-line place, up into the colours)
                 for (int look : stLooks[st]) r.words += g.measure(lookName[look], { css::Sm, Weight::SemiBold });
                 r.nOpts = stLooks[st].size();
-                r.block = [this, st, narrowSet, swatches](float bx, float by, float bw) {
+                r.block = [this, st, narrowSet, swatches, stHint](float bx, float by, float bw) {
                     // the battery in this state, as the title bar will draw it, larger
                     g.roundRect(bx, by + 2, 64, 38, 10, pal.text, 0.05f);
                     g.roundStroke(bx, by + 2, 64, 38, 10, 1, pal.text, 0.08f);

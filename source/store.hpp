@@ -170,6 +170,7 @@ struct Store {
     // the battery (BETA 3; the user, 2026-11-05: "Let the user customise almost everything about the battery"): what else shows beside
     // it, its colour, and each of its animations
     bool batteryWatts = false, batteryTemp = false, batteryVolts = false, batteryHealth = false, batteryFahrenheit = false;
+    bool chargeByBattery = false;   // Battery info › Charging speed (the Switch): false the charger's watts, true the battery's (App::battery.speed)
     bool batteryPower = false;      // what the battery gives or takes now, in watts (the fuel gauge: the Switch)
     // what shows beside it, in your order (the user, 2026-11-05: "sortable from settings like the side bar is"): 0 percentage, 1 time,
     // 2 charger watts, 3 temperature, 4 voltage, 5 health, 6 power

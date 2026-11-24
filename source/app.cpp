@@ -3583,13 +3583,19 @@ void App::setDimmed(bool on) {
 /** Every 10 s: the charge, and from how fast it moved over the last 10 minutes, how long to full or to empty.
  *  The raw charge has decimals, so a minute of samples already gives a rate; it steadies as more come. */
 void App::sampleBattery() {
-    if (time - battery.lastAt < 10) return;
-    battery.lastAt = time;
     double pct = 0;
     bool plugged = false;
+    if (time - battery.lastAt < 10) {
+        // between readings, the plug each second: a charger in or out read at once, its speed with it (it waited up to 10 s)
+        if (time - battery.plugCheckAt < 1) return;
+        battery.plugCheckAt = time;
+        if (!plat::batteryRaw(pct, plugged) || int(plugged) == battery.charging) return;
+    }
+    battery.lastAt = battery.plugCheckAt = time;
     if (!plat::batteryRaw(pct, plugged)) return;
     battery.infoOk = plat::batteryInfo(battery.info);
     battery.byWatts = r4Dev_;   // (the HiBy R4: its speed by the watts going in; the user, 2026-11-17)
+    battery.byBattery = store.chargeByBattery;   // (the Switch: Settings › Battery info › Charging speed)
     {   // the power service's words after the battery's age, once a run, while charging (the charger's layout: platform_switch.cpp)
         static bool cyclesLogged = false;   // (the fuel gauge's cycle counter as read, once a run: charger or not)
         if (!cyclesLogged && battery.infoOk) {

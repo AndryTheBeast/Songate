@@ -276,6 +276,7 @@ void Store::load() {
         else if (k == "batteryHealth") batteryHealth = v == "1";
         else if (k == "batteryPower") batteryPower = v == "1";
         else if (k == "batteryFahrenheit") batteryFahrenheit = v == "1";
+        else if (k == "chargeByBattery") chargeByBattery = v == "1";
         else if (k == "batteryOrder") {   // one digit each; what is missing goes at the end
             std::vector<int> o;
             for (char c : v)
@@ -614,6 +615,7 @@ void Store::save() const {
     appendf(f, "batteryPercent=%d\nbatteryEstimate=%d\n", batteryPercent, batteryEstimate);
     appendf(f, "batteryWatts=%d\nbatteryTemp=%d\nbatteryVolts=%d\nbatteryHealth=%d\nbatteryFahrenheit=%d\nbatteryLowAt=%d\nbatteryAnimPace=%d\nbatteryPower=%d\n",
             batteryWatts, batteryTemp, batteryVolts, batteryHealth, batteryFahrenheit, batteryLowAt, batteryAnimPace, batteryPower);
+    appendf(f, "chargeByBattery=%d\n", chargeByBattery);
     {   // (a letter each for the states' colours and animations: there are more than ten colours)
         std::string o, c, l;
         for (int i : batteryOrder) o += char('0' + i);

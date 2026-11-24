@@ -610,17 +610,28 @@ private:
         double rate = 0;          // % a minute (+ charging), 0 unknown
         plat::BatteryInfo info;   // the charger and the battery (plat::batteryInfo), every 10 s
         bool infoOk = false;
-        /** 0 not charging, 1 slow (a low-power charger), 2 normal, 3 fast. The HiBy R4 (byWatts): by the power going into the battery,
-         *  under 5 W slow, 5 to 10 W normal, 10 W and over fast (the user, 2026-11-17: 0.1 W showed as normal) */
-        bool byWatts = false;
+        /** 0 not charging, 1 slow, 2 normal, 3 fast.
+         *  By the battery (the HiBy R4 always, byWatts; the Switch with Settings › Battery info › Charging speed: Battery): the power
+         *  going into the battery, under 5 W slow, 5 to 10 W normal, 10 W and over fast (the user, 2026-11-17: 0.1 W showed as normal).
+         *  By the charger (the Switch's own): what it agreed to give, under 15 W slow, 15 to 30 W normal, 30 W and over fast (the user,
+         *  2026-11-24: a 9 V 2 A charger showed slow, a 15 V one normal, by the system's low-power type and its fast flag); without
+         *  its watts (an older system, a charger still agreeing), the system's type: full power normal, less slow. Never the system's
+         *  fast flag: on HOS 22 and 23 it was 0 on a 39 W charger, and where the charger's words are not found it is another field */
+        bool byWatts = false, byBattery = false;
+        double plugCheckAt = -1;   // (sampleBattery: the plug looked at each second, a full reading at once when it changes)
         int speed() const {
             if (charging != 1) return 0;
-            if (byWatts) {   // (too little to measure, no current read: slow too; the user, 2026-11-17)
-                if (!infoOk || !info.gauge) return 1;
-                const double w = info.gaugeVolts * info.gaugeAmps;
-                return w < 5 ? 1 : w < 10 ? 2 : 3;
+            if (byWatts || byBattery) {   // (too little to measure, no current read: slow too; the user, 2026-11-17)
+                if (infoOk && info.gauge) {
+                    const double w = info.gaugeVolts * info.gaugeAmps;
+                    return w < 5 ? 1 : w < 10 ? 2 : 3;
+                }
+                if (byWatts) return 1;   // (the R4; the Switch without its gauge read: by the charger, below)
             }
-            return !infoOk ? 2 : info.fast ? 3 : info.charger == 1 ? 2 : 1;
+            if (!infoOk) return 2;
+            const double w = info.chargerVolts * info.chargerAmps;
+            if (w > 0) return w < 15 ? 1 : w < 30 ? 2 : 3;
+            return info.charger == 1 ? 2 : 1;
         }
         bool full() const { return charging == 1 && pct >= 99.5; }
     } battery;
