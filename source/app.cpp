@@ -20,6 +20,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <mutex>
 #include <cstring>
 #include <ctime>
 #include <random>
@@ -734,13 +736,40 @@ void App::shutdown() {
 #else
     auto sdMark = [](const char*) {};
 #endif
+    // The watchdog. A thread asked to stop below may be in the middle of a request when the network goes (a name looked up, a
+    // server that no longer answers: curl gives up only at its timeouts), and the close waited for it: the system ended Songate as
+    // "taking too long to close" (the user, 2026-11-24, just after "the network changed"). So what matters is saved first, here,
+    // and if closing then takes more than 4 s the app ends there, its last queued writes flushed and where it stood noted in
+    // shutdown-trace.txt. (Android: the system ends the app itself.) The update's swap at the end is never cut short.
+    persistNow();
+    Store::flush();
+    saveLevels();
+    std::atomic<const char*> sdStep{ "the early save" };
+    std::mutex dogM;
+    std::condition_variable dogCv;
+    bool dogDone = false;
+    std::thread dog([&] {
+        std::unique_lock<std::mutex> l(dogM);
+        if (dogCv.wait_for(l, std::chrono::seconds(4), [&] { return dogDone; })) return;
+        const char* at = sdStep.load();
+        if (FILE* f = fopen((std::string(Store::Dir) + "/shutdown-trace.txt").c_str(), "ab")) {
+            fprintf(f, "shutdown: stuck after %s for 4 s: ended there\n", at);
+            fclose(f);
+        }
+        Store::flush();
+        plat::exitNow();   // (false: Android's, where the system ends it)
+    });
+    auto stepDone = [&](const char* what) { sdStep = what; sdMark(what); };
+#ifdef GF_DEV
+    if (getenv("GF_TEST_STUCK_CLOSE")) std::this_thread::sleep_for(std::chrono::seconds(20));   // (tests: a stop that never ends)
+#endif
     lyrNet.stop();
-    sdMark("lyrnet");
+    stepDone("lyrnet");
     lyrIndex.stop();   // (its question may wait on the network: ended first)
     tagJobs.stop();    // (a write under way finishes whole first)
     mixOrderEnd();     // (an order being worked out is dropped: asked again when its playlist next needs it)
     if (pocketLocked_) pocketLock(false);   // (never left dark)
-    sdMark("lyrindex");
+    stepDone("lyrindex");
     if (tog.stage != Tog::Off) togetherLeave();
     if (syncRebuild.joinable()) syncRebuild.join();
 #ifdef GF_WINDOWED
@@ -753,11 +782,11 @@ void App::shutdown() {
     closeJoinEditor();   // its worker ends first
     updater.stop();   // a download stops; the files are only swapped when it finished
     setDimmed(false);
-    sdMark("start");
+    stepDone("start");
     persistNow();
     Store::flush();
     saveLevels();
-    sdMark("save");
+    stepDone("save");
     stats.stop();
     subsonic.stop();
     syncer.stop();
@@ -769,17 +798,17 @@ void App::shutdown() {
     player.setAirSend(nullptr);   // (the audio thread lets go of it first)
     airsend.stop();
 #endif
-    sdMark("net");
+    stepDone("net");
     identity.stop();
     levels.stop();
-    sdMark("levels");
+    stepDone("levels");
     plat::unwatchLeave();
     plat::setMediaPlaying(false);
     if (awakeHeld) plat::setKeepAwake(false);   // the console's own idle times again
     wave.cancel();
     loader.stop();
     prints.stop();
-    sdMark("loader");
+    stepDone("loader");
     Updater::stopErasing = true;   // a reset's old folder: the rest next launch
     gStorageStop = true;           // Storage's sizes: measured again when the page opens
     if (libCheck_.joinable()) libCheck_.join();
@@ -797,16 +826,16 @@ void App::shutdown() {
         for (const auto& l : logLines_) { t += l; t += '\n'; }
         store.writeFile("log.txt", std::move(t));
     }
-    sdMark("joins");
+    stepDone("joins");
     meta.stop();
-    sdMark("tags");
+    stepDone("tags");
     player.shutdown();
-    sdMark("player");
+    stepDone("player");
     thumbs.stop();
-    sdMark("thumbs");
+    stepDone("thumbs");
     bg.disconnect();   // the background player carries on by itself
     Store::stopWriter();   // the last thread of ours: none may outlive Gatefold (hbloader cannot unload it then)
-    sdMark("writer");
+    stepDone("writer");
     endBackdropFade();
     for (SDL_Texture* t : { now.cover, now.prevCover, now.blur, now.prevBlur, now.frost, now.prevFrost, now.soft, now.prevSoft, svTex, hueTex, wheelTex }) if (t) SDL_DestroyTexture(t);
     g.shutdown();
@@ -816,6 +845,13 @@ void App::shutdown() {
     SDL_Quit();
     plat::quit();
     net::end();
+    stepDone("net end");
+    {   // the watchdog ends here: an update's swap below is never cut short (and no thread of ours outlives Songate)
+        std::lock_guard<std::mutex> l(dogM);
+        dogDone = true;
+    }
+    dogCv.notify_all();
+    dog.join();
     // An update's files that wait (the app's own .nro above all: romfs no longer reads it), a fresh start or a restore;
     // then, after Restart now, the (new) Gatefold starts again.
     const std::string next = Updater::finishPending(Store::Dir, selfPath);
@@ -833,7 +869,7 @@ void App::shutdown() {
 #ifndef GF_WINDOWED
     if (!next.empty()) goBackIfDue();   // an older version's .nro went in: its folder is gatefold-nx, made ready before it starts
 #endif
-    sdMark("quit");
+    stepDone("quit");
 #ifdef GF_DEV
     {
         char total[48];
@@ -1678,12 +1714,17 @@ void App::input() {
         if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_CLOSE) closeWindow();
         if (e.type == SDL_FINGERDOWN) typingByTouch_ = true;
         if (e.type == SDL_KEYDOWN || (e.type == SDL_MOUSEBUTTONDOWN && e.button.which != SDL_TOUCH_MOUSEID)) typingByTouch_ = false;
+        if (e.type == SDL_KEYDOWN) plat::keyPressed();   // (the key caps: the keyboard's names from here, plat::buttonNames)
         if (e.type == SDL_KEYDOWN && !e.key.repeat &&
             (e.key.keysym.sym == SDLK_F11 || (e.key.keysym.sym == SDLK_RETURN && (e.key.keysym.mod & KMOD_ALT)))) fullApp_ = !fullApp_;
         if (e.type == SDL_QUIT) running = false;
         if (e.type == SDL_WINDOWEVENT && (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED || e.window.event == SDL_WINDOWEVENT_DISPLAY_CHANGED)) fitWindow();
         if (e.type == SDL_RENDER_TARGETS_RESET || e.type == SDL_RENDER_DEVICE_RESET) remakeFrameTextures();   // (what they held is gone)
 #ifndef GF_ANDROID
+        // Songate's card up and a key of the keyboard pressed: the keyboard takes the typing over (kbKeyTakesOver); a name's letters
+        // (its SDL_TEXTINPUT, after the key) go with it to the typing card
+        if (kbHandOff_ && e.type == SDL_TEXTINPUT) { kbHandOffText_ += e.text.text; continue; }
+        if (e.type == SDL_KEYDOWN && kbKeyTakesOver(e.key.keysym.sym, e.key.keysym.mod)) continue;
         if (plat::textTyping().load()) {   // typing in Search's pill: the words, its keys; a click elsewhere ends it and acts there
             if (e.type == SDL_TEXTINPUT) { searchKbType(e.text.text); continue; }
             if (e.type == SDL_KEYDOWN) { pillKey(e.key.keysym.sym, e.key.keysym.mod); continue; }
@@ -1770,12 +1811,13 @@ void App::input() {
     if (pocketGuard_) pocketGuardTick();
     uint64_t down = plat::padDown();
 #if defined(GF_WINDOWED) && defined(GF_DEV) && !defined(GF_ANDROID)
-    if (devPad_) ui.setPadMode(true);   // (a test's pad press: the focus ring shows, as after a real pad's)
+    if (devPad_) { ui.setPadMode(true); typingByTouch_ = true; }   // (a test's pad press: the focus ring shows and text goes to the card, as after a real pad's)
     down |= devPad_;
     const uint64_t devHeld = devPad_;   // (and held for this frame: the D-pad moves the focus on what is held)
     devPad_ = 0;
 #endif
     if (down) openingSkip_ = true;
+    if (down) ui.setFingerLast(false);   // (a pad or a key: the buttons' names on screen again)
 #ifdef GF_WINDOWED
     if (down && plat::padWasLast()) typingByTouch_ = true;
     if (fitPending_) { fitPending_ = false; fitWindow(); }
@@ -4898,6 +4940,9 @@ void App::back() {
 }
 
 void App::openSearch() {
+    // Search's card already up (a tap on the search field while typing): it stays, the caret shown at once; opened again, the card
+    // rose again from below (the user's recording, 2026-11-24)
+    if (skb_.open && skb_.kind == KbKind::Search && !skb_.set) { skb_.caretAt = time - 0.7; return; }
 #ifdef GF_ANDROID
     openSearchKb();   // the phone's: Search's own keyboard card (view_sheet.cpp)
     return;

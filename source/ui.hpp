@@ -67,6 +67,14 @@ public:
     /** While a modal sheet is open, only its items (Region::Modal) register: focus and touch stay inside it. */
     void setModal(bool on) { modal_ = on; }
     bool modal() const { return modal_; }
+    /** Something drawn over the bottom of the screen from `top` down (the keyboard card): every item registered so far this frame
+     *  shows only above it, so the D-pad, a press and the focus ring all take what is under it as out of view. */
+    void coverBelow(float top) {
+        for (Item& it : cur_) {
+            const float bottom = std::min(it.clip.y + it.clip.h, top);
+            it.clip.h = std::max(0.f, bottom - it.clip.y);
+        }
+    }
     void pushArea(ScrollArea* a) {
 #if defined(GF_WINDOWED) && !defined(GF_ANDROID)
         // A window's edge dragged, or the sidebar folding: a page that is laid out again for its new width (a grid's columns, words
@@ -169,6 +177,10 @@ public:
      *  takes input (an open sheet's, not the page's behind it). False when there is none. */
     bool scrollAreaAt(float x, float y, float dy);
     void setPadMode(bool on) { padMode_ = on; }
+    /** The last input was a finger on the screen (not a mouse, a pad or a key): the buttons' names on screen are hidden then, a
+     *  hand on the screen has no use for them (the search field's Y: the user, 2026-11-24) */
+    bool fingerLast() const { return fingerLast_; }
+    void setFingerLast(bool on) { fingerLast_ = on; }
     /** (dev: the options' preview draws every touch area) */
     template <class F> void eachItem(F f) const { for (const auto& it : prev_) f(it.r); }
     /** Last frame's items that take input and show (its id and rectangle): the self test walks and checks them. */
@@ -222,7 +234,7 @@ private:
     float holdT_ = 0;
     bool holdPad_ = false, holdFired_ = false;
     std::unordered_map<int, Id> regionMemory_;
-    bool scrollToFocus_ = false, wantDefault_ = false, wantDefaultNext_ = false, padMode_ = true, modal_ = false;
+    bool scrollToFocus_ = false, wantDefault_ = false, wantDefaultNext_ = false, padMode_ = true, modal_ = false, fingerLast_ = false;
     Region fallbackRegion() const { return modal_ ? Region::Modal : Region::Main; }
     int sliderStep_ = 0, sliderStepY_ = 0;
     float dt_ = 0;

@@ -11,16 +11,26 @@
 #include "engine.hpp"
 #include "gfbg.h"
 
-// 2 MB: decoders, tables, queue paths and audout buffers, and each song's read-ahead (256 KB): with 1.5 MB a join's two songs and
-// its echo left no room for the incoming song's, and the card's stalls were heard mid-join (the user's console, 2026-11-22)
+// 2 MB, as 2.1.1 had. In it: what 2.0 had in its 1.5 MB (decoders, tables, queue paths, audout buffers), 375 KB for Automix's
+// echo line, which is now taken once at the start and kept (Engine::start), and 125 KB to spare; so everything else has at
+// every moment a little more than it had in 2.0. The read-ahead's big rings are not in it: they are taken from the system
+// only while music plays (decoder.cpp's tiers), and only its small ones (256 KB: a song that needs no more, or the system
+// with none to spare) come from here, beside RaReserve, as 2.1.1's did.
+#ifdef GF_HEAP_SIZE   // (a test build's)
+#define HEAP_SIZE GF_HEAP_SIZE
+#else
 #define HEAP_SIZE 0x200000
+#endif
 
 extern "C" {
 
 u32 __nx_applet_type = AppletType_None;
-// three: the sound's thread, the read-ahead's and the watch thread's reads each on their own (one session took them in turn, so a
-// read held up by the card held up every other thread's too)
-u32 __nx_fs_num_sessions = 3;
+// ONE file-system session, as every sysmodule keeps (2.1.1 took three, one each for the sound's, the read-ahead's and the watch
+// thread's reads): fsp-srv's sessions are few and shared by the whole system, and on a console with many sysmodules the two
+// extra ones were the last: the next process to open the file system waited for ever, and the console froze with no crash
+// report. The threads' reads take the one session in turn again; the read-ahead ring (decoder.cpp) is what keeps a card's
+// stall away from the sound.
+u32 __nx_fs_num_sessions = 1;
 size_t gfHeapSize = HEAP_SIZE;
 
 void __libnx_initheap(void) {

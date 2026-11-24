@@ -10996,7 +10996,7 @@ namespace tsl {
                     drawBar(renderer, xPos, yPos-3, handlePos, trackBarFullColor, !(m_usingStepTrackbar || m_usingNamedStepTrackbar));
                     if (ult::useSwitch2Style) {
                         // Locked trackbar cross-fades to the alternate wheel palette; unlocked keeps the default.
-                        const Switch2Wheel w2 = buildSwitch2Wheel(!isEffectivelyUnlocked, S2_WHEEL_SLOT_HANDLE);
+                        const Switch2Wheel w2 = buildSwitch2Wheel(warmRing(), S2_WHEEL_SLOT_HANDLE);
                         renderer->drawCircle(xPos + x + handlePos, yPos + y, 16, true, a(s_highlightColor), &w2);
                     } else {
                         renderer->drawCircle(xPos + x + handlePos, yPos + y, 16, true, a(s_highlightColor));
@@ -11080,7 +11080,7 @@ namespace tsl {
                     }
                 } else {
                     // Use dim colors when locked, bright colors when unlocked
-                    if (!m_unlockedTrackbar && !ult::allowSlide.load(std::memory_order_acquire)) {
+                    if (warmRing()) {
                         s_highlightColor = lerpColor(highlightColor3, highlightColor4, progress);
                     } else {
                         s_highlightColor = lerpColor(highlightColor1, highlightColor2, progress);
@@ -11133,7 +11133,7 @@ namespace tsl {
                                 1.0f - static_cast<float>(elapsedClick_ns) / 500000000.0f));
                             w2 = blendSwitch2Wheels(makeSwitch2Wheel(), makeSwitch2WheelAlt(), clickBlend);
                         } else {
-                            w2 = buildSwitch2Wheel(!isUnlocked, S2_WHEEL_SLOT_BORDER);
+                            w2 = buildSwitch2Wheel(warmRing(), S2_WHEEL_SLOT_BORDER);
                         }
                         renderer->drawBorderedRoundedRect(this->getX() + x + 11, this->getY() + y - 5, this->getWidth() + 1, this->getHeight() + 11, 5, 12, a(s_highlightColor), &w2);
                     } else {
@@ -11251,6 +11251,16 @@ namespace tsl {
             bool m_usingStepTrackbar = false;
             bool m_usingNamedStepTrackbar = false;
             bool m_unlockedTrackbar = true;
+            // (Songate) the warm ring only while the slider is picked up with A, the cool one while it is only focused, as the
+            // overlay's scrub (the user, 2026-11-24); off: the library's own, warm while locked
+            bool m_warmWhenUnlocked = false;
+        public:
+            void setWarmWhenUnlocked(bool on) { m_warmWhenUnlocked = on; }
+        protected:
+            bool warmRing() const {
+                const bool unlocked = m_unlockedTrackbar || ult::allowSlide.load(std::memory_order_acquire);
+                return m_warmWhenUnlocked ? unlocked : !unlocked;
+            }
             bool touchInSliderBounds = false;
             
             u64 m_clickAnimationStartTime = 0;
@@ -11672,7 +11682,7 @@ namespace tsl {
                     drawBar(renderer, xPos, yPos-3, handlePos, trackBarFullColor, false);
                     if (ult::useSwitch2Style) {
                         // Locked trackbar cross-fades to the alternate wheel palette; unlocked keeps the default.
-                        const Switch2Wheel w2 = buildSwitch2Wheel(!isEffectivelyUnlocked, S2_WHEEL_SLOT_HANDLE);
+                        const Switch2Wheel w2 = buildSwitch2Wheel(warmRing(), S2_WHEEL_SLOT_HANDLE);
                         renderer->drawCircle(xPos + x + handlePos, yPos + y, 16, true, a(s_highlightColor), &w2);
                     } else {
                         renderer->drawCircle(xPos + x + handlePos, yPos + y, 16, true, a(s_highlightColor));

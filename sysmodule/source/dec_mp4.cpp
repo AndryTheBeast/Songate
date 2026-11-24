@@ -132,7 +132,7 @@ private:
     struct Stsc { uint32_t first, perChunk; };
 
     Reader r_;
-    void readAhead() override { r_.startReadAhead(); }
+    void readAhead() override { r_.startReadAhead(bitrate); }
     HAACDecoder aac_ = nullptr;
     bool audio_ = false, sbr_ = false;
     int ascRate_ = 0, ascChannels_ = 0;

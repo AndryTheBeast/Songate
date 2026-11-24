@@ -74,4 +74,16 @@ inline Result audoutAppendAudioOutBuffer(AudioOutBuffer*) { return 0; }
 inline Result audoutGetReleasedAudioOutBuffer(AudioOutBuffer**, u32* n) { *n = 0; return 0; }
 inline Result audoutWaitPlayFinish(AudioOutBuffer**, u32* n, u64) { *n = 0; return 0; }
 inline Result audoutFlushAudioOutBuffers(bool* b) { if (b) *b = false; return 0; }
+
+// The read-ahead rings' blocks from the system (Engine::start, since 2.2.0): malloc's here, and a system pool with 64 MB free,
+// so the PC runs the full tier
+typedef u32 Handle;
+#define INVALID_HANDLE ((Handle)0)
+typedef enum { Perm_None = 0, Perm_R = 1, Perm_W = 2, Perm_X = 4, Perm_Rw = 3, Perm_DontCare = 0x10000000 } Permission;
+struct SharedMemory { void* map_addr; size_t size; };
+inline Result shmemCreate(SharedMemory* s, size_t size, Permission, Permission) { s->size = size; s->map_addr = nullptr; return 0; }
+inline Result shmemMap(SharedMemory* s) { s->map_addr = malloc(s->size); return s->map_addr ? 0 : 1; }
+inline void* shmemGetAddr(SharedMemory* s) { return s->map_addr; }
+inline Result shmemClose(SharedMemory* s) { free(s->map_addr); s->map_addr = nullptr; return 0; }
+inline Result svcGetSystemInfo(u64* out, u32 id0, Handle, u64) { *out = id0 == 0 ? (u64(64) << 20) : 0; return 0; }
 #define aligned_alloc(a, s) _aligned_malloc((s), (a))

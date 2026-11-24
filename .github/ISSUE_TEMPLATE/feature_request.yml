@@ -52,4 +52,4 @@ body:
     attributes:
       label: Songate version
       description: Settings › About. Optional, but it helps.
-      placeholder: 2.1.1
+      placeholder: 2.2.0

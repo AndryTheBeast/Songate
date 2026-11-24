@@ -22,7 +22,7 @@
 #include "appicons.inc"
 
 #ifndef GF_VERSION
-#define GF_VERSION "2.1.1"
+#define GF_VERSION "2.2.0"
 #endif
 
 namespace {
@@ -4525,7 +4525,7 @@ void App::drawSettings(float x, float y, float w, float h) {
     g.roundRect(px, py, 44, 44, 12, pal.accent, 0.16f);
     g.icon(icon, px + 22, py + 22, 22, pal.accentInk);
     g.textC(title, { 30, Weight::ExtraBold }, px + 44 + 16, py + 22, pal.text, 1, Align::Left, int(pw - 60));
-    if (!settingsQuery.empty() && skb_.open && !strcmp(skb_.field, "settings") && std::fmod(time - skb_.at, 1.06) < 0.62)   // typing: the caret in the title
+    if (!settingsQuery.empty() && skb_.open && !strcmp(skb_.field, "settings") && std::fmod(time - skb_.caretAt, 1.06) < 0.62)   // typing: the caret in the title
         g.rect(px + 44 + 16 + std::min(g.measureF(title, { 30, Weight::ExtraBold }), pw - 60) + 2, py + 22 - 15, 2, 30, pal.text);
     py += 44 + 20;
     }

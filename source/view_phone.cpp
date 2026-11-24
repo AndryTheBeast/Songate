@@ -1011,7 +1011,7 @@ void App::drawPhone() {
         if (skb_.open && !strcmp(skb_.field, "search")) {   // Search's keyboard is up: typing here (the caret after the words, the field lit)
             g.roundStroke(kPad, fy, fw, 44, 12, 1.5f, pal.accent, 0.8f);
             const float cxr = kPad + 44 + (qtext.empty() ? 0.f : std::min(g.measureF(qtext, { css::Base }), fw - 90)) + 1;
-            if (std::fmod(time - skb_.at, 1.06) < 0.62) g.rect(cxr, fy + 22 - 11, 1.5f, 22, pal.text);
+            if (std::fmod(time - skb_.caretAt, 1.06) < 0.62) g.rect(cxr, fy + 22 - 11, 1.5f, 22, pal.text);
         }
         if (!qtext.empty() && iconButton(uid("ph.sclear"), ICON_X, kPad + fw - 22, fy + 22, false, 36, 16)) navigate(View::Search, -1, std::string(), false);
         if (srcW > 0) librarySource(W - kPad, fy + 22, 44);

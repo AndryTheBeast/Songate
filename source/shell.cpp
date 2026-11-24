@@ -776,7 +776,14 @@ void App::drawTitlebar() {
 #ifdef GF_ANDROID
     const bool keyShown = false;   // (touch only: no key opens search; the user, 2026-11-18: "removing that ctrl F pill")
 #else
-    const bool keyShown = sw >= 290;   // (a short field: its words whole before the key's name)
+    // (a short field: its words whole before the key's name; none after a finger on the screen: the user, 2026-11-24)
+#ifdef GF_WINDOWED
+    // (the PC: the keyboard's Ctrl F once a key was pressed, a pad's Y once one is attached or used; neither with only a mouse or a
+    // finger: plat::buttonNames, the user, 2026-11-24)
+    const bool keyShown = sw >= 290 && !ui.fingerLast() && plat::buttonNames() != plat::Names::None;
+#else
+    const bool keyShown = sw >= 290 && !ui.fingerLast();
+#endif
 #endif
     g.textC(q.empty() ? searchHint() : q, { css::Sm }, sx + 12 + 16 + 8, cy, q.empty() ? pal.text3 : pal.text, 1, Align::Left,
             int(keyShown ? sw - 90 : sw - 48));
@@ -784,7 +791,7 @@ void App::drawTitlebar() {
         g.roundStroke(sx, sy, sw, 32, 9, 1.5f, pal.accent, 0.8f);
         const std::string qb = q.substr(0, std::min(skb_.cur, q.size()));   // (the caret at the cursor)
         const float cxr = sx + 12 + 16 + 8 + (qb.empty() ? 0.f : std::min(g.measureF(qb, { css::Sm }), keyShown ? sw - 90 : sw - 48)) + 1;
-        if (std::fmod(time - skb_.at, 1.06) < 0.62) g.rect(cxr, cy - 9, 1.5f, 18, pal.text);
+        if (std::fmod(time - skb_.caretAt, 1.06) < 0.62) g.rect(cxr, cy - 9, 1.5f, 18, pal.text);
     }
     // <kbd>: the button that opens search
     if (keyShown) {
@@ -2454,6 +2461,12 @@ void App::drawFocusRing() {
     // (the page under the sidebar opened over it, a narrow window: a press there closes the sidebar, and it is nothing to outline;
     // the user's screenshot, 2026-11-11, a ring round the whole page)
     if (id == uid("side.scrim")) return;
+    // The keyboard card's own ground and the page above it (a tap there closes it) are nothing to outline either: the ring of the
+    // page above ran along the card's top edge (the user's screenshot, 2026-11-24)
+    if (id == uid("skb.away") || id == uid("skb.card")) return;
+    // Anything else under the keyboard card is out of sight: its ring stops at the card's top, and none at all for what is wholly
+    // under it (a sheet's row scrolled under the keys was outlined over them, the user's recording, 2026-11-24)
+    const bool underCard = kbTop_ >= 0 && std::find(kbIds_.begin(), kbIds_.end(), id) == kbIds_.end();
     // a card's row: its outline inside the row, as its light is (view_smart.cpp), clear of the rows either side
     if (std::find(cardRowIds_.begin(), cardRowIds_.end(), id) != cardRowIds_.end()) { r.y += kCardRowInset; r.h -= kCardRowInset * 2; }
     // the player bar's seek: its touch area reaches up to the play button; the ring hugs the waveform instead, clear of it (the user,
@@ -2466,7 +2479,8 @@ void App::drawFocusRing() {
     // :focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px }
     // Behind what is around its list, as the item itself is (the user, 2026-11-04: "every single focus ring is overlaping the
     // UI"): cut at the list's edge where the item goes under it; where the item is all in view, the ring's 6 px outside it stay
-    const SDL_FRect c = ui.clipOf(id);
+    SDL_FRect c = ui.clipOf(id);
+    if (underCard && c.y + c.h > kbTop_) c.h = std::max(0.f, kbTop_ - c.y);   // (the card's top is the edge of what shows)
     constexpr float out = 6;
     const float x0 = r.x >= c.x ? r.x - out : c.x, y0 = r.y >= c.y ? r.y - out : c.y;
     const float x1 = r.x + r.w <= c.x + c.w ? r.x + r.w + out : c.x + c.w, y1 = r.y + r.h <= c.y + c.h ? r.y + r.h + out : c.y + c.h;

@@ -943,6 +943,7 @@ private:
     // Search's own keyboard card, the console's and the phone's (view_sheet.cpp): what is typed searches at once
     // (any search field: set takes each change, field names the one typed in; neither: Search's own)
     struct SearchKb { bool open = false, symbols = false, shift = false, caps = false, pushed = false; std::string text; double at = 0; Id focusWas = 0;
+                      double caretAt = 0;   // the caret's blink starts here (a tap, L or R): never `at`, the card's rise, or it rose again (the user, 2026-11-24)
                       size_t cur = 0;   // the cursor: a byte in text, at a letter's start (L/R move it; keys type and ⌫ takes back there)
                       double repAt = 0; uint64_t repBtn = 0;   // B, L or R held: repeated, as HOS's keyboard does
                       std::function<void(const std::string&)> set; const char* field = "search";
@@ -976,6 +977,14 @@ private:
     void searchKbType(const char* s);
     void searchKbBack();
     void pillKey(int sym, int mod);   // the PC: a key while Search's pill takes the words
+    // The PC: a key of its keyboard pressed while Songate's card is up (the user, 2026-11-24: "When a keyboard is detected in PC the
+    // songate keyboard should not appear, only when controllers are used or touch"): the keyboard takes over. Search, and a field that
+    // searches as it is typed, the pill's way; a name, a number, a code or a password the PC's typing card, with what was typed
+    bool kbKeyTakesOver(int sym, int mod);   // (the event loop) true: the key was taken
+    void kbToTextCard();                     // (drawSearchKb, where a card may run its own loop) the hand-over to the typing card
+    bool kbHandOff_ = false;
+    int kbHandOffKey_ = 0;
+    std::string kbHandOffText_;   // the letters of the key that began it (its SDL_TEXTINPUT, which comes after it)
     /** Songate's card over the page (the PC's pill typing is not: the page stays to click) */
     bool skbModal() const { return skb_.open && !plat::textTyping().load(); }
     void drawSearchKb();
@@ -1254,6 +1263,11 @@ private:
     void drawToast();
     void drawFocusRing();
     std::map<Id, SDL_FRect> ringAt_;   // items whose focus ring is round part of them only (an open Settings card's chevron, a key)
+    // The keyboard card this frame (drawSearchKb): its top, and its own items. Every other ring stops at its top: what lies under
+    // it is out of sight (the user's recording, 2026-11-24: the Automix picker's row ring drawn over the keys). -1: not up
+    float kbTop_ = -1;
+    std::vector<Id> kbIds_;
+    Id kbFocusLast_ = 0;   // the card's item the pad was last on (a step onto what is hidden under the card comes back to it)
     void drawPointer();
     void drawFrameTimes();
     void drawCoverNotice();

@@ -144,7 +144,13 @@ std::vector<std::string> readLines(const std::string& p) {
 
 void Engine::start() {
     mutexInit(&m_);
-    fader_.init(GFBG_RATE, 0);   // Automix's mixer: the echo's delay line only for a join that echoes (startJoin)
+    // Automix's mixer, with its echo's delay line (1 s, 375 KB: the longest a plan asks for is a 60 bpm song's beat) taken
+    // here, once, before anything else is on the heap, and kept. Taken for each join that echoes and given back after it, it
+    // was one 140 to 375 KB block asked of a heap the songs before had cut up: the room was there in all (heapHas said so),
+    // not in one piece, the allocation failed and the player went, without a crash report (the console, 2026-11-23: the
+    // second echoing join of a test that made every join echo).
+    fader_.init(GFBG_RATE, 0);
+    fader_.reserveEcho(1.0);
     loadFiles();
     {   // (the dev build's log: a line at each start, so a restart, or a stop between two starts, shows)
         const struct mallinfo mi = mallinfo();
@@ -157,6 +163,43 @@ void Engine::start() {
     threadCreate(&watch, watchMain, this, nullptr, 0x8000, 0x2E, -2);   // (Automix decodes the next track's start on it)
     // The read-ahead: the songs' files read from the card ahead of the sound, between the two (decoder.cpp, readAheadPass)
     readAheadLog = bgLog;
+    // … their rings in memory taken from the system only while music plays (decoder.cpp's tiers): each a shared-memory block
+    // of its own, any size in 4 KB pages, back in the system's pool the moment it is closed (the console, 2026-11-23: 512 KB,
+    // 1 MB, 2.3 MB and two at once, the pool's free memory down and up by just that). svcSetHeapSize gives only whole 2 MB
+    // steps, and svcMapPhysicalMemory is refused to a process without a system resource (0xfa01).
+    struct Block { SharedMemory shm; void* at; size_t size; };
+    static Block blocks[4] = {};
+    readAheadTake = [](size_t bytes) -> void* {
+#ifdef GF_RA_TEST_REFUSE   // (a test build: the system says no)
+        return nullptr;
+#else
+        for (Block& b : blocks) {
+            if (b.at) continue;
+            const size_t size = (bytes + 0xFFF) & ~size_t(0xFFF);
+            if (R_FAILED(shmemCreate(&b.shm, size, Perm_Rw, Perm_DontCare))) return nullptr;
+            if (R_FAILED(shmemMap(&b.shm))) { shmemClose(&b.shm); return nullptr; }
+            b.at = shmemGetAddr(&b.shm);
+            b.size = size;
+            return b.at;
+        }
+        return nullptr;
+#endif
+    };
+    readAheadGive = [](void* block) {
+        for (Block& b : blocks)
+            if (b.at && b.at == block) { shmemClose(&b.shm); b.at = nullptr; b.size = 0; }
+    };
+    readAheadSystemFree = []() -> size_t {
+#ifdef GF_RA_TEST_FREE_MB   // (a test build: the system's pool has this much free before the rings take any)
+        size_t held = 0;
+        for (const Block& b : blocks) held += b.size;
+        return (size_t(GF_RA_TEST_FREE_MB) << 20) > held ? (size_t(GF_RA_TEST_FREE_MB) << 20) - held : 0;
+#else
+        u64 total = 0, used = 0;   // (pool 2: the system's, where sysmodules live)
+        if (R_FAILED(svcGetSystemInfo(&total, 0, INVALID_HANDLE, 2)) || R_FAILED(svcGetSystemInfo(&used, 1, INVALID_HANDLE, 2))) return 0;
+        return total > used ? size_t(total - used) : 0;
+#endif
+    };
     threadCreate(&ahead, readAheadMain, this, nullptr, 0x4000, 0x2C, -2);
     threadStart(&audio);
     threadStart(&watch);
@@ -167,8 +210,22 @@ void Engine::start() {
  *  waits its turn); with every ring full, it rests 15 ms. */
 void Engine::readAheadMain(void*) {
     fsSetPriority(FsPriority_Realtime);
-    for (;;)
+#ifdef GF_STALLTEST
+    // (a test build only: make DEV=1 DEFINES=-DGF_STALLTEST) nothing is read ahead for 5 s, then 10 s of reading, over and over, as when a read is held up by
+    // the card and holds the one file-system session; bg-log.txt then shows whether a ring ran dry ("read ahead ran dry")
+    u64 stallAt = armTicksToNs(armGetSystemTick()) / 1000000 + 10000;
+#endif
+    for (;;) {
+#ifdef GF_STALLTEST
+        if (armTicksToNs(armGetSystemTick()) / 1000000 >= stallAt) {
+            bgLog("TEST: nothing read ahead for 5 s");
+            svcSleepThread(5'000'000'000);
+            bgLog("TEST: reading ahead again");
+            stallAt = armTicksToNs(armGetSystemTick()) / 1000000 + 10000;
+        }
+#endif
         if (!readAheadPass()) svcSleepThread(15'000'000);
+    }
 }
 
 // ============================================================ IPC
@@ -473,8 +530,11 @@ void Engine::setConfig(const GfbgConfig& c) {
         cfg_.automixFile[sizeof cfg_.automixFile - 1] = 0;
         lvlTarget_ = levelFor(playing_);   // the levelling mode may have changed: eased to the new gain
         applyGameVolume();   // the game in front takes it at once
+        // bg-config.txt is written by the watch thread on its next tick (250 ms at most), never from here: this is the IPC
+        // thread, and with the one file-system session a write asked for while a read was held up by the card kept Songate's
+        // request, and so Songate itself, waiting as long as the stall
+        eqSaveAt_ = nowMs();
     }
-    saveConfig();
 }
 
 // ============================================================ equalizer
@@ -824,7 +884,6 @@ bool Engine::crossfadeInto(s32 pos, double fade, bool albumRule) {
     if (albumRule && (cfg_.xfadeFlags & GfbgXfade_NotInAlbum) && !album.empty() && !strcasecmp(album.c_str(), d->tags.album.c_str()))
         return false;   // the next track of the same album: it keeps its gapless join
     if (joining_) {
-        if (joinEcho_) fader_.releaseEcho();
         joining_ = joinEcho_ = false;
         joinLen_ = joinAt_ = delay_ = 0;
     }
@@ -849,12 +908,14 @@ bool Engine::startJoin() {
         return false;
     }
     automix::Plan pl = mj_.plan;
-    // the echo's delay line, only for a join that echoes and only with room for it; else the same join, dry
-    if (pl.join.effect == automix::Effect::Echo) {
-        const size_t bytes = (size_t(std::ceil(pl.echoDelay * GFBG_RATE)) + 1) * 2 * sizeof(float);
-        if (heapHas(bytes + 64 * 1024)) fader_.reserveEcho(pl.echoDelay);
-        else pl.join.effect = automix::Effect::None;
-    }
+#ifdef GF_FORCEECHO
+    // (a test build only) every join echoes, with the longest delay line a plan can ask for (1 s: a 60 bpm song's beat), so
+    // bg-log.txt's heap lines show the most a join can ever need
+    pl.join.effect = automix::Effect::Echo;
+    pl.echoDelay = 1.0;
+#endif
+    // (the echo's delay line is always there: Engine::start)
+    if (pl.join.effect == automix::Effect::Echo) bgLog("join: with its echo (%.2f s)", pl.echoDelay);
     const double at = base_ + double(outFrames_) / GFBG_RATE;
     outDec_ = std::move(dec_);
     std::swap(outRs_, rs_);
@@ -879,7 +940,6 @@ bool Engine::startJoin() {
 
 void Engine::endJoin() {
     outDec_.reset();
-    if (joining_ && joinEcho_) fader_.releaseEcho();
     joining_ = joinEcho_ = false;
     joinLen_ = joinAt_ = delay_ = 0;
 }
@@ -982,7 +1042,10 @@ void Engine::watchAutomix() {
         {
             Lock l(&m_);
             const struct mallinfo mi = mallinfo();
-            if (gfHeapSize < size_t(mi.uordblks) + 320 * 1024) return;   // two decoders at once only with room to spare
+            if (gfHeapSize < size_t(mi.uordblks) + 320 * 1024) {   // two decoders at once only with room to spare
+                bgLog("Automix: NO ROOM to open the next song ahead (%u KB in use)", unsigned(mi.uordblks / 1024));
+                return;
+            }
         }
         const u64 t0 = nowMs();
         prepDec_ = openDecoder(next.c_str());
@@ -1564,6 +1627,12 @@ void Engine::watchMain(void* self) {
     for (;;) {
         svcSleepThread(250'000'000);
         bgLogFlush();   // (the dev build's log lines, to the card from here: never from the sound's thread)
+        {   // the read-ahead holds its memory only while music is heard (and a minute after)
+            mutexLock(&e->m_);
+            const bool heard = e->status_ == GfbgStatus_Playing && e->dec_;
+            mutexUnlock(&e->m_);
+            readAheadPlaying(heard);
+        }
         const u64 now = nowMs();
         u64 pid = 0;
         const bool app = R_SUCCEEDED(pmdmntGetApplicationProcessId(&pid)) && pid != 0;
@@ -1645,6 +1714,15 @@ void Engine::watchMain(void* self) {
             const char* what = st == GfbgStatus_Playing ? "playing" : st == GfbgStatus_Paused ? (autoPaused ? "paused for a game" : "paused") : "stopped";
             const struct mallinfo mi = mallinfo();
             const unsigned freeKB = unsigned((gfHeapSize - std::min(gfHeapSize, size_t(mi.uordblks))) / 1024);
+            // the most the heap has held so far, as this thread saw it four times a second, and the most ever taken from it
+            // (malloc's own high-water mark, which a short-lived block between two looks raises too): what HEAP_SIZE must cover
+            static size_t peakUsed = 0, peakArena = 0;
+            if (size_t(mi.uordblks) > peakUsed + 8 * 1024 || size_t(mi.arena) > peakArena) {
+                peakUsed = std::max(peakUsed, size_t(mi.uordblks));
+                peakArena = std::max(peakArena, size_t(mi.arena));
+                bgLog("heap: %u KB in use at most so far, %u KB of its %u KB ever taken", unsigned(peakUsed / 1024), unsigned(peakArena / 1024),
+                      unsigned(gfHeapSize / 1024));
+            }
             if (st != lastStatus) {
                 bgLog("now %s: %s at %.0f s", what, song.empty() ? "(nothing)" : song.c_str(), at);
                 lastStatus = st;

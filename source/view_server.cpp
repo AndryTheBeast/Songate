@@ -204,13 +204,15 @@ void App::subsonicSignIn() {
     // Songate's card (the console's and the phone's; the user chose S1): the three one after another, the password as dots
     if (askKb(KbKind::Text, "Its address, as http://nas.local:4533", v.server, [this, user0 = v.user](const std::string& server) {
             if (server.empty()) return;
-            askKb(KbKind::Text, "Your username on it", user0, [this, server](const std::string& user) {
+            // (askName: the card, or the PC's typing card when its keyboard took the address over, kbKeyTakesOver; askKb alone
+            // stopped there, the username never asked)
+            askName("Your username on it", user0, [this, server](const std::string& user) {
                 if (user.empty()) return;
-                askKb(KbKind::Text, "Your password: only a token made from it is kept", "", [this, server, user](const std::string& pw) {
+                askName("Your password: only a token made from it is kept", "", [this, server, user](const std::string& pw) {
                     if (pw.empty()) return;
                     std::string p = pw;
                     subsonic.signIn(server, user, p);   // (p is wiped there; the card wipes its own copy)
-                }, nullptr, true);
+                }, true);
             });
         }))
         return;

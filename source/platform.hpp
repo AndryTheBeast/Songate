@@ -19,6 +19,9 @@ namespace plat {
 // ---- the app's life
 void init();   // before anything else
 void quit();   // after SDL_Quit
+/** The app ends here and now, its threads with it (App::shutdown's watchdog: closing held up by a thread that waits on the network);
+ *  false where it does not (Android: the system ends the app itself). */
+bool exitNow();
 /** False when the system wants the app to end. */
 bool mainLoop();
 /** Closing from outside waits (holdExit) until the settings and the session are written (releaseExit). */
@@ -73,6 +76,13 @@ void showTouchKeyboard(bool on);
 std::string capName(const std::string& button);
 /** The last thing pressed was on a pad. */
 bool padWasLast();
+/** Which buttons' names the PC shows (key caps, the search field's): a pad's (Xbox: LB, RB, Menu…) once one is attached or used; the
+ *  keyboard's once a key was pressed, until a pad is used; None while only a mouse or a finger has been used and no pad is attached
+ *  (the user, 2026-11-24: "keyboard shortcuts only when a keyboard is connected, Xbox keys when a gamepad is"). Windows cannot tell
+ *  a real keyboard from devices that call themselves one (a handheld's own buttons, a laptop's media keys): a key pressed is it. */
+enum class Names { None, Keys, Pad };
+Names buttonNames();
+void keyPressed();   // (the app's events: a key of the keyboard)
 /** The window as the system sees it: the tray's icon, the taskbar's buttons, the media overlay. */
 void windowReady(SDL_Window* window);
 enum class Cmd { None, PlayPause, Play, Pause, Next, Previous, Show, Quit, Like, CycleOrder, Seek };

@@ -21,7 +21,7 @@ public:
         if (f_) drflac_close(f_);
         free(tmp_);
     }
-    void readAhead() override { r_.startReadAhead(); }
+    void readAhead() override { r_.startReadAhead(bitrate); }
 
     bool open(const char* path) {
         // A FLAC behind an ID3v2 tag (some rippers write one): dr_flac passes over the tag and then seeks to the seek table and

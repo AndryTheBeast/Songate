@@ -13,6 +13,7 @@
 #include <chrono>
 #include <filesystem>
 #include <thread>
+#include <vector>
 #include <switch.h>
 
 #include "decoder.hpp"
@@ -91,16 +92,18 @@ int main(int argc, char** argv) {
                (unsigned long long)a, f1, (unsigned long long)b, f2, pa, a == b && f1 == f2 ? "SAME" : "DIFFERENT",
                (unsigned long long)c, (unsigned long long)e, c == e && f3 == f4 ? "SAME" : "DIFFERENT");
         bad += !(a == b && f1 == f2 && c == e && f3 == f4 && pa > 0);
-        // a ring started small (beside another song: 160 KB of room) and made whole halfway (that song gone): the same sound
+        // no ring free when it opens (every one of the pool's held by other songs) and one given to it halfway (those songs
+        // gone): the same sound
         {
-            g_used = gfHeapSize - (Reader::RaReserve + 160 * 1024);
             pumpOn = true;
+            std::vector<std::unique_ptr<Decoder>> others;
+            for (int i = 0; i < Reader::RaSlots; i++) others.push_back(openDecoder(p.c_str()));
             auto d = openDecoder(p.c_str());
             static int16_t buf[2048];
             uint64_t h = 1469598103934665603ull;
             long n = 0, reads = 0;
             for (;;) {
-                if (reads == 400) g_used = 600 * 1024;
+                if (reads == 400) others.clear();
                 const int r = d->read(buf, 1024);
                 if (r <= 0) break;
                 h = fnv(h, buf, size_t(r) * 2);

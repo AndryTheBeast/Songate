@@ -49,6 +49,7 @@ std::vector<SDL_GameController*> pads;
 int padCount = -1;   // SDL's joysticks when the pads were last opened: looked through again when it changes
 uint64_t heldNow = 0, heldBefore = 0;
 bool padLast = false;   // the last thing pressed was on a pad: key caps show its labels
+Names names = Names::None;   // whose names the key caps show (buttonNames): None until a key or a pad says
 EXECUTION_STATE awakeBits = 0;
 
 std::string knownFolder(REFKNOWNFOLDERID id) {
@@ -134,6 +135,9 @@ void init() {
     SDL_SetHint(SDL_HINT_IME_SHOW_UI, "1");
     SDL_SetHint(SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE, "0");   // × may only go to the tray: App::closeWindow decides
 }
+
+// (TerminateProcess: no DLL is told, nothing waits on the threads still running)
+bool exitNow() { TerminateProcess(GetCurrentProcess(), 0); return true; }
 
 void quit() {
     closePads();
@@ -254,8 +258,8 @@ void padRead() {
         if (SDL_GameControllerGetAxis(padDev, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 12000) b |= BtnZL;
         if (SDL_GameControllerGetAxis(padDev, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 12000) b |= BtnZR;
     }
-    if (fromKeys) padLast = false;
-    else if (b) padLast = true;
+    if (fromKeys) { padLast = false; names = Names::Keys; }
+    else if (b) { padLast = true; names = Names::Pad; }
     heldNow = b;
 }
 
@@ -287,11 +291,16 @@ void setTextCard(TextFn fn) { textCard = fn; }
 
 bool padWasLast() { return padLast; }
 
+// (a pad attached and nothing pressed yet: its names, not the keyboard's, on a handheld that has no keyboard)
+Names buttonNames() { return names == Names::None && !pads.empty() ? Names::Pad : names; }
+
+void keyPressed() { padLast = false; names = Names::Keys; }
+
 std::string capName(const std::string& b) {
     static const std::pair<const char*, const char*> keys[] = { { "A", "Enter" }, { "B", "Esc" }, { "X", "Space" }, { "Y", "Ctrl F" }, { "L", "Ctrl ←" },
                                                                 { "R", "Ctrl →" }, { "ZL", "Shift ←" }, { "ZR", "Shift →" }, { "+", "Right-click" }, { "-", "C" } };
     static const std::pair<const char*, const char*> pad[] = { { "L", "LB" }, { "R", "RB" }, { "L3", "LS" }, { "R3", "RS" }, { "ZL", "LT" }, { "ZR", "RT" }, { "+", "Menu" }, { "-", "View" } };
-    if (padLast) {
+    if (buttonNames() == Names::Pad) {
         for (const auto& [from, to] : pad) if (b == from) return to;
         return b;
     }

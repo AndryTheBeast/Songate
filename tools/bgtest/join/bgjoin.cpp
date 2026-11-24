@@ -105,6 +105,7 @@ int main(int argc, char** argv) {
     Engine e;
     mutexInit(&e.m_);
     e.fader_.init(GFBG_RATE, 0);
+    e.fader_.reserveEcho(1.0);   // (as Engine::start: the echo's delay line taken once and kept, since 2.2.0)
     GfbgConfig c = e.config();
     c.automixModel = u32(model);
     automix::ModelFile mf;

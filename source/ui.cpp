@@ -405,6 +405,7 @@ bool Ui::scrollAreaAt(float x, float y, float dy) {
 
 void Ui::touchDown(float x, float y, bool finger) {
     padMode_ = false;
+    fingerLast_ = finger;
     touching_ = true;
     scrolling_ = false;
     downX_ = x; downY_ = y; lastY_ = y;

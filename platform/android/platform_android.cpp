@@ -197,6 +197,9 @@ void init() {
     SDL_SetEventFilter(resizeFilter, nullptr);
 }
 
+// (the system ends the app itself: nothing to cut short here)
+bool exitNow() { return false; }
+
 void quit() {
     if (padDev) SDL_GameControllerClose(padDev);
     padDev = nullptr;
@@ -303,6 +306,8 @@ TextFn textCard = nullptr;
 
 void setTextCard(TextFn fn) { textCard = fn; }
 bool padWasLast() { return padLast; }
+Names buttonNames() { return padLast ? Names::Pad : Names::None; }   // (touch only: a pad's names after a pad)
+void keyPressed() {}
 
 std::string capName(const std::string& b) {
     static const std::pair<const char*, const char*> keys[] = { { "A", "Enter" }, { "B", "Back" }, { "X", "Space" }, { "Y", "Ctrl F" }, { "L", "Ctrl ←" },

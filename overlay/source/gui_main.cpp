@@ -495,6 +495,7 @@ tsl::elm::Element* SettingsGui::createUI() {
     };
 
     auto tune_volume_slider = new VolumeTrackBar("\uE13C", false, false, true, "Music", "%", false);
+    tune_volume_slider->setWarmWhenUnlocked(true);   // (warm only while picked up with A, as the scrub; the user, 2026-11-24)
     tune_volume_slider->setProgress(tune_volume * 100);
     tune_volume_slider->setValueChangedListener([this](u8 value) {
         m_music_vol = value;
@@ -509,6 +510,7 @@ tsl::elm::Element* SettingsGui::createUI() {
     // Gatefold: one volume for every game (the user, 2026-11-10: "no profiles no nothing"). Shown always,
     // a game running or not: the game in front takes it at once, the next one as it opens.
     auto title_volume_slider = new VolumeTrackBar("", false, false, true, "Game", "%", false);
+    title_volume_slider->setWarmWhenUnlocked(true);
     title_volume_slider->setProgress(m_game_vol);
     title_volume_slider->setValueChangedListener([this](u8 value) {
         m_game_vol = value;
@@ -821,7 +823,7 @@ void SettingsGui::update() {
     //if ((++tick % 15) == 0)
     play_ctx::poll();
 
-    // The sleep timer's time left, m:ss as Gatefold's player bar shows it.
+    // The sleep timer's time left, m:ss, or h:mm:ss from an hour up, as the app's player bar shows it.
     if (m_sleep_item) {
         GfbgState st{};
         gfState(&st);
@@ -829,7 +831,9 @@ void SettingsGui::update() {
         if (left != m_sleep_shown) {
             m_sleep_shown = left;
             char b[16];
-            std::snprintf(b, sizeof b, "%u:%02u", unsigned(left / 60), unsigned(left % 60));
+            // h:mm:ss from an hour up, as the app's player bar (App::fmtTime): a custom timer of hours read 998:08 (the user, 2026-11-24)
+            if (left >= 3600) std::snprintf(b, sizeof b, "%u:%02u:%02u", unsigned(left / 3600), unsigned(left / 60 % 60), unsigned(left % 60));
+            else std::snprintf(b, sizeof b, "%u:%02u", unsigned(left / 60), unsigned(left % 60));
             m_sleep_item->setValue(left == 0 ? std::string("Off") : std::string(b), left == 0);
         }
     }

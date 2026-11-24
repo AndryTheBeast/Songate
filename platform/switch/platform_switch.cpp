@@ -112,6 +112,9 @@ void init() {
     // sessions lbl allows, and Atmosphère's fatal, needing one to show an error screen, panicked instead: 2026-11-09)
 }
 
+// (svcExitProcess: the whole process, hbloader too: back to HOME, which is where a close from HOME goes anyway)
+bool exitNow() { svcExitProcess(); return true; }
+
 void quit() {
     if (gaugeOpen) i2csessionClose(&gaugeSession);
     gaugeOpen = false;

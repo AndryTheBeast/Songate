@@ -24,6 +24,7 @@ PadState pad;
 }
 
 void init() {}
+bool exitNow() { std::_Exit(0); }
 void quit() {}
 bool mainLoop() { return appletMainLoop(); }
 void holdExit() {}

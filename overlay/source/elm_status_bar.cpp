@@ -27,6 +27,12 @@ namespace {
     char current_buffer[0x20] = "";
     char total_buffer[0x20] = "";
 
+    // A song's time, m:ss, or h:mm:ss from an hour up, as the app shows it (App::fmtTime; the sleep timer too, gui_main.cpp)
+    void FmtClock(char* out, size_t size, u32 sec) {
+        if (sec >= 3600) std::snprintf(out, size, "%u:%02u:%02u", unsigned(sec / 3600), unsigned(sec / 60 % 60), unsigned(sec % 60));
+        else std::snprintf(out, size, "%u:%02u", unsigned(sec / 60), unsigned(sec % 60));
+    }
+
     void NullLastDot(char *str) {
         char *end = str + strlen(str) - 1;
         while (str != end) {
@@ -951,7 +957,7 @@ void StatusBar::draw(tsl::gfx::Renderer *renderer) {
         const u32 preview_frame = static_cast<u32>(m_seek_percentage * float(m_stats.total_frames));
         const u32 preview_sec   = preview_frame / m_stats.sample_rate;
         char preview_buf[0x20];
-        std::snprintf(preview_buf, sizeof(preview_buf), "%d:%02d", preview_sec / 60, preview_sec % 60);
+        FmtClock(preview_buf, sizeof(preview_buf), preview_sec);
         renderer->drawString(preview_buf, false,
             bar_x, label_y, 20, 0xffff);
     } else {
@@ -1135,8 +1141,7 @@ bool StatusBar::onTouch(tsl::elm::TouchEvent event, s32 currX, s32 currY,
         if (m_stats.total_frames > 0 && m_stats.sample_rate > 0) {
             const u32 sec = static_cast<u32>(m_seek_percentage * float(m_stats.total_frames))
                             / m_stats.sample_rate;
-            std::snprintf(current_buffer, sizeof(current_buffer),
-                          "%d:%02d", sec / 60, sec % 60);
+            FmtClock(current_buffer, sizeof(current_buffer), sec);
         }
 
         if (event == tsl::elm::TouchEvent::Release) {
@@ -1290,8 +1295,8 @@ void StatusBar::update() {
     /* Don't overwrite current_buffer while the user is touch-dragging —
        onTouch writes it live to track the thumb position. */
     if (!m_seeking)
-        std::snprintf(current_buffer, sizeof(current_buffer), "%d:%02d", current / 60, current % 60);
-    std::snprintf(total_buffer,   sizeof(total_buffer),   "%d:%02d", total   / 60, total   % 60);
+        FmtClock(current_buffer, sizeof(current_buffer), current);
+    FmtClock(total_buffer, sizeof(total_buffer), total);
 }
 
 // ---------------------------------------------------------------------------
@@ -1543,8 +1548,7 @@ void StatusBar::NudgeSeek(int direction, u32 seconds) {
     this->m_percentage = float(target) / float(this->m_stats.total_frames);
     if (this->m_stats.sample_rate > 0) {
         const u32 sec = target / this->m_stats.sample_rate;
-        std::snprintf(current_buffer, sizeof(current_buffer),
-                      "%d:%02d", sec / 60, sec % 60);
+        FmtClock(current_buffer, sizeof(current_buffer), sec);
     }
 
     triggerNavigationFeedback();
@@ -1589,8 +1593,7 @@ void StatusBar::onHeld(u64 keysHeld) {
                shows the pre-scrub time before the next update() tick. */
             if (m_stats.sample_rate > 0) {
                 const u32 sec = committed / m_stats.sample_rate;
-                std::snprintf(current_buffer, sizeof(current_buffer),
-                              "%d:%02d", sec / 60, sec % 60);
+                FmtClock(current_buffer, sizeof(current_buffer), sec);
             }
         }
         m_hold_start_ns  = 0;

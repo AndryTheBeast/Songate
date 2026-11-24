@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <ctime>
@@ -115,9 +116,10 @@ void App::openSearchKb() {
     skb_.text = route.view == View::Search ? route.query : "";
     skb_.pushed = route.view == View::Search;
     skb_.cur = skb_.text.size();
-    skb_.at = time;
+    skb_.at = skb_.caretAt = time;
     skb_.focusWas = ui.focusedId();
     ui.focus(uid("skb.k", 10));   // q (the PC's pill puts the focus back: no keys there)
+    kbFocusLast_ = 0;
 }
 
 /** Songate's card for every text: the phone and the console always; the PC when a pad or a finger was the last input, its own typing
@@ -131,6 +133,9 @@ bool App::kbCard() const {
 }
 
 bool App::openTextKb(const std::string& initial, std::function<void(const std::string&)> set, const char* field) {
+    // its card already up (a tap or the pointer on the field while typing): it stays as it is, the caret shown at once. Opened again,
+    // the card rose again from below and the cursor went back to the end (the user's recording, 2026-11-24)
+    if (skb_.open && !strcmp(skb_.field, field)) { skb_.caretAt = time - 0.7; return true; }
     if (!kbCard()) return false;
     openSearchKb();
     skb_.text = initial;
@@ -145,7 +150,7 @@ void App::typingMark(const char* field, float fx, float fy, float fw, float fh, 
     g.roundStroke(fx, fy, fw, fh, rad, 1.5f, pal.accent, 0.8f);
     const std::string before = text == skb_.text ? text.substr(0, std::min(skb_.cur, text.size())) : text;   // (the caret at the cursor)
     const float cx = textX + (before.empty() ? 0.f : std::min(g.measureF(before, f), maxW)) + 1;
-    if (std::fmod(time - skb_.at, 1.06) < 0.62) g.rect(cx, fy + fh / 2 - std::min(11.f, fh / 2 - 6), 1.5f, std::min(22.f, fh - 12), pal.text);
+    if (std::fmod(time - skb_.caretAt, 1.06) < 0.62) g.rect(cx, fy + fh / 2 - std::min(11.f, fh / 2 - 6), 1.5f, std::min(22.f, fh - 12), pal.text);
 }
 
 void App::closeSearchKb() {
@@ -187,6 +192,9 @@ void App::finishSearchKb() {
 
 bool App::askKb(KbKind kind, const char* title, const std::string& initial, std::function<void(const std::string&)> done,
                 std::function<void(const std::string&)> live, bool secret, bool symbols) {
+    // the same card already up (what opened it pressed again while typing, the picker's Done above the card): it stays as it is,
+    // what was typed kept; opened again, it rose again from below with the name it began with (the user, 2026-11-24)
+    if (skb_.open && skb_.kind == kind && skb_.title == title) { skb_.caretAt = time - 0.7; return true; }
     if (!kbCard()) return false;
     if (skb_.open) closeSearchKb();
     openSearchKb();
@@ -272,7 +280,7 @@ void App::searchKbMove(int dir) {
         while (c < t.size() && (static_cast<unsigned char>(t[c]) & 0xC0) == 0x80) c++;
     }
     skb_.cur = c;
-    skb_.at = time - 0.7;   // (the caret shown at once where it went, not mid-blink)
+    skb_.caretAt = time - 0.7;   // (the caret shown at once where it went, not mid-blink)
 }
 
 void App::keyClickPlay(bool overMusic) {
@@ -326,6 +334,67 @@ void App::pillKey(int sym, int mod) {
         }
     } else if (sym == SDLK_RETURN || sym == SDLK_KP_ENTER || sym == SDLK_ESCAPE || sym == SDLK_DOWN) closeSearchKb();
 }
+
+bool App::kbKeyTakesOver(int sym, int mod) {
+    if (!skb_.open || plat::textTyping().load() || kbHandOff_) return false;
+    // (a modifier alone, a function key, Alt with anything (Alt+Enter: full screen) or Windows' key are not typing)
+    switch (sym) {
+    case SDLK_LSHIFT: case SDLK_RSHIFT: case SDLK_LCTRL: case SDLK_RCTRL: case SDLK_LALT: case SDLK_RALT: case SDLK_LGUI: case SDLK_RGUI:
+    case SDLK_CAPSLOCK: case SDLK_NUMLOCKCLEAR: case SDLK_SCROLLLOCK: case SDLK_PRINTSCREEN: case SDLK_PAUSE: case SDLK_APPLICATION:
+        return false;
+    default: break;
+    }
+    if ((sym >= SDLK_F1 && sym <= SDLK_F12) || (mod & (KMOD_ALT | KMOD_GUI))) return false;
+    typingByTouch_ = false;
+    if (skb_.kind == KbKind::Search) {
+        // Search, and a field that searches as it is typed (Settings' search, a filter): the pill's way, the words in its own field
+        plat::textTyping() = true;
+        ui.focus(skb_.focusWas);
+        const bool had = SDL_IsTextInputActive();
+        if (!had) SDL_StartTextInput();
+        const bool letter = sym < 128 && isprint(sym);
+        if (!letter) pillKey(sym, mod);   // (⌫, Ctrl+V, Enter, Esc, ↓ as the pill takes them)
+        else if (!had) {   // (no SDL_TEXTINPUT comes for a key pressed before the text input began: its letter here)
+            char c[2] = { char((mod & (KMOD_SHIFT | KMOD_CAPS)) ? toupper(sym) : sym), 0 };
+            searchKbType(c);
+        }
+        return true;
+    }
+    // A name, a number, a code: Enter finishes it, Esc cancels, any other key moves it to the PC's typing card, its letters with it.
+    // All in drawSearchKb (the typing card runs its own loop); until then the keys are words, not buttons (textTyping: padRead holds
+    // them till they are let go), or Enter would press what has the focus too, Space play or pause, C open the Canvas
+    kbHandOff_ = true;
+    kbHandOffKey_ = sym;
+    kbHandOffText_.clear();
+    plat::textTyping() = true;
+    return true;
+}
+
+void App::kbToTextCard() {
+    kbHandOff_ = false;
+    plat::textTyping() = false;   // (padRead has seen it: the keys still down stay words until they are let go)
+    if (!skb_.open) { kbHandOffText_.clear(); return; }
+    if (kbHandOffKey_ == SDLK_RETURN || kbHandOffKey_ == SDLK_KP_ENTER) { finishSearchKb(); return; }
+    if (kbHandOffKey_ == SDLK_ESCAPE) { closeSearchKb(); return; }
+    std::string text = skb_.text, typed;
+    typed.swap(kbHandOffText_);
+    if (!typed.empty()) {
+        if (skb_.fresh) text = typed;   // (a number shown selected: the key replaces it, as on the card)
+        else text.insert(std::min(skb_.cur, text.size()), typed);
+    }
+    const std::string title = skb_.title;
+    const bool secret = skb_.secret;
+    auto done = std::move(skb_.done);
+    auto live = skb_.set;   // (closing puts back what was there: the card's answer then sets it)
+    skb_.done = nullptr;
+    closeSearchKb();
+    std::string out;
+    plat::textSecret() = secret;
+    const bool ok = keyboard(title.c_str(), text, out);
+    plat::textSecret() = false;
+    if (ok) { if (done) done(out); else if (live) live(out); }
+    if (secret) for (std::string* s : { &text, &out, &typed }) { volatile char* w = s->data(); for (size_t i = 0; i < s->size(); i++) w[i] = 0; }
+}
 #endif
 
 void App::searchKbBack() {
@@ -340,6 +409,11 @@ void App::searchKbBack() {
 }
 
 void App::drawSearchKb() {
+    kbTop_ = -1;   // (set again below while the card is up)
+    kbIds_.clear();
+#if defined(GF_WINDOWED) && !defined(GF_ANDROID)
+    if (kbHandOff_) { kbToTextCard(); return; }   // (the PC's keyboard took over a name: kbKeyTakesOver)
+#endif
     if (!skb_.open) return;
     if (plat::textTyping().load()) return;   // the PC: typed into Search's pill, no card
     ui.region(Region::Modal);
@@ -361,13 +435,28 @@ void App::drawSearchKb() {
     const bool pad = number && W <= H;   // the number pad upright (the user chose E2); sideways the whole-width card
     // a pad's buttons shown (the user chose C, 2026-11-18): each on its key's corner, and a line at the foot for the cursor, which has
     // no key; only while a pad was the last input (a finger, a mouse: none)
+#if defined(GF_WINDOWED) && !defined(GF_ANDROID)
+    // (the PC: a pad's names only. Its keyboard's names showed after a key, beside the pad's L3 on Shift, which has no key there:
+    // the user's screenshot, 2026-11-24; a key of the keyboard now takes the typing over anyway)
+    const bool hints = ui.showFocusRing() && !pad && plat::buttonNames() == plat::Names::Pad;
+#else
     const bool hints = ui.showFocusRing() && !pad;
+#endif
     const bool words = skb_.kind == KbKind::Search || skb_.kind == KbKind::Text || skb_.kind == KbKind::Long;
     const float stripH = hints ? 24.f : 0.f;
     const float cardH = fieldH + 12 + (pad ? kh * 4 + gap * 3 : kh * 5 + gap * 4) + stripH + 16;
     const float y0 = H - cardH + lift;
     // (touch only: the pad never lands there, nor its focus by default)
+    // What is under the card is out of view from here on: the D-pad never goes to it (Right from q went to a sheet's row behind the
+    // keys, where the focus could not be seen, and the keys' Left and Right were stuck: the user's recording, 2026-11-24), nor a
+    // press, nor its ring. Before the card's own items, which are not covered
+    ui.coverBelow(y0);
     if (ui.item(uid("skb.away"), { 0, 0, W, H - cardH }, 0, NoDefault | NoSideEntry | NoUpDownEntry)) closeSearchKb();   // a tap above: closed, what was found there to touch
+    // The card's own ground, under its keys and field: a tap or the pointer on its edges, its title or its foot stops here, not on
+    // what lies under the card (a sheet's rows: the Automix picker's, the user's recording, 2026-11-24). Never focused, no ring
+    ui.item(uid("skb.card"), { 0, H - cardH, W, cardH }, 0, NoDefault | NoSideEntry | NoUpDownEntry);
+    kbTop_ = y0;
+    kbIds_.assign({ uid("skb.away"), uid("skb.card"), uid("skb.field") });
     g.roundRect(cx, y0, cw, cardH + 30, 22, pal.surface2, a);
     g.roundStroke(cx, y0, cw, cardH + 30, 22, 1, pal.text, 0.1f * a);
     // (the page's bar follows the text: its × may have emptied it)
@@ -397,9 +486,12 @@ void App::drawSearchKb() {
         // shows (a longer one, a password, sentences, a number: the cursor stays, as L and R move it)
         // (down to where the keys' own reach begins: the 12 px between the field and the top row were no one's, and a finger meant
         // for the field's lower half landed on the digits, which type at the touch: the keys' Key flag)
+        // (its ring round the box drawn, not its touch area: that reaches 6 px above it and down to the keys, and the ring stood
+        // apart from the box's own outline, the user's screenshot, 2026-11-24)
+        ringAt_[uid("skb.field")] = { fx, fy, fw, boxH };
         if (ui.item(uid("skb.field"), { fx, fy - 6, fw, ky + fieldH - gap / 2 - (fy - 6) }, 12, NoDefault | NoSideEntry | NoUpDownEntry)) {
             skb_.fresh = false;
-            skb_.at = time;
+            skb_.caretAt = time;
             const std::string& t = skb_.text;
             if (skb_.kind == KbKind::Text && !skb_.secret && g.measureF(t, ff) <= maxW) {
                 const float px = ui.touchDownX() - tx;
@@ -415,7 +507,7 @@ void App::drawSearchKb() {
                 skb_.cur = best;
             }
         }
-        const bool blink = !skb_.fresh && std::fmod(time - skb_.at, 1.06) < 0.62;
+        const bool blink = !skb_.fresh && std::fmod(time - skb_.caretAt, 1.06) < 0.62;
         if (longText) {   // wrapped, the last three lines in sight, the caret after the last word
             std::vector<std::string> lines = shown.empty() ? std::vector<std::string>{ std::string() } : g.wrap(shown, ff, int(maxW), 1000);
             if (lines.empty()) lines.push_back(std::string());
@@ -460,6 +552,7 @@ void App::drawSearchKb() {
             const float x = cx + side + col * (pw + gap), y = ky + row * (kh + gap);
             const float w = pw * cols + gap * (cols - 1), h = kh * rows + gap * (rows - 1);
             const Id id = uid("skb.k", idx);
+            kbIds_.push_back(id);
             const bool hit = ui.item(id, { x - gap / 2, y - gap / 2, w + gap, h + gap }, 12, Key);   // (no dead gaps between keys)
             if (hit) keyFeedback();
             ringAt_[id] = { x, y, w, h };
@@ -518,6 +611,7 @@ void App::drawSearchKb() {
     };
     auto key = [&](int idx, float x, float y, float w, const char* label, const char* icon, bool accent, bool lit = false, const char* btn = nullptr) {
         const Id id = uid("skb.k", idx);
+        kbIds_.push_back(id);
         // its touch area reaches halfway to its neighbours, a row's end key to the card's edge and the top row to the card's top:
         // a fast thumb between keys still types (the user, 2026-11-18)
         float hx0 = x - gap / 2, hx1 = x + w + gap / 2, hy0 = y - gap / 2;
@@ -557,6 +651,10 @@ void App::drawSearchKb() {
                 searchKbShift();   // (caps lock: filled, the user's pick)
             x = cx + side + kw * 1.5f + gap + (7 - n) * (kw + gap) / 2;
         }
+        // Left and Right stop at the row's ends: with nothing beside them, the nearest key that way was in the row above (Left from a
+        // went to q, Right from l to p: the user's recording, 2026-11-24)
+        ui.link(r == 3 ? uid("skb.k", 100) : uid("skb.k", idx), -1, 0, 0);
+        ui.link(r == 3 ? uid("skb.k", 101) : uid("skb.k", idx + n - 1), 1, 0, 0);
         for (int i = 0; i < n; i++, idx++) {
             char ch[2] = { rows[r][i], 0 };
             if ((skb_.shift || skb_.caps) && !skb_.symbols) ch[0] = char(toupper(static_cast<unsigned char>(ch[0])));
@@ -569,6 +667,8 @@ void App::drawSearchKb() {
         ky += kh + gap;
     }
     const float bw1 = kw * 1.5f, bw3 = kw * 2.6f;
+    ui.link(uid("skb.k", 102), -1, 0, 0);
+    ui.link(uid("skb.k", 104), 1, 0, 0);
     if (key(102, cx + side, ky, bw1, "?#!", nullptr, false, skb_.symbols)) skb_.symbols = !skb_.symbols;
     if (key(103, cx + side + bw1 + gap, ky, cw - side * 2 - bw1 - bw3 - gap * 2, "space", nullptr, false, false, words ? "Y" : nullptr)) searchKbType(" ");
     if (key(104, cx + cw - side - bw3, ky, bw3, blue, nullptr, true, false, "+")) finishSearchKb();
@@ -580,6 +680,15 @@ void App::drawSearchKb() {
         rx -= g.measureF(what, { css::Xs }) + 8;
         rx -= badge("R", rx, sy, pal.text2, 0.9f) + 4;
         badge("L", rx, sy, pal.text2, 0.9f);
+    }
+    // The pad stays on what can be seen: a step from the top row of keys onto an item wholly under the card (a sheet's row behind
+    // it) went where nothing showed it, and its ring was drawn over the keys (the user's recording, 2026-11-24). It comes back to the
+    // key it left; an item above the card, in sight, is the pad's to reach (Search's results)
+    const Id f = ui.focusedId();
+    if (std::find(kbIds_.begin(), kbIds_.end(), f) != kbIds_.end()) kbFocusLast_ = f;
+    else if (f && ui.showFocusRing() && ui.hasItem(f)) {
+        const SDL_FRect r = ui.rectOf(f);
+        if (r.y >= kbTop_) ui.focus(kbFocusLast_ ? kbFocusLast_ : uid("skb.k", 10));
     }
 }
 

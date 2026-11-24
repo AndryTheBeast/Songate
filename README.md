@@ -7,10 +7,10 @@
 </p>
 <p align="center"><b>A native music player for the Nintendo Switch, Windows and Android, and the home screen of <a href="https://github.com/AndryTheBeast/SongateOS-HiBy_R4">SongateOS</a> on the HiBy R4.</b><br>
 Your own music folder or your own server, synced lyrics, colours from every cover and DJ-style Automix. Listen together on a Switch, a PC and a phone, hand the music over, and play from an iPhone with AirPlay. On the Switch, music that keeps playing on the HOME menu and in games.<br>
-By <a href="https://github.com/AndryTheBeast"><b>AndryTheBeast</b></a> · version 2.1.1 · based on <a href="https://github.com/DEVIROYrus/gatefold-foobar2000"><b>Gatefold</b></a> by <a href="https://github.com/DEVIROYrus"><b>DEVIROYrus</b></a><br>
+By <a href="https://github.com/AndryTheBeast"><b>AndryTheBeast</b></a> · version 2.2.0 · based on <a href="https://github.com/DEVIROYrus/gatefold-foobar2000"><b>Gatefold</b></a> by <a href="https://github.com/DEVIROYrus"><b>DEVIROYrus</b></a><br>
 <a href="../../releases"><b>⬇️ Download</b></a> · <a href="https://github.com/AndryTheBeast/songate-automix"><b>🎚️ The Automix models</b></a></p>
 
-<!-- The film: on GitHub, replace the next line by dragging docs/songate-2.1.mp4 here (the inline player; under 10 MB) -->
+<!-- The film: on GitHub, replace the next line by dragging docs/next-session/2.2-films/songate-2.2.mp4 here (the inline player; under 10 MB) -->
 https://github.com/user-attachments/assets/b93f1ee3-a839-4612-aff6-283122d3dc93
 
 
