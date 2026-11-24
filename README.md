@@ -10,7 +10,7 @@ Your own music folder or your own server, synced lyrics, colours from every cove
 By <a href="https://github.com/AndryTheBeast"><b>AndryTheBeast</b></a> · version 2.2.0 · based on <a href="https://github.com/DEVIROYrus/gatefold-foobar2000"><b>Gatefold</b></a> by <a href="https://github.com/DEVIROYrus"><b>DEVIROYrus</b></a><br>
 <a href="../../releases"><b>⬇️ Download</b></a> · <a href="https://github.com/AndryTheBeast/songate-automix"><b>🎚️ The Automix models</b></a></p>
 
-<!-- The film: on GitHub, replace the next line by dragging docs/next-session/2.2-films/songate-2.2.mp4 here (the inline player; under 10 MB) -->
+<!-- The film: on GitHub, replace the next line by dragging the new film here (the inline player; under 10 MB) -->
 https://github.com/user-attachments/assets/b123e61f-cec3-421a-b828-5132fcbbe6ec
 
 
@@ -543,6 +543,7 @@ Songate is an unofficial homebrew project, not affiliated with Nintendo or fooba
 ### 👥 Authors
 
 - **[AndryTheBeast](https://github.com/AndryTheBeast)**: Songate, the Switch app, background player and overlay.
+- 💙 **Goathonks**: found the freeze in Songate 2.1's background player, traced it, fixed it and tested the fix on his own console. The background player in 2.2 is his work: a huge thank you.
 - **[DEVIROYrus](https://github.com/DEVIROYrus)**: [Gatefold](https://github.com/DEVIROYrus/gatefold-foobar2000), the foobar2000 interface on PC that Songate began as a recreation of.
 
 </details>
