@@ -14,6 +14,25 @@ if len(sys.argv) > 1:
     os.environ["SONGATE_SERIAL"] = sys.argv[1]
 from devlib import *   # noqa: E402,F403  (adb, run_as, screen, wait, tap_item, tap_text, step, results, notices, ...)
 
+
+def open_fold(key):
+    """A folded Settings card opened (set.fold:<page>/<card>), scrolled to first; open already: left alone."""
+    for _ in range(10):
+        s = screen()
+        name = "set.fold:" + key
+        if name in s.items and 60 < s.items[name][1] and s.items[name][1] + s.items[name][3] < s.h - 140:   # (on screen, clear of the bars: Settings registers rows scrolled out too)
+            x, y, w, h = s.items[name]
+            print(f"        (fold {key}: {w}x{h} at {x},{y}, scale {s.scale})")
+            if h >= 48:   # (folded: the whole pill, 52 high; open: its 42-high title band; app pixels)
+                tap_item(name)
+                time.sleep(1.2)
+                s2 = screen()
+                print(f"        (tapped: now {s2.items.get(name)}; controls {' '.join(sorted(k for k in s2.items if k.startswith('set.'))[:30])})")
+            return True
+        adb("shell", "input", "swipe", "40", "1500", "40", "1000", "400"); time.sleep(0.8)   # (the left edge: never a slider)
+    return False
+
+
 stamp = time.strftime("%Y%m%d-%H%M%S")
 print(f"devtest on {SERIAL}, {stamp}")
 adb("shell", "am", "force-stop", PKG)
@@ -85,12 +104,17 @@ try:
     adb("shell", "input", "keyevent", "4")
     s = wait(lambda s: "ph.qclose" not in s.items, 5)
     step("back closes Up next", s)
-    tap_item("ph.lyrics")
-    s = wait(lambda s: "ph.lcover" in s.items, 5)
-    step("the lyrics page opens", s)
-    adb("shell", "input", "keyevent", "4")
-    s = wait(lambda s: "ph.play" in s.items and "ph.lcover" not in s.items, 5)
-    step("back returns to Now playing", s)
+    # (shuffle may pick a song without lyrics, an MP3 here: no lyrics button then, and a back pressed anyway left Now playing and
+    # failed every later step: session 23)
+    if "ph.lyrics" in screen().items:
+        tap_item("ph.lyrics")
+        s = wait(lambda s: "ph.lcover" in s.items, 5)
+        step("the lyrics page opens", s)
+        adb("shell", "input", "keyevent", "4")
+        s = wait(lambda s: "ph.play" in s.items and "ph.lcover" not in s.items, 5)
+        step("back returns to Now playing", s)
+    else:
+        print("  skip  the lyrics page: this song has none (no lyrics button)")
     adb("shell", "settings", "put", "system", "user_rotation", "1")
     s = wait(lambda s: s.w > s.h and s.playing, 8)
     step("turned sideways: laid out wide, still playing", s)
@@ -145,9 +169,14 @@ try:
     step("Search upright: its field", s)
     tap_item("ph.sfield")
     time.sleep(0.8)
-    adb("shell", "input", "text", "Geoxor")   # into the app's own typing card (view_textcard.cpp)
-    time.sleep(0.5)
-    adb("shell", "input", "keyevent", "66")   # Enter: its OK
+    # Songate's own keyboard card (session 21: Android is touch only, keys typed by adb reach nothing): its keys tapped, then its
+    # blue key (Search). Rows as tools/android/devkb.py's.
+    rows = ["1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm"]
+    for ch in "geoxor":
+        i = sum(len(r) for r in rows[:[k for k, r in enumerate(rows) if ch in r][0]]) + [r for r in rows if ch in r][0].index(ch)
+        tap_item("skb.k" if i == 0 else f"skb.k#{i}")
+        time.sleep(0.25)
+    tap_item("skb.k#104")
     # (the rows' lengths are drawn a digit at a time, fixed-width: the rows themselves say the songs came)
     s = wait(lambda s: s.has_text("Albums") and s.has_text("Lyrics") and "ph.stab[5]" in s.items and "pl.r" in s.items, 8)
     step("typed: songs, and the filter's tabs (Songs to Lyrics)", s)
@@ -162,6 +191,7 @@ try:
     # Files shown in the sidebar (Settings › Appearance › Sidebar), as a user who turned it on: the settings file of this run's own folder
     adb("shell", "am", "force-stop", PKG)
     run_as("sed -i s/^hiddenTabs=.*/hiddenTabs=0/ files/Songate/settings.txt")
+    run_as("sed -i s/^libFiles=.*/libFiles=1/ files/Songate/settings.txt")   # (the Library row has its own setting since 2.1: Settings > Library)
     adb("shell", "am", "start", "-W", "-n", f"{PKG}/.SongateActivity")
     wait(lambda s: "ph.nav#1" in s.items, 10)
     time.sleep(4)   # the opening
@@ -192,11 +222,19 @@ try:
     tap_item("pls.new")
     wait(lambda s: s.has_text("A playlist of your own"), 5)
     tap_text("A playlist of your own")   # the typing card
+    wait(lambda s: "skb.k#104" in s.items, 5)
     time.sleep(0.8)
-    adb("shell", "input", "text", "DevtestList")
-    time.sleep(0.4)
-    adb("shell", "input", "keyevent", "66")
-    s = wait(lambda s: "pl.icon" in s.items and s.has_text("DevtestList"), 6)
+    # Songate's keyboard card (touch only): " devtest" after the name offered, then its blue key (Done)
+    rows = ["1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm"]
+    for ch in " devtest":
+        if ch == " ":
+            tap_item("skb.k#103")
+        else:
+            i = sum(len(r) for r in rows[:[k for k, r in enumerate(rows) if ch in r][0]]) + [r for r in rows if ch in r][0].index(ch)
+            tap_item("skb.k" if i == 0 else f"skb.k#{i}")
+        time.sleep(0.25)
+    tap_item("skb.k#104")
+    s = wait(lambda s: "pl.icon" in s.items and s.has_text(" devtest"), 6)
     step("a new playlist, named through the typing card", s)
     tap_item("pl.icon")
     s = wait(lambda s: "sp.icon" in s.items, 5)
@@ -216,6 +254,7 @@ try:
     if not screen().has_text("Find a setting"):
         adb("shell", "input", "keyevent", "4"); time.sleep(0.8)
     tap_text("Appearance"); time.sleep(1)
+    open_fold("Appearance/Sidebar")   # (Settings folds its cards since 2.1: the Sidebar card opened first)
     def handles():
         s = screen()
         return s, sorted((v[1], k) for k, v in s.items.items() if k.startswith("set.tabdrag") and 80 < v[1] < 560)
@@ -270,6 +309,7 @@ try:
     adb("shell", "am", "start", "-W", "-n", f"{PKG}/.SongateActivity")
     time.sleep(2)
     tap_item("ph.nav#4"); time.sleep(0.8); tap_text("Playback"); time.sleep(1)
+    open_fold("Playback/Closing Songate")
     for _ in range(8):
         if screen().has_text("Keep playing when swiped away"):
             break

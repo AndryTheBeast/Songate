@@ -14,7 +14,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from devlib import ADB, PKG, SERIAL, adb, run_as, screen, tap_at, tap_item, tap_text, wait, step, results, clear_notices   # noqa: E402
+from devlib import ADB, PKG, SERIAL, adb, run_as, screen, tap_at, tap_item, tap_text, wait, step, results, clear_notices, type_card   # noqa: E402
 
 OUT = sys.argv[1]
 TURN = sys.argv[2] if len(sys.argv) > 2 else "upright"
@@ -307,7 +307,7 @@ def part_page():
     time.sleep(0.8)
 
 
-LISTS = ["SortA", "SortB", "SortC"]
+LISTS = ["sorta", "sortb", "sortc"]   # (typed after the name the card offers: "Playlist 1 sorta"; Songate's keyboard card types lower case)
 
 
 def open_playlists(source=0):
@@ -332,7 +332,12 @@ def open_playlists(source=0):
 
 def list_names(s=None):
     s = s or screen()
-    return [t for t in titles(names("pls.item", s), s) if t in LISTS]
+    out = []
+    for t in titles(names("pls.item", s), s):
+        n = next((n for n in LISTS if t.lower().endswith(" " + n)), None)
+        if n:
+            out.append(n)
+    return out
 
 
 def part_playlists():
@@ -344,9 +349,7 @@ def part_playlists():
         time.sleep(0.8)
         tap_text("A playlist of your own")
         time.sleep(0.8)
-        adb("shell", "input", "text", n)
-        time.sleep(0.4)
-        adb("shell", "input", "keyevent", "66")
+        type_card(n, after_name=True)   # (Songate's keyboard card: adb text reaches nothing since 2.1)
         time.sleep(1.2)
         open_playlists()
     tap_item("pls.view#2")
@@ -400,7 +403,7 @@ def part_playlists():
         tap_text("Add to a playlist")
         time.sleep(0.8)
         s = screen()   # (the sheet's own row: the last drawn of that name; sideways the sidebar has one too)
-        mine = [t for t in s.texts if t[0] == "SortA"]
+        mine = [t for t in s.texts if t[0].lower().endswith(" sorta")]
         if mine:
             tap_at(s, mine[-1][1] + mine[-1][3] / 2, mine[-1][2] + mine[-1][4] / 2)
         time.sleep(1)
@@ -408,7 +411,7 @@ def part_playlists():
             adb("shell", "input", "keyevent", "4")
             time.sleep(0.8)
     open_playlists()
-    tap_text("SortA")
+    tap_text("sorta")
     time.sleep(1.5)
     tap_item("pl.view#1")
     time.sleep(0.8)
@@ -430,7 +433,7 @@ def part_restart():
     start()
     open_playlists()
     step("restart: the playlists keep their order", list_names() == kept["order"], f"{list_names()} / {kept['order']}")
-    tap_text("SortA")
+    tap_text("sorta")
     time.sleep(1.5)
     now = titles(names("pl.r"))
     step("restart: the playlist's songs keep their order", now == kept["songs"], f"{now} / {kept['songs']}")

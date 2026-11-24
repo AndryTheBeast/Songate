@@ -27,7 +27,7 @@
 #include "platform.hpp"
 
 #ifndef GF_VERSION
-#define GF_VERSION "2.2.0"
+#define GF_VERSION "2.2.1"
 #endif
 
 namespace {

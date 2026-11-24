@@ -164,6 +164,11 @@ void init() {
             fclose(f);
             setenv("GF_ITEMS", (dir + "items.txt").c_str(), 1);
         }
+        // test-nofold: Settings shows every card open, as on the Switch and the PC (scripts older than the folds find their rows;
+        // tools/android/devfold.py tests the folds themselves without it)
+        if (FILE* f = fopen((dir + "test-nofold").c_str(), "r")) { fclose(f); setenv("GF_NOFOLD", "1", 1); }
+        // test-nonotice: the first start's questions (covers, lyrics) never come (a script's taps are not answers to them)
+        if (FILE* f = fopen((dir + "test-nonotice").c_str(), "r")) { fclose(f); setenv("GF_NONOTICE", "1", 1); }
         // the preview's aids for what cannot be made to happen on demand: test-update (a version, as GF_FAKEUPDATE: a release that
         // is not out, so the banner, its card and its row can be looked at) and test-jobs (as GF_JOBS: the work's cards)
         if (FILE* f = fopen((dir + "test-update").c_str(), "r")) {

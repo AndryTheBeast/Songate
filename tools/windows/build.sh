@@ -28,8 +28,9 @@ cmake -S "$(cygpath -m "$ROOT")" -B "$(cygpath -m "$OUT/obj")" -G Ninja -DCMAKE_
 cmake --build "$(cygpath -m "$OUT/obj")"
 
 mkdir -p "$OUT/romfs"
-rm -f "$OUT/"*.dll
+# (the exe first: one still running holds it, and the copy fails before the DLLs are taken away; session 23 lost them that way)
 cp "$OUT/obj/Songate.exe" "$OUT/"
+rm -f "$OUT/"*.dll
 for p in SDL2-2.28.5 SDL2_ttf-2.22.0 SDL2_image-2.8.2 SDL2_mixer-2.8.0; do
   cp "$SDL/$p/lib/x64/"*.dll "$OUT/" 2>/dev/null || true
 done

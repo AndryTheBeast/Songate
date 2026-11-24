@@ -126,7 +126,7 @@ try:
     check('the Apps page: the device\'s apps', s)
     time.sleep(2.5)
     s = screen()
-    cells = sorted((k for k in s.items if k.startswith('ph.app')), key=lambda k: (s.items[k][1], s.items[k][0]))
+    cells = sorted((k for k in s.items if re.fullmatch(r'ph\.app(#\d+)?', k)), key=lambda k: (s.items[k][1], s.items[k][0]))
     print('    apps on the page:', len(cells), [t[0] for t in s.texts if t[2] > 100][:16])
     shot('home-4-apps-page')
     x, y, w, h = s.items[cells[0]]

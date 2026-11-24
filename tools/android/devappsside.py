@@ -79,7 +79,7 @@ def turn(sideways):
 
 
 def apps(s):
-    return sorted((k for k in s.items if k.startswith('ph.app') and not k.startswith('ph.appsort')), key=lambda k: (s.items[k][1], s.items[k][0]))
+    return sorted((k for k in s.items if re.fullmatch(r'ph\.app(#\d+)?', k)), key=lambda k: (s.items[k][1], s.items[k][0]))
 
 
 def start():

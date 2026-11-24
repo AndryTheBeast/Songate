@@ -1602,7 +1602,11 @@ void App::drawSmartSheet() {
            hx + 32, hy + 32, 28, pal.accentInk);
     kicker(kick, hx + 64 + 16, hy + 8, pal.accentInk);
     float ty = hy + 18;
-    for (const auto& l : titleLines) { g.text(l, { css::Lg, Weight::Bold }, hx + 64 + 16, ty, pal.text, 1, Align::Left, textW); ty += 26; }
+    for (const auto& l : titleLines) {
+        if (sleep && left > 0) g.textNum(l, { css::Lg, Weight::Bold }, hx + 64 + 16, ty, pal.text);   // ("Pauses in 12:34" counts down)
+        else g.text(l, { css::Lg, Weight::Bold }, hx + 64 + 16, ty, pal.text, 1, Align::Left, textW);
+        ty += 26;
+    }
     ty = hy + 44 + (titleLines.size() - 1) * 26.f;
     // A job's count rises while the card is open: fixed-width digits, as the progress cards draw it, so nothing shifts
     // (wrapped on a narrow card as any other: "4 jobs at once: pick one to stop it or see its setting" ran to a phone's edge)
@@ -1794,8 +1798,8 @@ void App::drawSmartSheet() {
         case Row::Count: {
             // .sp-count: the number, big, and what it means
             const std::string n = std::to_string(matched.size());
-            const float nw = float(g.measure(n, { css::Xl, Weight::ExtraBold }));
-            g.textC(n, { css::Xl, Weight::ExtraBold }, x + 24, ry + r.h / 2, matched.empty() ? pal.text3 : pal.accentInk);
+            const float nw = float(g.measureNum(n, { css::Xl, Weight::ExtraBold }));   // (it rises while Mood is measured: fixed-width digits)
+            g.textNumC(n, { css::Xl, Weight::ExtraBold }, x + 24, ry + r.h / 2, matched.empty() ? pal.text3 : pal.accentInk);
             const bool stats0 = rc->group == 0 && matched.empty();
             // Mood: the library is analysed for it (from its first Mood playlist on): the songs come as it goes
             const bool moodWait = rc->group == 2 && moodMeasured_ < int(lib.tracks.size());
@@ -1894,7 +1898,7 @@ void App::drawSmartSheet() {
                 const Rgb ink = danger ? dangerInk() : pal.text;
                 g.icon(r.icon, lx + 9, ry + r.h / 2, 18, danger ? (r.act ? ink : pal.text3) : pal.text2);
                 lx += 18 + 14;
-                const int dw = r.detail.empty() ? 0 : std::min(120, g.measure(r.detail, { css::Sm }));
+                const int dw = r.detail.empty() ? 0 : std::min(120, page == Sheet::Jobs || page == Sheet::Battery ? g.measureNum(r.detail, { css::Sm }) : g.measure(r.detail, { css::Sm }));
                 const int tw = int(x + w - 24 - lx - dw - 16);
                 const Rgb labelInk = danger && !r.act ? pal.text3 : ink;   // nothing ticked yet: greyed
                 if (r.sub.empty()) {   // one line: centred
@@ -1908,7 +1912,7 @@ void App::drawSmartSheet() {
                     if (page == Sheet::Jobs) g.textNum(r.sub, { css::Sm }, lx, ry + r.h / 2 + 2, pal.text3);   // counts that rise
                     else g.text(r.sub, { css::Sm }, lx, ry + r.h / 2 + 2, pal.text3, 1, Align::Left, tw);
                 }
-                if (dw && page == Sheet::Jobs)
+                if (dw && (page == Sheet::Jobs || page == Sheet::Battery))   // (the battery's values change while it is open)
                     g.textNum(r.detail, { css::Sm }, x + w - 24, ry + r.h / 2 - g.lineHeight({ css::Sm }) / 2.f, pal.text3, 1, Align::Right);
                 else if (dw) g.textC(r.detail, { css::Sm }, x + w - 24, ry + r.h / 2, pal.text3, 1, Align::Right, 120);
             }

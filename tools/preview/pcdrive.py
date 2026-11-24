@@ -32,7 +32,7 @@ class Screen:
         if m:
             self.scale, self.w, self.h, self.playing, self.track = float(m[1]), int(m[2]), int(m[3]), m[4] == '1', m[5]
         for line in text.splitlines():
-            t = re.match(r'\s+(\w+)\s+(\S+)\s+(-?\d+),\s*(-?\d+)\s+(\d+)x(\d+)', line)
+            t = re.match(r'\s+(\w+)\s+(\S.*?)\s+(-?\d+),\s*(-?\d+)\s+(\d+)x(\d+)', line)   # (a name may hold spaces)
             if t:
                 self.items[t[2]] = tuple(int(v) for v in t.group(3, 4, 5, 6))
                 self.region[t[2]] = t[1]
@@ -189,10 +189,16 @@ class PC:
             p.unlink()
         self.ctl('stats ' + str(p).replace('\\', '/'))
         end = time.time() + 3
-        while not p.exists() and time.time() < end:
-            time.sleep(0.01)
-        time.sleep(0.02)
-        w = p.read_text().split()
+        w = []
+        while time.time() < end:   # (the file can be there before its line is: read until it is whole; session 23's soak stopped on it)
+            if p.exists():
+                try:
+                    w = p.read_text().split()
+                except OSError:
+                    w = []
+                if len(w) > 17:
+                    break
+            time.sleep(0.02)
         return {'frames': int(w[1]), 'mean': float(w[3]), 'worst': float(w[5]), 'work': float(w[7]), 'hz': int(w[9]), 'scale': float(w[11]),
                 'w': int(w[13]), 'h': int(w[14]), 'pw': int(w[16]), 'ph': int(w[17]), 'text': ' '.join(w)}
 

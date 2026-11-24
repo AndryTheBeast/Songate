@@ -918,7 +918,7 @@ float App::drawBatteryCluster(float rx, float cy, unsigned pct, float limit, int
         // (the Canvas has no clock beside it, and its room is not the title bar's: Settings greys nothing there)
         const float clockW = side == 1 ? 0.f : float(g.measure("00:00", { css::Base, Weight::SemiBold })) + kClockGap;
         if (side == 0) batteryRoom_ = rx - 14 - clockW - limit;
-        while (!label.empty() && rx - 14 - float(g.measure(label, { css::Base })) - clockW < limit) {
+        while (!label.empty() && rx - 14 - float(g.measureNum(label, { css::Base })) - clockW < limit) {   // (measured as it is drawn: textNum)
             const size_t cut = label.rfind("  ·  ");
             label = cut == std::string::npos ? std::string() : label.substr(0, cut);
         }
@@ -1474,10 +1474,10 @@ void App::drawSeek(float x, float y, float w, float h, Id id) {
     if (drag >= 0 && dur > 0) {
         // .seek .tip
         const std::string tip = fmtTime(shown * dur);
-        const float tw = g.measure(tip, { css::Xs }) + 16;
+        const float tw = g.measureNum(tip, { css::Xs }) + 16;   // (fixed-width digits: the box keeps its width as the time runs)
         const float tx = std::clamp(x + w * shown - tw / 2, x - 20, x + w - tw + 20);
         g.roundRect(tx, y - 30, tw, 24, 6, pal.surface2);
-        g.textC(tip, { css::Xs }, tx + tw / 2, y - 18, pal.text, 1, Align::Center);
+        g.textNumC(tip, { css::Xs }, tx + tw / 2, y - 18, pal.text, 1, Align::Center);
     }
 }
 
@@ -1983,7 +1983,7 @@ void App::drawSleepPrompt() {
     g.roundRect(x + pad, y + pad, 40, 40, 11, pal.accent, 0.16f * a);
     g.icon(ICON_MOON, x + pad + 20, y + pad + 20, 20, pal.accentInk, a);
     const float tx = x + pad + 52;
-    g.text("Going to sleep in " + std::to_string(left), tf, tx, y + pad, pal.text, a, Align::Left, int(w - pad * 2 - 52));
+    g.textNum("Going to sleep in " + std::to_string(left), tf, tx, y + pad, pal.text, a);   // (a countdown: fixed-width digits)
     float ly = y + pad + 26 + 8;
     for (const auto& l : lines) { g.text(l, sf, tx, ly, pal.text2, a); ly += 21; }
     bool sleepNow = false, stay = false;

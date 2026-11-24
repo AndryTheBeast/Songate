@@ -127,7 +127,7 @@ try:
     # (three titled cards now, the earbuds' first: the page folds them, one open at a time)
     kicker("PAIRED DEVICES")
     s = find_scroll(lambda s: any(k.startswith("sys.bt.f") for k in s.items))
-    c1 = widths(s, "sys.bt.c") if s else []
+    c1 = widths(s, "sys.bt.c#") if s else []   # (Connect/Disconnect: not sys.bt.codec, the codec choice; session 23)
     c2a = widths(s, "sys.bt.f") if s else []
     top()
     kicker("NEW DEVICES")
@@ -139,7 +139,7 @@ try:
     kicker("LIBERTY 4 NC")
     top()
     s = wait(lambda s: has(s, "Noise control"), 8)
-    step("Bluetooth: the earbuds' card (battery, noise control)", has(s, "Battery") and has(s, "Noise control") and has(s, "Wind reduction"))
+    step("Bluetooth: the earbuds' card (battery, noise control)", has(s, "Left") and has(s, "Noise control") and has(s, "Wind reduction"))
     tap_item("sys.eb.mode[1]")
     s = wait(lambda s: has(s, "Voices"), 4)
     step("... Transparency picked: its own choice (Full, Voices) at once", s is not None)

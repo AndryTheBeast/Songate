@@ -462,9 +462,9 @@ void App::drawPhone() {
         }
         if (drag >= 0 && dur > 0) {   // as the player bar's: the time under the finger
             const std::string tip = fmtTime(frac * dur);
-            const float tw = g.measure(tip, { css::Xs }) + 16, tx = std::clamp(x + w * frac - tw / 2, x, x + w - tw);
+            const float tw = g.measureNum(tip, { css::Xs }) + 16, tx = std::clamp(x + w * frac - tw / 2, x, x + w - tw);
             g.roundRect(tx, y - 30, tw, 24, 6, pal.surface2);
-            g.textC(tip, { css::Xs }, tx + tw / 2, y - 18, pal.text, 1, Align::Center);
+            g.textNumC(tip, { css::Xs }, tx + tw / 2, y - 18, pal.text, 1, Align::Center);   // (fixed-width digits, as the times below)
         }
         g.textNum(fmtTime(drag >= 0 ? frac * dur : shownPosition()), { css::Xs }, x, foot + 8, pal.text3);
         g.textNum(fmtTime(dur), { css::Xs }, x + w, foot + 8, pal.text3, 1, Align::Right);

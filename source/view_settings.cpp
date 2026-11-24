@@ -22,7 +22,7 @@
 #include "appicons.inc"
 
 #ifndef GF_VERSION
-#define GF_VERSION "2.2.0"
+#define GF_VERSION "2.2.1"
 #endif
 
 namespace {
@@ -50,6 +50,7 @@ struct Row {
     float blockH = 0;
     std::function<void(float x, float y, float w)> block;
     Id focus = 0;   // its control, for showSetting (buttons; other rows are only scrolled to and lit)
+    bool liveHint = false; // its hint holds a count that rises while shown (a download, a copy): fixed-width digits
     bool lifted = false;   // picked up with Move (a sidebar tab): drawn as the queue's held row
     int dragKey = -1;      // a sidebar tab's row: its height noted, drawn where it slides to (tabSlide), held over the others
     float words = 0;       // a choice bar: its choices' words, measured (whether it takes two rows: App::segGrid)
@@ -602,6 +603,14 @@ void App::drawSortDone() {
 }
 
 void App::drawSettings(float x, float y, float w, float h) {
+#ifdef GF_DEV
+    // (session 23: what a slow Settings frame spent: the rows built, then each card drawn; a line in the log over 15 ms)
+    const Uint64 devT0 = SDL_GetPerformanceCounter();
+    const double devF = 1000.0 / double(SDL_GetPerformanceFrequency());
+    std::string devCards;
+    double devCardsMs = 0;
+    Uint64 devLoopAt = 0;
+#endif
     const Font labelF{ css::Md, Weight::SemiBold }, hintF{ css::Sm }, valueF{ css::Md };
     // A category chosen last frame: its page was drawn then, so its first setting is known now
     if (settingsFocusFirst) {
@@ -2866,6 +2875,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                 if (busy) updater.cancel();
                 else checkUpdates(false);
             }));
+            top.back().liveHint = busy;   // ("x of y MB" rises)
         }
 #ifdef GF_WINDOWED
         top.push_back(infoRow("This version", "", me));
@@ -2976,6 +2986,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                 } else if (st == "downloading") {
                     const std::string hint = bytes(o.progress) + " of " + bytes(o.size);
                     Row dl = buttonRow("Downloading SongateOS " + o.latest, hint, "set.ota.pause", nullptr, "Pause", [] { sysapi::act("ota_cancel", "", {}, "ota"); });
+                    dl.liveHint = true;
                     Row bar;
                     bar.blockH = 18;
                     const float f = o.size > 0 ? std::clamp(float(double(o.progress) / double(o.size)), 0.f, 1.f) : 0.f;
@@ -3118,7 +3129,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                             // the card that said it apart was taken out below by this one, being called "Recovery" too)
                             const sysapi::Ota oo = sysapi::ota();
                             const bool unchecked = oo.known && !oo.recovery.empty() && oo.recovery.rfind("ok:", 0) != 0;
-                            if (busy) rows.push_back(infoRow(title, hint));
+                            if (busy) { rows.push_back(infoRow(title, hint)); rows.back().liveHint = true; }
                             else if (unchecked)
                                 rows.push_back(buttonRow("Check the recovery", "The player restarts into the recovery and back, about half a minute",
                                                          "sys.rec.restart", nullptr, "Check it",
@@ -3203,6 +3214,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                                                 : st == "downloading" ? (ga.progress > 0 ? "Downloading… " + std::to_string(ga.progress) + "%" : std::string("Downloading…"))
                                                 : st == "ready" ? "Restarting into the recovery…" : "Installing…";
                             rows.push_back(infoRow(name, s));
+                            rows.back().liveHint = true;   // ("Downloading… 42%")
                         } else if (ga.installed.empty()) {
                             rows.push_back(infoRow("Google apps", st == "error" && !ga.error.empty() ? ga.error
                                                                   : "Play Store and Google services. Some apps may still refuse to run on SongateOS"));
@@ -3399,7 +3411,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                 if (two) code.blockH = 174;
                 code.block = [this, shown, what, howLong, two](float bx, float by, float bw) {
                     g.text(shown, { 58, Weight::SemiBold }, bx + bw / 2, by + 16, pal.text, 1, Align::Center);
-                    if (!two) { g.text(what + " " + howLong, { css::Md }, bx + bw / 2, by + 100, pal.text2, 1, Align::Center); return; }
+                    if (!two) { g.textNum(what + " " + howLong, { css::Md }, bx + bw / 2, by + 100, pal.text2, 1, Align::Center); return; }   // (counts down: as the two-line one)
                     g.text(what, { css::Md }, bx + bw / 2, by + 100, pal.text2, 1, Align::Center, int(bw));
                     g.textNum(howLong, { css::Md }, bx + bw / 2, by + 100 + 24, pal.text2, 1, Align::Center);
                 };
@@ -3620,6 +3632,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                             char t[120];
                             snprintf(t, sizeof t, "%d of %d songs, %.1f of %.1f GB%s", fv.done, fv.total, double(fv.bytes) / 1073741824.0, double(fv.totalBytes) / 1073741824.0, isPlaying() ? " (slowly, while music plays)" : "");
                             files.push_back(buttonRow("Copying", std::string(t) + (fv.current.empty() ? "" : ". " + fv.current), "set.cnstopcopy", ICON_X, "Stop", [this] { copier.pause(); }));
+                            files.back().liveHint = true;
                         } else if (fv.state == Copier::State::Looking) {
                             files.push_back(infoRow("Copying", "Looking at what the other device has…"));
                         } else if (fv.state == Copier::State::Failed) {
@@ -4579,7 +4592,12 @@ void App::drawSettings(float x, float y, float w, float h) {
     // Android only: the Switch and the PC show every card open (the user, 2026-11-18: folding is for a phone's small screen and
     // its touch only)
 #ifdef GF_ANDROID
-    const bool folding = settingsQuery.empty() && titled >= 3 && !setupPane_ && tourStep < 0;   // (the tour: every card open, its rows lit)
+#ifdef GF_DEV
+    static const bool noFold = getenv("GF_NOFOLD") != nullptr;   // (dev: test scripts written before the folds: test-nofold)
+#else
+    constexpr bool noFold = false;
+#endif
+    const bool folding = !noFold && settingsQuery.empty() && titled >= 3 && !setupPane_ && tourStep < 0;   // (the tour: every card open, its rows lit)
 #else
     const bool folding = false;
     (void)titled;
@@ -4604,7 +4622,17 @@ void App::drawSettings(float x, float y, float w, float h) {
                         store.foldOpen[title] = openCard;
                     }
     }
+#ifdef GF_DEV
+    devLoopAt = SDL_GetPerformanceCounter();
+    struct DevCardTime {   // (each card's time, however it leaves the loop body)
+        const Card& c; std::string& out; double& sum; double f; Uint64 at = SDL_GetPerformanceCounter();
+        ~DevCardTime() { const double ms = double(SDL_GetPerformanceCounter() - at) * f; sum += ms; if (ms >= 2) { char b[96]; snprintf(b, sizeof b, " %s %.0f", c.kicker.empty() ? "(head)" : c.kicker.c_str(), ms); out += b; } }
+    };
+#endif
     for (const Card& c : cards) {
+#ifdef GF_DEV
+        DevCardTime devCardTime{ c, devCards, devCardsMs, devF };
+#endif
         if (folding && !c.kicker.empty()) {
             const bool open = c.kicker == openCard || (!c.with.empty() && c.with == openCard);
             const Id hid = uid(("set.fold:" + title + "/" + c.kicker).c_str());
@@ -4717,7 +4745,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                         else g.textNum(r.value, valueF, px + pad + lw2 + 7, ty, pal.text2);
                     }
                     ty += 24;
-                    for (const auto& hl : l.hint) { g.text(hl, hintF, px + pad, ty, pal.text3); ty += 18; }
+                    for (const auto& hl : l.hint) { if (r.liveHint) g.textNum(hl, hintF, px + pad, ty, pal.text3); else g.text(hl, hintF, px + pad, ty, pal.text3); ty += 18; }
                     // on its own line: a slider or a choice bar the row's whole width; anything else on the right, as always
                     settingsCtlMax_ = l.stacked ? innerW : 0;
                     const float crx = px + pw - pad;
@@ -4756,6 +4784,16 @@ void App::drawSettings(float x, float y, float w, float h) {
         py += ch + 16;
     }
     sa.content = py + sa.y - y + 24;
+#ifdef GF_DEV
+    {
+        const double total = double(SDL_GetPerformanceCounter() - devT0) * devF, build = double(devLoopAt - devT0) * devF;
+        if (total > 15) {
+            char b[160];
+            snprintf(b, sizeof b, "Settings frame %.0f ms (%s): rows built %.0f, cards %.0f:", total, title.c_str(), build, devCardsMs);
+            logLine(b + devCards);
+        }
+    }
+#endif
     g.unclip();
     ui.popArea();
 }

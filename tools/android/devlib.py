@@ -32,7 +32,7 @@ class Screen:
         if m:
             self.scale, self.w, self.h, self.playing, self.track = float(m[1]), int(m[2]), int(m[3]), m[4] == "1", m[5]
         for line in text.splitlines():
-            t = re.match(r"\s+(\w+)\s+(\S+)\s+(-?\d+),\s*(-?\d+)\s+(\d+)x(\d+)", line)
+            t = re.match(r"\s+(\w+)\s+(\S.*?)\s+(-?\d+),\s*(-?\d+)\s+(\d+)x(\d+)", line)   # (a name may hold spaces: "set.fold:Playback/Other apps")
             if t:
                 self.items[t[2]] = tuple(int(v) for v in t.group(3, 4, 5, 6))
                 self.region[t[2]] = t[1]
@@ -116,3 +116,25 @@ def session_state():
     i = out.find(f"package={PKG}")
     m = re.search(r"state=PlaybackState \{state=([A-Z]+)", out[i:i + 2000]) if i >= 0 else None
     return m[1] if m else "none"
+
+
+ROWS = ["1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm"]
+
+
+def type_card(words, done=True, after_name=False):
+    """Words typed on Songate's own keyboard card (Android is touch only since 2.1: text sent by adb reaches nothing): its keys
+    tapped, lower case and digits, a space as its space key; after_name: a space first, after the name the card offers. done: its
+    blue key (Search, Done). Session 23."""
+    wait(lambda s: "skb.k#104" in s.items, 5)
+    time.sleep(0.5)
+    for ch in (" " if after_name else "") + words.lower():
+        if ch == " ":
+            tap_item("skb.k#103")
+        elif any(ch in r for r in ROWS):
+            r = next(k for k, row in enumerate(ROWS) if ch in row)
+            i = sum(len(x) for x in ROWS[:r]) + ROWS[r].index(ch)
+            tap_item("skb.k" if i == 0 else f"skb.k#{i}")
+        time.sleep(0.2)
+    if done:
+        tap_item("skb.k#104")
+        time.sleep(0.8)

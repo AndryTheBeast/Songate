@@ -21,6 +21,7 @@
 #include "app.hpp"
 
 #include <malloc.h>
+#include <map>
 
 /** The C heap's used bytes and blocks, walked (exact, a few ms): what the app itself holds, apart from the graphics driver's. */
 static void devHeap(size_t& bytes, size_t& blocks) {
@@ -79,6 +80,33 @@ void App::devControl() {
             pointer.x = a; pointer.y = b; pointer.idle = 0;
             devWheel_ += c;
         } else if (sscanf(s.c_str(), "pad %f", &a) == 1) devPad_ |= uint64_t(a);
+        else if (sscanf(s.c_str(), "album %f", &a) == 1) {   // (session 23: the nth album of the Albums page opened, its name in the log)
+            const int i = int(a);
+            if (i >= 0 && i < int(albumOrder.size())) {
+                logLine("devctl: album " + std::to_string(i) + ": " + lib.albums[size_t(albumOrder[size_t(i)])].title);
+                openAlbum(albumOrder[size_t(i)]);
+            }
+        } else if (s.rfind("heapsizes ", 0) == 0) {   // (leak hunts: the C heap's used blocks counted by size, "size count" a line)
+            std::map<size_t, size_t> bySize;
+            _HEAPINFO h;
+            h._pentry = nullptr;
+            while (_heapwalk(&h) == _HEAPOK)
+                if (h._useflag == _USEDENTRY) bySize[h._size]++;
+            if (FILE* out = fopen(s.substr(10).c_str(), "w")) {
+                for (const auto& kv : bySize) fprintf(out, "%zu %zu\n", kv.first, kv.second);
+                fclose(out);
+            }
+        } else if (s.rfind("hitches ", 0) == 0) {   // every frame over 18 ms since the last "hitches": its parts (as devconsole.cpp's)
+            if (FILE* out = fopen(s.substr(8).c_str(), "w")) {
+                for (const DevHitch& h : devHitches_) {
+                    fprintf(out, "%.2f %.1f work %.1f upd %.1f (%s %.1f) bg %.1f view %.1f side %.1f bar %.1f rest %.1f warm %.1f pres %.1f view# %d sheet %d canvas %d\n",
+                            h.t, h.ms, h.work, h.prof[0], h.step, h.stepMs, h.prof[1], h.prof[2], h.prof[3], h.prof[4], h.prof[5], h.prof[6], h.prof[7],
+                            h.view, h.sheet, int(h.canvas));
+                }
+                fclose(out);
+            }
+            devHitches_.clear();
+        }
         else if (s.rfind("search ", 0) == 0) navigate(View::Search, -1, s.substr(7), route.view != View::Search);
         else if (s.rfind("stats ", 0) == 0) {
             if (FILE* out = fopen(s.substr(6).c_str(), "w")) {
@@ -92,6 +120,52 @@ void App::devControl() {
             devSum_ = devWorst_ = devWork_ = 0;
         }
     }
+}
+
+/*
+ * The console, emulated (dev only): GF_EMU="<cpu> <gpu>" stretches each frame as the Switch's slower Cortex-A57s and Tegra X1 would.
+ * The app is pinned to 3 cores (an application's share of the console's 4); the frame's CPU work (input, update, the draw calls) is
+ * timed, then the GPU's (the draw flushed and one pixel read back, which waits for it), and the frame is held until
+ * cpu * its CPU time + gpu * its GPU time have passed. The two factors are fitted from the same self-test walk on the console and here
+ * (docs/next-session/session23). Background threads are not slowed: the emulation says nothing about them.
+ */
+extern "C" __declspec(dllimport) int __stdcall SetProcessAffinityMask(void*, unsigned long long);
+extern "C" __declspec(dllimport) void* __stdcall GetCurrentProcess();
+
+void App::devEmuStretch(Uint64 frameStart) {
+    static float kc = -1, kg = 1;
+    if (kc < 0) {
+        kc = 0;
+        if (const char* e = getenv("GF_EMU")) {
+            if (sscanf(e, "%f %f", &kc, &kg) < 1) kc = 0;
+            if (kc > 0) SetProcessAffinityMask(GetCurrentProcess(), 0x7);   // 3 cores
+        }
+    }
+    if (kc <= 0) return;
+    const double freq = double(SDL_GetPerformanceFrequency());
+    const Uint64 cpuEnd = SDL_GetPerformanceCounter();
+    Uint64 gpuEnd = cpuEnd;
+    if (kg > 1) {   // (a GPU factor of 1 or less: the GPU left alone; its read-back stalls the pipeline)
+        SDL_RenderFlush(renderer_);
+        Uint32 px = 0;
+        const SDL_Rect one{ 0, 0, 1, 1 };
+        SDL_RenderReadPixels(renderer_, &one, SDL_PIXELFORMAT_ARGB8888, &px, 4);   // (waits for the GPU)
+        gpuEnd = SDL_GetPerformanceCounter();
+    }
+    const double cpu = double(cpuEnd - frameStart) / freq, gpu = double(gpuEnd - cpuEnd) / freq;
+    const double want = cpu * kc + gpu * kg;
+    while (double(SDL_GetPerformanceCounter() - frameStart) / freq < want) {}
+}
+
+/** A frame over 18 ms, kept with its parts (profMark) and update's slowest step: written on "hitches", never per frame. */
+void App::devHitch(double interval, float workMs) {
+    if (!getenv("GF_CTL") || interval * 1000 <= 18.0 || devHitches_.size() >= 4000) return;
+    DevHitch h{};
+    h.t = float(time); h.ms = float(interval * 1000); h.work = workMs;
+    for (int i = 0; i < 8; i++) h.prof[i] = float(profFrame_[i]);
+    h.step = updSlow_ ? updSlow_ : ""; h.stepMs = float(updSlowMs_);
+    h.view = int(route.view); h.sheet = int(sheet.page); h.canvas = canvas;
+    devHitches_.push_back(h);
 }
 
 /** The frame as drawn (its texture is still the target), to a file. */

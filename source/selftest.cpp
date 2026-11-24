@@ -43,6 +43,7 @@ struct App::SelfTest {
     // this step
     int frames = 0, slow = 0;
     float worst = 0, worstWork = 0, sumWork = 0;
+    std::string worstWhy, workWhy;   // (session 23) the worst frame's parts, and the worst work's: what to look at when one is slow
     std::vector<Id> walkIds;
     size_t walkAt = 0;
     int walkFrame = 0;
@@ -64,6 +65,11 @@ bool App::selfTestRunning() const { return selfTest_ != nullptr; }
 
 void App::selfTestStart(int level) {
     if (selfTest_) selfTestStop();
+    // A first start's question already up (covers, the overlay's covers, lyrics) held the walk at its first step for good (session 23:
+    // "0 of 902" behind Covers for your library for 17 minutes): put away unanswered, it is asked again once the test is over
+    if (appCoverNotice == 1) appCoverNotice = 0;
+    if (coverNotice == 1) coverNotice = 0;
+    if (lyrNotice == 1) lyrNotice = 0;
     SelfTest* t = new SelfTest;
     t->level = level;
     t->view = route.view;
@@ -382,6 +388,7 @@ void App::selfTestTick(float frameMs, float workMs) {
         t->stepAt = time;
         t->frames = t->slow = 0;
         t->worst = t->worstWork = t->sumWork = 0;
+        t->worstWhy.clear(); t->workWhy.clear();
         t->walkIds.clear();
         t->walkAt = 0;
         t->walkReady = false;
@@ -400,6 +407,13 @@ void App::selfTestTick(float frameMs, float workMs) {
         return;
     }
     t->frames++;
+    auto parts = [](const double* p, const char* step, double stepMs) {
+        char b[200];
+        snprintf(b, sizeof b, "upd %.1f (%s %.1f) bg %.1f view %.1f side %.1f bar %.1f rest %.1f warm %.1f pres %.1f", p[0], step ? step : "", stepMs, p[1], p[2], p[3], p[4], p[5], p[6], p[7]);
+        return std::string(b);
+    };
+    if (frameMs > t->worst) t->worstWhy = parts(profPrev_, updPrevSlow_, updPrevMs_);   // (the interval that ended now: the frame before's work and present)
+    if (workMs > t->worstWork) t->workWhy = parts(profFrame_, updSlow_, updSlowMs_);
     t->worst = std::max(t->worst, frameMs);
     t->worstWork = std::max(t->worstWork, workMs);
     t->sumWork += workMs;
@@ -484,6 +498,11 @@ void App::selfTestTick(float frameMs, float workMs) {
     if (off) { t->problems++; t->lines.push_back("  ! words off the screen: " + offWords); }
     if (cut) t->lines.push_back("  · cut short: " + cutWords);   // (often meant: long titles; listed to look at)
     if (t->worst > 50.f) { t->problems++; t->lines.push_back("  ! a frame took " + std::to_string(int(t->worst)) + " ms"); }
+    if (t->slow > 0 || t->worst > 25.f) {   // (what that frame did, and the step's worst work: in ms)
+        t->lines.push_back("  · worst frame: " + t->worstWhy);
+        t->lines.push_back("  · worst work: " + t->workWhy);
+        logLine("[selftest]   worst frame: " + t->worstWhy + "; worst work: " + t->workWhy);
+    }
     t->totalFrames += t->frames;
     t->totalSlow += t->slow;
     t->totalWorst = std::max(t->totalWorst, t->worst);

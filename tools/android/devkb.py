@@ -89,6 +89,11 @@ def open_eq():
             tap_item("ph.nav") or tap_text("Now playing")
             s = wait(lambda s: "ph.eq" in s.items or "pb.eq" in s.items, 6) or screen()
         hold("ph.eq" if "ph.eq" in s.items else "pb.eq")   # (a tap turns the EQ on or off: held, its page opens)
+    # (the band values are Advanced's since Simple / Advanced came: Advanced chosen when the page shows Simple; session 23)
+    s = wait(lambda s: "set.eqval#3" in s.items or "set.eqmode[1]" in s.items, 8)
+    if s and "set.eqval#3" not in s.items and "set.eqmode[1]" in s.items:
+        tap_item("set.eqmode[1]")
+        time.sleep(1.0)
     s = wait(lambda s: "set.eqval#3" in s.items, 8)
     side = s and s.w > s.h
     for _ in range(8):   # the band values up out of the card's way
@@ -166,7 +171,7 @@ try:
     eq0 = saved_eq()
     s = open_eq()
     step("the Equalizer's band values", "set.eqval#3" in s.items)
-    hold("set.eqval#3")
+    tap_item("set.eqval#3")   # (a tap opens it since 2026-11-19, no longer a hold)
     s = wait(lambda s: "skb.k#104" in s.items, 5)
     step("held a band upright: the number pad (a minus key, no letters)", s and "skb.k#9" in s.items and "skb.k#20" not in s.items and "skb.k#102" not in s.items)
     step("... titled by the band, dB beside the value", s and any("in dB" in t for t in card_texts(s)) and "dB" in card_texts(s))
@@ -181,7 +186,7 @@ try:
     wait(lambda s: "skb.k#104" not in s.items, 5)
     step("a tap above: the EQ as it was", saved_eq() == eq0, eq0)
     s = open_eq()
-    hold("set.eqval#3")
+    tap_item("set.eqval#3")   # (a tap opens it since 2026-11-19, no longer a hold)
     wait(lambda s: "skb.k#104" in s.items, 5)
     key(9); key(3)   # − 4
     key(104)
@@ -193,7 +198,7 @@ try:
     s = rotate(1)
     step("turned sideways", s)
     s = open_eq()
-    hold("set.eqval#3")
+    tap_item("set.eqval#3")   # (a tap opens it since 2026-11-19, no longer a hold)
     s = wait(lambda s: "skb.k#104" in s.items, 5)
     step("held a band sideways: the whole-width card", s and "skb.k#102" in s.items and "skb.k#103" in s.items)
     step("... on its symbols page", s and "/" in card_texts(s) and "q" not in card_texts(s))
@@ -206,7 +211,7 @@ try:
     step("Done sideways: the band at −2", eq2 and eq2.split()[3] == "-2.0", eq2)
     # the band as it was before the test (typed back, so the preset state stays the app's own)
     s = open_eq()
-    hold("set.eqval#3")
+    tap_item("set.eqval#3")   # (a tap opens it since 2026-11-19, no longer a hold)
     wait(lambda s: "skb.k#104" in s.items, 5)
     want = int(float(eq0.split()[3])) if eq0 else 0
     for ch in str(want).replace("-", "-"):

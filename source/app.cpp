@@ -717,6 +717,9 @@ void App::startGuardEnd() {
 }
 
 void App::shutdown() {
+#if defined(__SWITCH__) && defined(GF_DEV)
+    devConsoleEnd();   // (the dev remote control's port thread: out of every socket call before anything closes)
+#endif
     startGuardEnd();   // (a clean close is a good start too)
     cardhold::giveUp();   // (a worker waiting for the card would never end: it is told no)
     sortEnd();   // (a list in sort mode: its order saved with the rest)
@@ -1516,9 +1519,18 @@ void App::frame() {
         if (static bool opened = false; !opened && getenv("GF_SPEAKER_MOCK") && time > 12) { opened = true; openAirPlay(); }
 #endif
         stage_ = "input";
+#ifdef GF_DEV
+        const Uint64 inAt = SDL_GetPerformanceCounter();
+#endif
         input();
+#ifdef GF_DEV
+        const double inMs = double(SDL_GetPerformanceCounter() - inAt) * 1000.0 / double(SDL_GetPerformanceFrequency());
+#endif
         stage_ = "update";
         update();
+#ifdef GF_DEV
+        if (inMs > updSlowMs_) { updSlowMs_ = inMs; updSlow_ = "input"; }   // (session 23: the logs name input when it was the slowest part)
+#endif
         stage_ = "draw";
         profMark(0);
 #ifdef GF_WINDOWED
@@ -1585,6 +1597,9 @@ void App::frame() {
         frameMs_[frameAt_] = float(interval * 1000);
         spanWork_[frameAt_] = workMs_[(frameAt_ + 119) % 120];
         spanPres_[frameAt_] = lastPres_;
+#if defined(GF_WINDOWED) && defined(GF_DEV) && !defined(GF_ANDROID)
+        devEmuStretch(nowTicks);   // (GF_EMU: the console's slower CPU and GPU, emulated: devctl.cpp)
+#endif
         workMs_[frameAt_] = float(double(SDL_GetPerformanceCounter() - nowTicks) / freq * 1000);
 #ifdef GF_DEV
         traceJoinFrame(frameMs_[frameAt_], workMs_[frameAt_]);
@@ -1614,6 +1629,10 @@ void App::frame() {
         devSum_ += interval;
         devWorst_ = std::max(devWorst_, interval);
         devWork_ = std::max(devWork_, double(workMs_[(frameAt_ + 119) % 120]));
+        devHitch(interval, workMs_[(frameAt_ + 119) % 120]);
+#endif
+#if defined(__SWITCH__) && defined(GF_DEV)
+        devConsoleFrame(interval, workMs_[(frameAt_ + 119) % 120]);
 #endif
 #ifdef GF_WINDOWED
         SDL_SetRenderTarget(renderer_, nullptr);
@@ -1816,6 +1835,10 @@ void App::input() {
     const uint64_t devHeld = devPad_;   // (and held for this frame: the D-pad moves the focus on what is held)
     devPad_ = 0;
 #endif
+#if defined(__SWITCH__) && defined(GF_DEV)
+    uint64_t devConHeld = 0;
+    devConsole(down, devConHeld);   // (the console's dev remote control over FTP: devconsole.cpp)
+#endif
     if (down) openingSkip_ = true;
     if (down) ui.setFingerLast(false);   // (a pad or a key: the buttons' names on screen again)
 #ifdef GF_WINDOWED
@@ -1837,6 +1860,9 @@ void App::input() {
     uint64_t held = plat::padHeld();
 #if defined(GF_WINDOWED) && defined(GF_DEV) && !defined(GF_ANDROID)
     held |= devHeld;
+#endif
+#if defined(__SWITCH__) && defined(GF_DEV)
+    held |= devConHeld;
 #endif
     // Any input brings the Canvas controls back.
 #ifdef GF_WINDOWED

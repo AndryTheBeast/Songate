@@ -880,7 +880,7 @@ float App::lyricSyncControl(const char* key, float x, float cy, float h, const F
     float ws[3], total = 0;
     for (int i = 0; i < 3; i++) {
         // the middle sized for the widest value, so the pill does not change width as it moves
-        ws[i] = (i == 1 ? std::max(g.measure("+10.0 s", f), g.measure(v, f)) : g.measure(labels[i], f)) + h * 0.8f;
+        ws[i] = (i == 1 ? std::max(g.measureNum("+10.0 s", f), g.measureNum(v, f)) : g.measure(labels[i], f)) + h * 0.8f;   // (the value: as textNum draws it)
         total += ws[i];
     }
     if (!key) return total;

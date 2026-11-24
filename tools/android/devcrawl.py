@@ -256,10 +256,24 @@ def run(name, steps):
                 missing.append(f"{name}: no control {st[5:]} to hold")
             time.sleep(0.4)
         elif st.startswith("type:"):
+            # Songate's own keyboard card (Android is touch only since 2.1: keys typed by adb reach nothing): its keys tapped (lower
+            # case), after a space when it offers a name already, then its blue key (Search, Done)
+            wait(lambda s: "skb.k#104" in s.items, 5)
             time.sleep(0.6)
-            adb("shell", "input", "text", st[5:])
-            time.sleep(0.4)
-            adb("shell", "input", "keyevent", "66")
+            s = screen()
+            words = st[5:].lower()
+            if not any(s.texts[i][0] == "Search" for i in s.top):
+                words = " " + words
+            rows = ["1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm"]
+            for ch in words:
+                if ch == " ":
+                    tap_item("skb.k#103")
+                else:
+                    r = next(k for k, row in enumerate(rows) if ch in row)
+                    i = sum(len(x) for x in rows[:r]) + rows[r].index(ch)
+                    tap_item("skb.k" if i == 0 else f"skb.k#{i}")
+                time.sleep(0.2)
+            tap_item("skb.k#104")
             time.sleep(0.8)
         elif st.startswith("swipe:"):
             swipe(st[6:])

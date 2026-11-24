@@ -392,7 +392,7 @@ void App::drawAutomixPicker() {
         if (picked >= 0 && picked != ap.tab) ap.tab = picked;
         char b[64];
         snprintf(b, sizeof b, "%d song%s ticked", count, count == 1 ? "" : "s");
-        g.textC(b, { css::Md, Weight::SemiBold }, ix, narrow ? Y + pad + headExtra + 17 : ty + 18, count ? pal.accentInk : pal.text2, 1);
+        g.textNumC(b, { css::Md, Weight::SemiBold }, ix, narrow ? Y + pad + headExtra + 17 : ty + 18, count ? pal.accentInk : pal.text2, 1);   // (changes as songs are ticked)
     }
 
     // ---- the rows: only those on screen are drawn (a library of thousands)
@@ -456,7 +456,7 @@ void App::drawAutomixPicker() {
         if (on && r.one < 0) {
             char b[32];
             snprintf(b, sizeof b, "%d of %d", on, all);
-            g.textC(b, { css::Sm, Weight::SemiBold }, lx + lw - 16, y + (RH - 4) / 2, pal.accentInk, 1, Align::Right);
+            g.textNumC(b, { css::Sm, Weight::SemiBold }, lx + lw - 16, y + (RH - 4) / 2, pal.accentInk, 1, Align::Right);   // (as above)
         }
     }
     if (!n) g.textC("Nothing here yet", { css::Md, Weight::SemiBold }, lx + lw / 2, ly + 60, pal.text2, 1, Align::Center);

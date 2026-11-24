@@ -1845,6 +1845,7 @@ public:
     // A test's hand on the window (devctl.cpp, GF_CTL): a size, a screen and a scale made up; a frame saved; a click; frame times
     void devControl();
     void devShot();
+    void devEmuStretch(Uint64 frameStart);   // GF_EMU="<cpu> <gpu>": each frame's work stretched as on the console (devctl.cpp)
     int devPw_ = 0, devPh_ = 0, devScreenW_ = 0, devScreenH_ = 0, devTapUp_ = 0;
     float devDpi_ = 0, devWheel_ = 0;
     bool devMoved_ = false;
@@ -1852,6 +1853,9 @@ public:
     std::string devShot_;
     long devN_ = 0;
     double devSum_ = 0, devWorst_ = 0, devWork_ = 0;
+    struct DevHitch { float t, ms, work, prof[8], stepMs; const char* step; int view, sheet; bool canvas; };
+    std::vector<DevHitch> devHitches_;   // (RAM only, written on "hitches": devctl.cpp)
+    void devHitch(double interval, float workMs);
 #endif
 #endif
 #endif
@@ -2458,6 +2462,14 @@ private:
     void newUserTestAsk();       // its card: what it does, Start
     void newUserTestGo();        // Start: Songate closes, sets the folder aside, starts as new
     void newUserTestAtLaunch();  // a launch with the folder aside: the test (or, interrupted before, the folder put back)
+#ifdef __SWITCH__
+    // The console's dev remote control (devctl.cpp, the Switch's half): a file in the settings folder, read once a second over FTP
+    struct DevCon;
+    DevCon* devCon_ = nullptr;
+    void devConsole(uint64_t& down, uint64_t& held);   // App::input: the file read, its events and presses due this frame
+    void devConsoleFrame(double interval, float workMs);   // the frame's end: shots, items, stats
+    void devConsoleEnd();   // App::shutdown, first: the port's thread stopped
+#endif
     void selfTestStart(int level);
     void selfTestStop();
     void selfTestTick(float frameMs, float workMs);
@@ -2467,7 +2479,8 @@ private:
     /** A self test running (dev): the first start's questions (covers, the overlay's, lyrics) wait, so it never answers one. */
     bool selfTestBusy() const {
 #ifdef GF_DEV
-        return selfTest_ != nullptr && !selfTestFresh_;
+        static const bool noNotice = getenv("GF_NONOTICE") != nullptr;   // (test scripts: the first start's questions held back for good)
+        return (selfTest_ != nullptr && !selfTestFresh_) || noNotice;
 #else
         return false;
 #endif
